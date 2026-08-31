@@ -19,7 +19,11 @@ import { dirname } from 'node:path';
  * That the lock file happens to be a SQLite database is an implementation
  * detail with one deliberate benefit: it carries the holder's pid and start
  * time, so a rejected second daemon can name the live one instead of saying
- * "busy".
+ * "busy". The visible cost is a `daemon.lock-journal` file that sits next to it
+ * for as long as the lock is held - in exclusive locking mode SQLite keeps the
+ * rollback journal rather than deleting it on commit. It is transient state, it
+ * disappears with the daemon, and the journal is kept rather than disabled so a
+ * crash mid-write cannot leave a lock file too corrupt to open.
  *
  * Order matters as much as the mechanism. The lock is taken *before* the IPC
  * socket is bound (internal/daemon/daemon.go:169-186), so two daemons can never

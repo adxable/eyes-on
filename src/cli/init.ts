@@ -51,9 +51,19 @@ export async function initCommand(context: Context): Promise<number> {
   const service =
     config.daemon.managed_service && !serviceManagerBypassed()
       ? installService(context.paths, cliEntryPath(), process.execPath)
-      : { installed: false, label: '', unitPath: '', skipped: 'disabled in config or bypassed by environment' };
-  if (service.installed && service.skipped === null && !before.running) {
-    await waitForDaemon(context.paths, 10_000);
+      : {
+          installed: false,
+          label: '',
+          unitPath: '',
+          skipped: 'disabled in config or bypassed by environment',
+          reloaded: false,
+        };
+  // Wait whenever the service manager actually (re)started the job - including
+  // when a daemon was running a moment ago and the reload has just stopped it.
+  // Spawning our own here would win the lock and leave the managed job exiting
+  // cleanly forever after.
+  if (service.reloaded) {
+    await waitForDaemon(context.paths, 15_000);
   }
 
   const start = await startDaemon(context.paths);

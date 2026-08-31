@@ -161,6 +161,13 @@ export interface ServiceInstallResult {
   label: string;
   unitPath: string;
   skipped: string | null;
+  /**
+   * True when this call actually (re)started the managed job, which means the
+   * daemon is coming up out of band right now. Callers must wait for it rather
+   * than starting one of their own: a competing spawn would win the singleton
+   * lock and leave the service-managed job exiting cleanly and never restarting.
+   */
+  reloaded: boolean;
 }
 
 /**
@@ -170,10 +177,10 @@ export interface ServiceInstallResult {
 export function installService(paths: Paths, executable: string, nodePath: string): ServiceInstallResult {
   const current = platform();
   if (serviceManagerBypassed()) {
-    return { installed: false, label: '', unitPath: '', skipped: 'EYES_ON_SKIP_SERVICE_MANAGER=1' };
+    return { installed: false, label: '', unitPath: '', skipped: 'EYES_ON_SKIP_SERVICE_MANAGER=1', reloaded: false };
   }
   if (current === 'other') {
-    return { installed: false, label: '', unitPath: '', skipped: `unsupported platform ${process.platform}` };
+    return { installed: false, label: '', unitPath: '', skipped: `unsupported platform ${process.platform}`, reloaded: false };
   }
   mkdirSync(paths.logsDir, { recursive: true });
 
@@ -184,15 +191,27 @@ export function installService(paths: Paths, executable: string, nodePath: strin
     mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
     const unchanged = existsSync(unitPath) && readFileSync(unitPath, 'utf8') === content;
     if (!unchanged) writeFileSync(unitPath, content, { mode: 0o644 });
+    // An unchanged, already-loaded job is left strictly alone. Reloading it
+    // would bounce a healthy daemon on every `init`, and idempotent has to mean
+    // "repairs what is broken", not "restarts what is working".
+    if (unchanged && inspectService(paths).loaded) {
+      return { installed: true, label, unitPath, skipped: null, reloaded: false };
+    }
     // bootout then bootstrap: launchd refuses to bootstrap an already-loaded
     // label, and this is the only sequence that is safe to repeat. It targets
     // our own scoped label, never a shared one.
     spawnSync('launchctl', ['bootout', `${launchctlDomain()}/${label}`], { encoding: 'utf8' });
     const loaded = spawnSync('launchctl', ['bootstrap', launchctlDomain(), unitPath], { encoding: 'utf8' });
     if (loaded.status !== 0) {
-      return { installed: true, label, unitPath, skipped: `launchctl bootstrap: ${(loaded.stderr ?? '').trim()}` };
+      return {
+        installed: true,
+        label,
+        unitPath,
+        skipped: `launchctl bootstrap: ${(loaded.stderr ?? '').trim()}`,
+        reloaded: false,
+      };
     }
-    return { installed: true, label, unitPath, skipped: null };
+    return { installed: true, label, unitPath, skipped: null, reloaded: true };
   }
 
   const label = systemdUnitName(paths);
@@ -201,12 +220,21 @@ export function installService(paths: Paths, executable: string, nodePath: strin
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
   const unchanged = existsSync(unitPath) && readFileSync(unitPath, 'utf8') === content;
   if (!unchanged) writeFileSync(unitPath, content, { mode: 0o644 });
+  if (unchanged && inspectService(paths).loaded) {
+    return { installed: true, label, unitPath, skipped: null, reloaded: false };
+  }
   spawnSync('systemctl', ['--user', 'daemon-reload'], { encoding: 'utf8' });
   const enabled = spawnSync('systemctl', ['--user', 'enable', '--now', label], { encoding: 'utf8' });
   if (enabled.status !== 0) {
-    return { installed: true, label, unitPath, skipped: `systemctl enable: ${(enabled.stderr ?? '').trim()}` };
+    return {
+      installed: true,
+      label,
+      unitPath,
+      skipped: `systemctl enable: ${(enabled.stderr ?? '').trim()}`,
+      reloaded: false,
+    };
   }
-  return { installed: true, label, unitPath, skipped: null };
+  return { installed: true, label, unitPath, skipped: null, reloaded: true };
 }
 
 /** Unloads and removes the service definition for this root only. */
