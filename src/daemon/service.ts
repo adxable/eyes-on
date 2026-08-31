@@ -92,8 +92,13 @@ export function launchdPlist(paths: Paths, executable: string, nodePath: string)
   </dict>
   <key>RunAtLoad</key>
   <true/>
+  <!-- Restart on failure only. A daemon that exits 0 because another one
+       already holds this root's lock must not be restarted in a loop. -->
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
   <key>StandardOutPath</key>
   <string>${xmlEscape(join(paths.logsDir, 'service.out.log'))}</string>
   <key>StandardErrorPath</key>
@@ -111,7 +116,7 @@ Description=eyes-on daemon (${paths.canonicalRoot()})
 Type=simple
 ExecStart=${nodePath} ${executable} daemon run --root ${paths.canonicalRoot()}
 WorkingDirectory=${paths.canonicalRoot()}
-Restart=always
+Restart=on-failure
 RestartSec=2
 
 [Install]

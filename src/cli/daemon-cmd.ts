@@ -4,6 +4,7 @@ import { flagString } from './args.js';
 import { emitDoc, EXIT_USAGE, progress, UserFacingError } from './output.js';
 import type { ToonObject } from './toon.js';
 import { runDaemon } from '../daemon/daemon.js';
+import { LockHeldError } from '../daemon/lock.js';
 import { daemonState, daemonStatus, restartDaemon, startDaemon, stopDaemon } from '../daemon/lifecycle.js';
 import { call } from '../ipc/client.js';
 import { METHODS, type NotifyCommitResult } from '../ipc/protocol.js';
@@ -51,7 +52,19 @@ async function daemonRun(context: Context): Promise<number> {
   const root = flagString(context.args, 'root');
   const paths = root ? Paths.withRoot(root) : context.paths;
   progress(context.writers, `eyes-on: daemon starting on ${paths.root}`);
-  await runDaemon(paths);
+  try {
+    await runDaemon(paths);
+  } catch (error) {
+    if (error instanceof LockHeldError) {
+      // Another daemon already serves this root, so there is nothing to do and
+      // nothing has gone wrong. Exiting 0 matters: the OS service is configured
+      // to restart only on failure, so a non-zero exit here would put a
+      // service-managed daemon into a restart loop against a healthy one.
+      progress(context.writers, `eyes-on: ${error.message}; nothing to do`);
+      return 0;
+    }
+    throw error;
+  }
   return 0;
 }
 

@@ -5,7 +5,7 @@ import { emitDoc, progress, UserFacingError } from './output.js';
 import type { ToonObject } from './toon.js';
 import { Daemon } from '../daemon/daemon.js';
 import { ensureConfig } from '../core/config.js';
-import { daemonState, startDaemon, cliEntryPath } from '../daemon/lifecycle.js';
+import { daemonState, startDaemon, waitForDaemon, cliEntryPath } from '../daemon/lifecycle.js';
 import { call } from '../ipc/client.js';
 import { METHODS, type RegisterRepoResult } from '../ipc/protocol.js';
 import { installSkill, skillRoot } from '../skill/install.js';
@@ -42,6 +42,20 @@ export async function initCommand(context: Context): Promise<number> {
   const configWritten = ensureConfig(context.paths, force);
 
   const before = await daemonState(context.paths);
+
+  // The OS service is registered before the daemon is started, so that the
+  // service manager owns the process rather than racing a manually spawned one
+  // for the singleton lock. Spawning directly is the fallback for platforms
+  // and sandboxes without a usable service manager.
+  const config = loadConfig(context.paths);
+  const service =
+    config.daemon.managed_service && !serviceManagerBypassed()
+      ? installService(context.paths, cliEntryPath(), process.execPath)
+      : { installed: false, label: '', unitPath: '', skipped: 'disabled in config or bypassed by environment' };
+  if (service.installed && service.skipped === null && !before.running) {
+    await waitForDaemon(context.paths, 10_000);
+  }
+
   const start = await startDaemon(context.paths);
   if (!start.alreadyRunning && !start.started) {
     throw new UserFacingError('the eyes-on daemon did not start', [
@@ -63,11 +77,6 @@ export async function initCommand(context: Context): Promise<number> {
   );
 
   const skills = installSkill(skillRoot(context.env));
-  const config = loadConfig(context.paths);
-  const service =
-    config.daemon.managed_service && !serviceManagerBypassed()
-      ? installService(context.paths, cliEntryPath(), process.execPath)
-      : { installed: false, label: '', unitPath: '', skipped: 'disabled in config or bypassed by environment' };
 
   let hook: HookResult | null = null;
   if (watch) {

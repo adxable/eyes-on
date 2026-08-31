@@ -73,6 +73,17 @@ export function cliEntryPath(): string {
   return join(dirname(fileURLToPath(import.meta.url)), '..', 'cli', 'main.js');
 }
 
+/** Polls until the daemon answers, or the deadline passes. Used after handing
+ *  the daemon to an OS service manager, which starts it out of band. */
+export async function waitForDaemon(paths: Paths, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if ((await daemonState(paths)).running) return true;
+    if (Date.now() >= deadline) return false;
+    await delay(120);
+  }
+}
+
 export interface StartResult {
   started: boolean;
   alreadyRunning: boolean;
