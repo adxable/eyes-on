@@ -1,5 +1,4 @@
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { assertMayMutate, requireRepo, type Context } from './context.js';
 import { flagBool } from './args.js';
 import { emitDoc, progress, UserFacingError } from './output.js';
@@ -9,7 +8,7 @@ import { ensureConfig } from '../core/config.js';
 import { daemonState, startDaemon, cliEntryPath } from '../daemon/lifecycle.js';
 import { call } from '../ipc/client.js';
 import { METHODS, type RegisterRepoResult } from '../ipc/protocol.js';
-import { installSkill } from '../skill/install.js';
+import { installSkill, skillRoot } from '../skill/install.js';
 import { installPostCommitHook, inspectPostCommitHook, type HookResult } from '../git/hook.js';
 import { installService, inspectService, serviceManagerBypassed } from '../daemon/service.js';
 import { mirrorSizeBytes } from '../git/mirror.js';
@@ -63,7 +62,7 @@ export async function initCommand(context: Context): Promise<number> {
     `eyes-on: mirror ${registration.mirrorCreated ? 'created' : registration.mirrorRepaired ? 'repaired' : 'refreshed'} in ${registration.mirrorFetchMs} ms`,
   );
 
-  const skills = installSkill(homedir());
+  const skills = installSkill(skillRoot(context.env));
   const config = loadConfig(context.paths);
   const service =
     config.daemon.managed_service && !serviceManagerBypassed()

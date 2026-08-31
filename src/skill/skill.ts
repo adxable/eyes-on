@@ -14,7 +14,7 @@ import { PRODUCT_NAME } from '../core/version.js';
 export const SKILL_NAME = PRODUCT_NAME;
 
 export const SKILL_DESCRIPTION =
-  'Find out what a human actually has to read in a change before it is merged - risk computed from repository history, hard rules on sensitive paths, and the specific fragments worth a attention of a reviewer. Use when preparing a change for review, deciding whether a change needs human eyes, or when the user invokes /eyes-on.';
+  'Find out what a human actually has to read in a change before it is merged - risk computed from repository history, hard rules on sensitive paths, and the specific fragments a reviewer should actually look at. Use when preparing a change for review, deciding whether a change needs human eyes, or when the user invokes /eyes-on.';
 
 function commandTable(): string {
   const lines: string[] = [];

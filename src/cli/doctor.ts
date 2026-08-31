@@ -10,7 +10,7 @@ import { canonicalPath, repoID } from '../core/repoid.js';
 import { inspectMirror, mirrorSizeBytes } from '../git/mirror.js';
 import { daemonState, daemonStatus } from '../daemon/lifecycle.js';
 import { inspectService } from '../daemon/service.js';
-import { inspectSkill } from '../skill/install.js';
+import { inspectSkill, skillRoot } from '../skill/install.js';
 import { inspectPostCommitHook } from '../git/hook.js';
 import { Database } from '../db/db.js';
 
@@ -174,7 +174,7 @@ export async function doctorCommand(context: Context): Promise<number> {
   }
 
   // 5. Skill.
-  const skills = inspectSkill(homedir());
+  const skills = inspectSkill(skillRoot(context.env));
   const staleSkill = skills.filter((entry) => !entry.present || !entry.current);
   rows.push({
     check: 'skill',

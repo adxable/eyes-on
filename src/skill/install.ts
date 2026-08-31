@@ -44,7 +44,17 @@ function resolveThroughSymlinks(path: string): string {
   return candidate;
 }
 
-export function installSkill(root: string = homedir()): SkillInstallResult[] {
+/**
+ * Root the skill bases hang off. Normally the user's home directory;
+ * EYES_ON_SKILL_ROOT redirects it so tests can exercise a real installation
+ * without writing into the developer's own agent configuration.
+ */
+export function skillRoot(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.EYES_ON_SKILL_ROOT;
+  return override && override.length > 0 ? override : homedir();
+}
+
+export function installSkill(root: string = skillRoot()): SkillInstallResult[] {
   const content = skillMarkdown();
   const results: SkillInstallResult[] = [];
   for (const base of INSTALL_BASES) {
@@ -69,7 +79,7 @@ export interface SkillPresence {
   current: boolean;
 }
 
-export function inspectSkill(root: string = homedir()): SkillPresence[] {
+export function inspectSkill(root: string = skillRoot()): SkillPresence[] {
   const content = skillMarkdown();
   return INSTALL_BASES.map((base) => {
     const file = join(root, base, SKILL_NAME, 'SKILL.md');
