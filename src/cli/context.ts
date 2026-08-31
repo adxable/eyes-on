@@ -1,5 +1,5 @@
 import { Paths } from '../core/paths.js';
-import { classify, refusalHelp, type GuardVerdict } from '../core/guard.js';
+import { refusalHelp, type GuardVerdict } from '../core/guard.js';
 import { EXIT_USAGE, UserFacingError, type Format, type Writers } from './output.js';
 import { toplevel } from '../git/git.js';
 import { canonicalPath } from '../core/repoid.js';
