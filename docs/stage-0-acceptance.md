@@ -56,6 +56,14 @@ $ find ~/.no-mistakes -newer <marker> | wc -l
 Empty, including after the teardown that removed the LaunchAgent and the state
 root.
 
+One caveat, stated so the result can be reproduced rather than taken on trust:
+re-running `no-mistakes axi` and `no-mistakes doctor` afterwards - for the
+comparison in section 1 - does make `find` report
+`~/.no-mistakes/telemetry-gate.json`. That file is written by no-mistakes
+itself, by its own read-surface telemetry gate, during those two invocations.
+The measurement above was taken before them, which is the only ordering under
+which the check means anything.
+
 ## 3. Clone untouched
 
 Captured on adx-worker immediately before and after the session:
