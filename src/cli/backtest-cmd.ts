@@ -85,6 +85,7 @@ export async function backtestCommand(context: Context): Promise<number> {
     fix_history_target: FIX_HISTORY_LIFT_TARGET,
     churn_decile_target: CHURN_DECILE_LIFT_TARGET,
     fix_history_pass: evaluated.length > 0 && evaluated.every((r) => r.fix_history.lift >= FIX_HISTORY_LIFT_TARGET),
+    fix_touch_pass: evaluated.length > 0 && evaluated.every((r) => r.fix_touch.lift >= FIX_HISTORY_LIFT_TARGET),
     churn_decile_pass: evaluated.length > 0 && evaluated.every((r) => r.churn_top_decile.lift >= CHURN_DECILE_LIFT_TARGET),
     results: results.map((result) => ({
       split: result.split,
@@ -98,6 +99,8 @@ export async function backtestCommand(context: Context): Promise<number> {
       fix_history_flagged: result.fix_history.flagged,
       fix_history_rate: round(result.fix_history.rate),
       fix_history_lift: round(result.fix_history.lift),
+      fix_touch_flagged: result.fix_touch.flagged,
+      fix_touch_lift: round(result.fix_touch.lift),
       churn_decile_flagged: result.churn_top_decile.flagged,
       churn_decile_rate: round(result.churn_top_decile.rate),
       churn_decile_lift: round(result.churn_top_decile.lift),
@@ -108,6 +111,7 @@ export async function backtestCommand(context: Context): Promise<number> {
       'Lift is the post-split fix rate of the flagged files over the fix rate of every code file that existed at the split',
       'A lift of 1.0 means the signal carries no information; the report asks for 2.5 on fix history and 3.0 on the churn top decile',
       'The signal is computed only from commits before the split, and the outcome only from commits after it',
+      '`fix_history` is the signal eyes-on actually computes, through blame; `fix_touch` is the cheapest possible version of it, and is reported so the blame step has to earn its cost',
     ] as ToonValue,
   };
 
@@ -125,23 +129,24 @@ function renderMarkdown(doc: ToonObject, results: readonly SplitResult[]): strin
     '',
     `Anchor: \`${String(doc.anchor)}\`. Signal window: ${String(doc.window_days)} days before each split.`,
     '',
-    '| split | files | flagged by fixes | lift | churn decile | lift | fixes after |',
-    '|---|---|---|---|---|---|---|',
+    '| split | files | blamed by a fix | lift | touched by a fix | lift | churn decile | lift |',
+    '|---|---|---|---|---|---|---|---|',
   ];
   for (const result of results) {
     if (result.note !== null && result.population === 0) {
-      lines.push(`| ${result.split} | - | - | - | - | - | ${result.note} |`);
+      lines.push(`| ${result.split} | - | - | - | - | - | - | ${result.note} |`);
       continue;
     }
     lines.push(
-      `| ${result.split} | ${result.population} | ${result.fix_history.flagged} | **${round(result.fix_history.lift)}x** | ${result.churn_top_decile.flagged} | **${round(result.churn_top_decile.lift)}x** | ${result.after_fix_commits} |`,
+      `| ${result.split} | ${result.population} | ${result.fix_history.flagged} | **${round(result.fix_history.lift)}x** | ${result.fix_touch.flagged} | ${round(result.fix_touch.lift)}x | ${result.churn_top_decile.flagged} | **${round(result.churn_top_decile.lift)}x** |`,
     );
   }
 
   lines.push(
     '',
-    `Fix-history lift target ${String(doc.fix_history_target)}x: **${doc.fix_history_pass ? 'pass' : 'fail'}**. ` +
-      `Churn top-decile target ${String(doc.churn_decile_target)}x: **${doc.churn_decile_pass ? 'pass' : 'fail'}**.`,
+    `Fix-history lift target ${String(doc.fix_history_target)}x on every split: **${doc.fix_history_pass ? 'pass' : 'fail'}**` +
+      ` (same target on the blame-free variant: ${doc.fix_touch_pass ? 'pass' : 'fail'}).` +
+      ` Churn top-decile target ${String(doc.churn_decile_target)}x: **${doc.churn_decile_pass ? 'pass' : 'fail'}**.`,
   );
 
   for (const result of results) {

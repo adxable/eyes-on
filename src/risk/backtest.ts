@@ -43,6 +43,19 @@ export interface SplitResult {
   /** Fix touches after the split, per file, averaged over the population. */
   base_rate: number;
   fix_history: GroupResult;
+  /**
+   * The same measurement over a deliberately weaker flag: files a fix commit
+   * merely *touched* before the split, with no blame step.
+   *
+   * It is reported beside the real signal rather than instead of it, because
+   * the two answer different questions. `fix_history` measures what eyes-on
+   * actually computes; this measures what the cheapest possible version of the
+   * signal would have achieved. Where the cheap one does as well, the blame
+   * step is buying nothing on this repository - which is a fact worth seeing
+   * rather than one worth hiding, and is what `calibrate` will act on in stage
+   * 3.
+   */
+  fix_touch: GroupResult;
   churn_top_decile: GroupResult;
   elapsed_ms: number;
   /** Set when the split cannot be evaluated - too early, too late, or a
@@ -111,6 +124,7 @@ function runSplit(split: string, options: BacktestOptions): SplitResult {
     after_fix_commits: 0,
     base_rate: 0,
     fix_history: emptyGroup(),
+    fix_touch: emptyGroup(),
     churn_top_decile: emptyGroup(),
     elapsed_ms: 0,
     note: null,
@@ -139,6 +153,7 @@ function runSplit(split: string, options: BacktestOptions): SplitResult {
     },
   });
   const fixCounts = fixCountsByFile(szz.attributions);
+  const fixTouches = indexByFile(before.commits.filter((commit) => isFixCommit(commit, fixPattern)));
 
   // --- the outcome, from after the split only -------------------------------
   const afterUntil = options.horizonDays === undefined ? undefined : splitSeconds + options.horizonDays * 86_400;
@@ -174,6 +189,7 @@ function runSplit(split: string, options: BacktestOptions): SplitResult {
   const baseRate = totalAfter / population.length;
 
   const flaggedByFixes = population.filter((path) => (fixCounts.get(path) ?? 0) >= 1);
+  const flaggedByTouch = population.filter((path) => (fixTouches.get(path)?.commits ?? 0) >= 1);
   const churnRanked = [...population].sort(
     (a, b) => (before.files.get(b)?.commits ?? 0) - (before.files.get(a)?.commits ?? 0) || a.localeCompare(b),
   );
@@ -210,6 +226,7 @@ function runSplit(split: string, options: BacktestOptions): SplitResult {
     after_fix_commits: afterFixes.length,
     base_rate: baseRate,
     fix_history: group(flaggedByFixes, (path) => fixCounts.get(path) ?? 0),
+    fix_touch: group(flaggedByTouch, (path) => fixTouches.get(path)?.commits ?? 0),
     churn_top_decile: group(topDecile, (path) => before.files.get(path)?.commits ?? 0),
     elapsed_ms: elapsed(started),
     note:
