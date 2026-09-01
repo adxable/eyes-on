@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { spawnSync, spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
-import { writeFileSync } from 'node:fs';
-import { LockHeldError, SingletonLock } from '../src/daemon/lock.js';
+import { rmSync, writeFileSync } from 'node:fs';
+import { LockHeldError, LockUnusableError, SingletonLock, inspectLock } from '../src/daemon/lock.js';
 import { tempDir } from './helpers.js';
 
 /**
@@ -100,4 +100,33 @@ test('a clean release clears the record, and only an abrupt death leaves one', a
   await delay(400);
 
   assert.equal(SingletonLock.readHolder(path)?.pid, holder.pid, 'a holder that died leaves its record behind');
+});
+
+
+/**
+ * A lock file that is not a SQLite database at all - a truncated write, a file
+ * something else created under that name. Both halves have to agree: the read
+ * side reports that it could not be used, and the write side refuses with the
+ * one repair that works rather than an unexplained failure.
+ */
+test('a lock file this version cannot open is refused with the repair that works', () => {
+  const path = join(tempDir('lock-corrupt'), 'daemon.lock');
+  writeFileSync(path, 'this is not a database');
+
+  assert.equal(inspectLock(path).state, 'unreadable');
+  assert.throws(() => SingletonLock.acquire(path), LockUnusableError);
+  try {
+    SingletonLock.acquire(path);
+    assert.fail('a corrupt lock file must not yield a lock');
+  } catch (error) {
+    assert.ok(error instanceof LockUnusableError);
+    assert.match(error.message, /is not a usable eyes-on lock file/);
+    assert.ok(error.help.some((line) => line.includes(path)), 'the remedy must name the file to remove');
+  }
+
+  // And the repair the message names actually works.
+  rmSync(path);
+  const lock = SingletonLock.acquire(path);
+  lock.release();
+  assert.equal(inspectLock(path).state, 'free');
 });

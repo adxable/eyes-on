@@ -3,7 +3,7 @@ import { flagString } from './args.js';
 import { emitDoc, EXIT_USAGE, progress, UserFacingError } from './output.js';
 import type { ToonObject } from './toon.js';
 import { runDaemon } from '../daemon/daemon.js';
-import { LockHeldError } from '../daemon/lock.js';
+import { LockHeldError, LockUnusableError, lockUnusableHelp } from '../daemon/lock.js';
 import { daemonState, daemonStatus, describeDaemon, restartDaemon, startDaemon, stopDaemon } from '../daemon/lifecycle.js';
 import { call } from '../ipc/client.js';
 import { METHODS, type NotifyCommitResult } from '../ipc/protocol.js';
@@ -61,6 +61,11 @@ async function daemonRun(context: Context): Promise<number> {
       // service-managed daemon into a restart loop against a healthy one.
       progress(context.writers, `eyes-on: ${error.message}; nothing to do`);
       return 0;
+    }
+    if (error instanceof LockUnusableError) {
+      // A file the user can remove, not a defect to report: this leaves through
+      // the `error:` plus `help:` path naming the one step that works.
+      throw new UserFacingError(error.message, error.help);
     }
     throw error;
   }
@@ -146,7 +151,9 @@ async function daemonStatusCommand(context: Context): Promise<number> {
             'A live process holds the lock while nothing answers the socket: end that process, or restart the eyes-on job through your service manager',
             '`eyes-on daemon stop` acts on a daemon that answers, so it does not end this one',
           ]
-        : ['Start it with `eyes-on daemon start`'],
+        : state.diagnosis.kind === 'lock-unreadable'
+          ? lockUnusableHelp(context.paths.lockFile)
+          : ['Start it with `eyes-on daemon start`'],
   };
   emitDoc(
     context.writers,

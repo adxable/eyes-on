@@ -117,7 +117,9 @@ export function describeDaemon(state: DaemonState, lockPath: string): string {
     case 'stale-lock':
       return `stopped (${lockPath} is free; a record left by pid ${state.diagnosis.pid} remains in it)`;
     case 'lock-unreadable':
-      return `stopped (${lockPath} could not be read: ${state.diagnosis.detail})`;
+      // No daemon can start until this file is gone, so the sentence says so
+      // rather than reading as an ordinary stopped daemon.
+      return `stopped, and ${lockPath} is not a usable lock file (${state.diagnosis.detail}) - remove it while no daemon is running and it will be recreated`;
     case 'stopped':
       return 'stopped (run `eyes-on daemon start`)';
   }

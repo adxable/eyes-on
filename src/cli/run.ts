@@ -1,4 +1,5 @@
 import { classify } from '../core/guard.js';
+import { GitError } from '../git/git.js';
 import { parseArgs, parseArgsLenient, flagString, flagBool, resolveFormat, type ParsedArgs } from './args.js';
 import {
   emitError,
@@ -108,6 +109,16 @@ export async function run(argv: readonly string[], writers: Writers = processWri
     if (error instanceof UserFacingError) {
       emitError(writers, format, error.message, error.help);
       return error.code;
+    }
+    // git absent from PATH is a condition of the machine, not a defect, so it
+    // is reported as itself rather than as an eyes-on bug. `doctor` tolerates
+    // it and completes; every other command needs git and stops here.
+    if (error instanceof GitError && error.spawnFailed) {
+      emitError(writers, format, error.message, [
+        'Install git and make sure it is on PATH',
+        'Run `eyes-on doctor` to see what eyes-on can and cannot reach from here',
+      ]);
+      return EXIT_ERROR;
     }
     // An unexpected failure is still reported in the contract's shape: an agent
     // parsing stdout must never have to cope with a raw stack trace.

@@ -38,7 +38,8 @@ daemon were all removed; nothing from this session persists on the machine.
 | `9b6717b` | this document only |
 | `6640d1e` | lock-holder diagnostics; a state root inside `NM_HOME` is now refused when the root is resolved (result 2); `prepack` builds the published entry point; the raw capture logs gained a bound |
 | `47c73b5` | the wedged and stale lock readings and their wording; the holder row is cleared on a clean release; capture-log bounding moved to the daemon entry point |
-| this review round | a `config.yaml` that no longer parses no longer stops the daemon from starting; `daemon status` reports the lock reading separately from the daemon's condition |
+| `462dbe0` | a `config.yaml` that no longer parses no longer stops the daemon from starting; `daemon status` reports the lock reading separately from the daemon's condition |
+| this review round | `doctor` reports a missing git instead of failing on it; a `daemon.lock` this version cannot open is refused with the repair that clears it |
 
 None of these changed the mirror, the clone-facing code or the recursion guard.
 Where one of them touched an area a result covers - result 2 above all - the
@@ -248,8 +249,8 @@ pursued in stage 0: `init` does not wait for the daemon to stop when it
 uninstalls a service, a `launchctl bootout` failure is not inspected, a
 `kickstart` without `-k` is a no-op against a job launchd still considers
 running, and the wiring between `installService` and `init` is covered less
-thoroughly than the decision table it feeds. None of them affects any of the six
-acceptance conditions, and all of them concern behaviour after a manual edit of
+thoroughly than the decision table it feeds. None of them affects any of the seven
+acceptance properties, and all of them concern behaviour after a manual edit of
 `config.yaml` or a race between two concurrent invocations.
 
 One more belongs on that list. `daemon status` and `doctor` detect a daemon that

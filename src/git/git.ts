@@ -48,11 +48,19 @@ export const CLONE_READ_ONLY_SUBCOMMANDS: readonly string[] = [
 export class GitError extends Error {
   readonly status: number;
   readonly stderr: string;
-  constructor(args: string[], status: number, stderr: string) {
-    super(`git ${args.join(' ')} failed (${status}): ${stderr.trim()}`);
+  /** True when git could not be executed at all, rather than having run and
+   *  exited non-zero. A host without git on PATH produces exactly this. */
+  readonly spawnFailed: boolean;
+  constructor(args: string[], status: number, stderr: string, spawnFailed = false) {
+    super(
+      spawnFailed
+        ? `git could not be executed: ${stderr.trim()}`
+        : `git ${args.join(' ')} failed (${status}): ${stderr.trim()}`,
+    );
     this.name = 'GitError';
     this.status = status;
     this.stderr = stderr;
+    this.spawnFailed = spawnFailed;
   }
 }
 
@@ -88,7 +96,10 @@ function git(args: string[], options: GitOptions = {}): GitResult {
     },
   });
   if (result.error) {
-    throw new GitError(full, -1, String(result.error.message ?? result.error));
+    // Could not be executed at all - git absent from PATH is exactly this.
+    // Distinct from a non-zero exit, because a probe may answer "no git" while
+    // every caller that needs git still fails loudly.
+    throw new GitError(full, -1, String(result.error.message ?? result.error), true);
   }
   const out: GitResult = {
     status: result.status ?? -1,
@@ -265,6 +276,15 @@ export function defaultBranch(path: string): string {
 }
 
 export function gitVersion(): string | null {
-  const result = git(['version']);
-  return result.status === 0 ? result.stdout.trim() : null;
+  try {
+    const result = git(['version']);
+    return result.status === 0 ? result.stdout.trim() : null;
+  } catch (error) {
+    // The one probe that must survive a host without git: reporting a missing
+    // toolchain is `doctor`'s job, and it cannot do it from a stack trace. Only
+    // a spawn failure is absence; anything else is still a failure worth
+    // raising.
+    if (error instanceof GitError && error.spawnFailed) return null;
+    throw error;
+  }
 }

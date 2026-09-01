@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { run as runCli } from '../src/cli/run.js';
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, type Writers } from '../src/cli/output.js';
 import { COMMANDS } from '../src/cli/commands.js';
@@ -220,4 +220,74 @@ test('progress goes to stderr and never into the machine payload', async () => {
   } finally {
     await cli(['daemon', 'stop'], { env });
   }
+});
+
+
+/**
+ * `doctor` exists to report what this machine is missing, so a missing
+ * toolchain is the one failure it must never propagate. Running it with a PATH
+ * that contains no git reproduces the reported failure: before the probe
+ * tolerated absence, the command left through the unexpected-failure path with
+ * `error: git version failed (-1): spawnSync git ENOENT` and told the user to
+ * run the command that had just failed.
+ */
+test('doctor reports a missing git and still completes its other checks', async () => {
+  const repo = tempRepo('cli-nogit');
+  const env = { ...sandbox(), PATH: tempDir('cli-empty-path') };
+
+  const result = await cli(['doctor', '--format', 'json'], { cwd: repo.path, env });
+
+  const report = JSON.parse(result.out) as {
+    ok: boolean;
+    checks: { check: string; status: string; detail: string }[];
+    degradations: string[];
+  };
+  const git = report.checks.find((row) => row.check === 'git');
+  assert.equal(git?.status, 'missing', 'a git that cannot be executed is reported, not thrown');
+  assert.equal(report.ok, false);
+  assert.ok(
+    report.degradations.some((note) => note.startsWith('git is missing')),
+    'the degradation written for this condition must actually be emitted',
+  );
+  // The rest of the report is still there: doctor answered about everything it
+  // could reach without git.
+  for (const expected of ['node', 'gh', 'state root', 'database', 'daemon', 'skill', 'no-mistakes', 'state isolation']) {
+    assert.ok(
+      report.checks.some((row) => row.check === expected),
+      `doctor stopped before reporting ${expected}`,
+    );
+  }
+});
+
+/**
+ * A `daemon.lock` that is not a lock file this version can open blocks every
+ * start, and nothing in the CLI rewrites it - so the message has to name the
+ * one step that works rather than reporting an eyes-on bug or suggesting
+ * `daemon start`, which cannot succeed while the file is there.
+ */
+test('a daemon.lock that is not a usable lock file names the step that clears it', async () => {
+  const repo = tempRepo('cli-badlock');
+  const env = sandbox();
+  const root = env.EYES_HOME as string;
+  mkdirSync(root, { recursive: true });
+  const lockFile = join(root, 'daemon.lock');
+  writeFileSync(lockFile, 'this is not a database');
+
+  const run = await cli(['daemon', 'run', '--root', root], { cwd: repo.path, env });
+  assert.equal(run.code, EXIT_ERROR);
+  assert.match(run.err, new RegExp(`error: .*${lockFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  assert.match(run.err, /help: Remove .*daemon\.lock while no eyes-on daemon is running/);
+  assert.doesNotMatch(run.err, /This is an eyes-on bug/, 'a file the user can remove is not a defect report');
+
+  const status = await cli(['daemon', 'status', '--format', 'json'], { cwd: repo.path, env });
+  const doc = JSON.parse(status.out) as { condition: string; help: string[] };
+  assert.equal(doc.condition, 'lock-unreadable');
+  assert.ok(
+    doc.help.some((line) => line.includes('Remove')),
+    'the help must name the removal, not a start that cannot succeed',
+  );
+  assert.ok(
+    !doc.help.some((line) => line === 'Start it with `eyes-on daemon start`'),
+    'starting is not a remedy while the file is unreadable',
+  );
 });

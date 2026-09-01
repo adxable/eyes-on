@@ -55,6 +55,34 @@ export class LockHeldError extends Error {
   }
 }
 
+/**
+ * The one safe repair for a lock file this version cannot use.
+ *
+ * `daemon.lock` carries no state - a holder record and nothing else - so it is
+ * rebuilt by the next daemon that starts. Removing it while a daemon holds it
+ * would break the singleton, which is why the instruction is conditional and
+ * why eyes-on does not do it by itself.
+ */
+export function lockUnusableHelp(path: string): string[] {
+  return [
+    `Remove ${path} while no eyes-on daemon is running: it holds no state and the next start recreates it`,
+    'Then run `eyes-on daemon start`',
+  ];
+}
+
+/**
+ * A lock file that is present but is not a lock file this version can open.
+ * Carries its own help because the remedy is a file operation, not a command.
+ */
+export class LockUnusableError extends Error {
+  readonly help: string[];
+  constructor(path: string, detail: string) {
+    super(`${path} is not a usable eyes-on lock file: ${detail}`);
+    this.name = 'LockUnusableError';
+    this.help = lockUnusableHelp(path);
+  }
+}
+
 export class SingletonLock {
   private handle: DatabaseSync | null;
   readonly path: string;
@@ -83,10 +111,15 @@ export class SingletonLock {
       } catch {
         // Closing a handle that never took the lock cannot fail usefully.
       }
-      if (/locked|busy/i.test((error as Error).message ?? '')) {
+      const detail = (error as Error).message ?? '';
+      if (/locked|busy/i.test(detail)) {
         throw new LockHeldError(path, holder);
       }
-      throw error;
+      // Anything else here means the file cannot be opened as a lock at all -
+      // SQLite answers "file is not a database" for a corrupt one. That is a
+      // condition with a remedy, so it says the remedy rather than leaving as
+      // an unexplained failure.
+      throw new LockUnusableError(path, detail);
     }
     return new SingletonLock(handle, path);
   }

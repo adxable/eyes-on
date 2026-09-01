@@ -121,7 +121,9 @@ export async function doctorCommand(context: Context): Promise<number> {
   });
 
   // 4. This repository, its mirror and its hook.
-  const top = toplevel(context.cwd);
+  // Gated on the version probe: with no git to run, asking it where the
+  // working tree is would throw and take the whole report with it.
+  const top = git ? toplevel(context.cwd) : null;
   const clone = top ? canonicalPath(top) : null;
   const status = state.running ? await daemonStatus(context.paths) : null;
   const known = clone ? (status?.repos ?? []).find((repo) => repo.workingPath === clone) : undefined;
@@ -134,7 +136,9 @@ export async function doctorCommand(context: Context): Promise<number> {
       ? known
         ? `${clone} (registered, id ${id})`
         : `${clone} (not registered - run \`eyes-on init\`)`
-      : 'not inside a git repository',
+      : git
+        ? 'not inside a git repository'
+        : 'not determined: git is missing, so no repository could be read',
   });
 
   let mirrorBytes = 0;
