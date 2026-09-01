@@ -11,7 +11,10 @@ The prohibitions below are the product, not defensive coding. Breaking one is a
 correctness bug even when everything still passes:
 
 - never write anything under `~/.no-mistakes/**`, and never install a hook in the
-  no-mistakes gate or use its `pre-receive.no-mistakes-user` slot;
+  no-mistakes gate or use its `pre-receive.no-mistakes-user` slot. Every eyes-on
+  write lives under the state root, so this is enforced where the root is
+  resolved: `Paths` refuses a root inside `NM_HOME` (physical-path containment,
+  any depth) and no command gets far enough to create it;
 - never write a ref, an index entry, a remote or a config value into a working
   clone. `git()` in `src/git/git.ts` is module-private, so a clone is reachable
   only through `gitReadClone()`, which refuses any subcommand outside the
@@ -56,7 +59,11 @@ first) · `npm run genskill`.
 - **The singleton lock is a SQLite database** in `locking_mode=EXCLUSIVE`, because
   Node exposes no `flock`. It is a real kernel lock released on death, including
   SIGKILL - `test/lock.test.ts` proves both against a second process. Do not
-  replace it with an `O_EXCL` file plus a pid check.
+  replace it with an `O_EXCL` file plus a pid check. Its holder row reads
+  backwards from the obvious: while the lock is held the row cannot be read at
+  all, so a *readable* row is a record of a dead holder. `inspectLock` is the
+  only place allowed to turn that reading into a claim, and a live holder is
+  named from `daemon.pid`, never from the row.
 - **The service manager owns the daemon.** `init` installs the service, waits for
   the job it actually started, and only spawns a daemon itself as a fallback.
   Starting one in parallel wins the singleton lock and leaves the managed job

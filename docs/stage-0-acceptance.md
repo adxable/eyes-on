@@ -79,6 +79,16 @@ itself, by its own read-surface telemetry gate, during those two invocations.
 The measurement above was taken before them, which is the only ordering under
 which the check means anything.
 
+The measurement above exercises the ordinary case, where the two roots are
+separate. The case it cannot reach is a state root *inside* the foreign one -
+`EYES_HOME=~/.no-mistakes/eyes-on` - because that root is refused rather than
+used: `Paths` compares the physical path of the resolved root against `NM_HOME`
+at any depth and every command fails with `error:` plus a `help:` line naming
+`EYES_HOME`, before the root is created. `test/coexistence.test.ts` asserts the
+refusal by inventorying the foreign root before and after and requiring the two
+listings to be equal, so what is proven is that nothing was written rather than
+that something was reported.
+
 ## 3. Clone untouched
 
 Captured on adx-worker immediately before and after the session:

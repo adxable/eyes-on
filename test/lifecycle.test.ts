@@ -1,10 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Paths } from '../src/core/paths.js';
 import {
   daemonState,
+  describeDaemon,
   restartDaemon,
   startDaemon,
   stopDaemon,
@@ -308,4 +311,63 @@ test('a unit file with an unreachable manager still yields a working daemon', as
   } finally {
     await stopDaemon(paths);
   }
+});
+
+
+/**
+ * The lock answers two opposite questions with two opposite readings, and
+ * reporting either as the other is worse than saying nothing: a live daemon
+ * holding the lock while the socket stays silent needs stopping, and a record
+ * left by a dead one is a lock nobody holds. The row inside a held lock cannot
+ * be read at all - that unreadability *is* the evidence of a live holder - so
+ * this drives a real second process through both states in order.
+ */
+test('a wedged holder and a lock a dead holder left behind are told apart', async () => {
+  const paths = stateRoot('lifecycle-wedged');
+  mkdirSync(paths.root, { recursive: true });
+  const script = join(paths.root, 'holder.mjs');
+  writeFileSync(
+    script,
+    `import { DatabaseSync } from 'node:sqlite';
+     import { writeFileSync } from 'node:fs';
+     const db = new DatabaseSync(process.argv[2]);
+     db.exec('PRAGMA locking_mode = EXCLUSIVE');
+     db.exec('CREATE TABLE IF NOT EXISTS holder (pid INTEGER NOT NULL, started_at INTEGER NOT NULL)');
+     db.exec('DELETE FROM holder');
+     db.prepare('INSERT INTO holder (pid, started_at) VALUES (?, ?)').run(process.pid, Date.now());
+     // Exactly what the daemon does next, and the only record that can name a
+     // live holder: the row itself is unreadable while the lock is held.
+     writeFileSync(process.argv[3], process.pid + '\\n');
+     process.stdout.write('HELD\\n');
+     setInterval(() => {}, 1000);`,
+  );
+  const holder = spawn(process.execPath, [script, paths.lockFile, paths.pidFile], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  await new Promise<void>((resolve) => holder.stdout.once('data', () => resolve()));
+
+  try {
+    const wedged = await daemonState(paths);
+    assert.equal(wedged.running, false, 'nothing is listening on the socket');
+    assert.equal(wedged.diagnosis.kind, 'wedged', 'a live holder must not be reported as a stopped daemon');
+    assert.equal(wedged.diagnosis.kind === 'wedged' ? wedged.diagnosis.pid : null, holder.pid);
+    assert.match(describeDaemon(wedged, paths.lockFile), new RegExp(`pid ${holder.pid} is alive and holds`));
+  } finally {
+    holder.kill('SIGKILL');
+  }
+
+  await delay(500);
+  const stale = await daemonState(paths);
+  assert.equal(stale.diagnosis.kind, 'stale-lock', 'a dead holder leaves a stale lock, not a live one');
+  assert.equal(stale.diagnosis.kind === 'stale-lock' ? stale.diagnosis.pid : null, holder.pid);
+  const message = describeDaemon(stale, paths.lockFile);
+  assert.match(message, /is free/, 'the message must not claim a dead pid holds the lock');
+  assert.doesNotMatch(message, /is alive/);
+});
+
+test('a root with no lock file at all is simply stopped', async () => {
+  const paths = stateRoot('lifecycle-nolock');
+  const state = await daemonState(paths);
+  assert.equal(state.diagnosis.kind, 'stopped');
+  assert.match(describeDaemon(state, paths.lockFile), /eyes-on daemon start/);
 });

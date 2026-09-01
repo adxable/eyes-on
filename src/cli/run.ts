@@ -1,4 +1,3 @@
-import { Paths } from '../core/paths.js';
 import { classify } from '../core/guard.js';
 import { parseArgs, parseArgsLenient, flagString, flagBool, resolveFormat, type ParsedArgs } from './args.js';
 import {
@@ -12,7 +11,7 @@ import {
   type Writers,
 } from './output.js';
 import { COMMANDS, findCommand, implementedCommands, plannedCommands } from './commands.js';
-import type { Context } from './context.js';
+import { pathsAt, type Context } from './context.js';
 import { initCommand } from './init.js';
 import { doctorCommand } from './doctor.js';
 import { statusCommand } from './status.js';
@@ -136,7 +135,7 @@ function initialFormat(argv: readonly string[]): Format {
 
 function buildContext(args: ParsedArgs, format: Format, writers: Writers): Context {
   const root = flagString(args, 'root');
-  const paths = root ? Paths.withRoot(root) : Paths.fromEnv();
+  const paths = pathsAt(root);
   const cwd = process.cwd();
   return { args, paths, format, writers, cwd, env: process.env, guard: classify({ env: process.env, cwd }) };
 }

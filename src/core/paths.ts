@@ -1,21 +1,90 @@
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { PRODUCT_NAME } from './version.js';
+
+/** The no-mistakes state root this machine uses: NM_HOME, else ~/.no-mistakes. */
+export function foreignStateRoot(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.NM_HOME;
+  return override && override.length > 0 ? resolve(override) : join(homedir(), '.no-mistakes');
+}
+
+/**
+ * The physical spelling of a path that need not exist yet: the deepest existing
+ * ancestor is resolved through its symlinks and the remainder appended. A
+ * containment test on lexical paths alone can be walked around with a symlink,
+ * and one that requires the path to exist cannot answer before `init` creates
+ * it - both matter here, because the answer decides whether anything is written
+ * at all.
+ */
+export function physicalPath(path: string): string {
+  const absolute = resolve(path);
+  const tail: string[] = [];
+  let current = absolute;
+  for (;;) {
+    try {
+      return join(realpathSync(current), ...tail);
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) return absolute;
+      tail.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/** True when `candidate` is `root` itself or lies anywhere beneath it. */
+export function isInsideStateRoot(candidate: string, root: string): boolean {
+  const inner = physicalPath(candidate);
+  const outer = physicalPath(root);
+  return inner === outer || inner.startsWith(outer.endsWith(sep) ? outer : `${outer}${sep}`);
+}
+
+/**
+ * A state root that would put eyes-on's own writes inside somebody else's.
+ *
+ * The first hard prohibition of this product is that it writes nothing under
+ * `~/.no-mistakes/**`, and every file eyes-on writes lives under its state
+ * root - so a root nested there breaks the prohibition on the next write,
+ * whatever the file is called. Resolving the root is where it is refused,
+ * because that happens before any command can act.
+ */
+export class ForeignStateRootError extends Error {
+  readonly help: string[];
+  constructor(root: string, foreignRoot: string) {
+    super(
+      `the eyes-on state root ${root} is inside the no-mistakes state root ${foreignRoot}, and eyes-on never writes anything under it`,
+    );
+    this.name = 'ForeignStateRootError';
+    this.help = [
+      'Set EYES_HOME to a directory outside the no-mistakes state root, for example `EYES_HOME=~/.eyes-on`',
+      'Leave EYES_HOME unset to use the default root ~/.eyes-on',
+    ];
+  }
+}
 
 /**
  * Filesystem layout of the eyes-on state root (report Appendix C.2).
  *
- * The root defaults to ~/.eyes-on and is overridden by EYES_HOME. Under the
- * test runner the default root is refused outright: the first test that ran
- * against ~/.eyes-on would clobber the captain's ledger. no-mistakes learned
- * the same lesson (internal/paths/paths.go:19-30) and we copy the guard rather
- * than the mistake.
+ * The root defaults to ~/.eyes-on and is overridden by EYES_HOME. Two roots are
+ * refused rather than used, both at construction so no command can proceed to
+ * write into one:
+ *
+ *   - the default root under the test runner, because the first test that ran
+ *     against ~/.eyes-on would clobber the captain's ledger. no-mistakes learned
+ *     the same lesson (internal/paths/paths.go:19-30) and we copy the guard
+ *     rather than the mistake;
+ *   - any root inside the no-mistakes state root, which is the product's first
+ *     hard prohibition and not a preference.
  */
 export class Paths {
   readonly root: string;
 
-  private constructor(root: string) {
+  private constructor(root: string, env: NodeJS.ProcessEnv) {
+    const foreign = foreignStateRoot(env);
+    if (isInsideStateRoot(root, foreign)) {
+      throw new ForeignStateRootError(root, foreign);
+    }
     this.root = root;
   }
 
@@ -24,19 +93,19 @@ export class Paths {
   static fromEnv(env: NodeJS.ProcessEnv = process.env): Paths {
     const override = env.EYES_HOME;
     if (override && override.length > 0) {
-      return new Paths(resolve(override));
+      return new Paths(resolve(override), env);
     }
     if (env.NODE_TEST_CONTEXT && env.EYES_ON_ALLOW_DEFAULT_ROOT_IN_TESTS !== '1') {
       throw new Error(
         'EYES_HOME must be set under the test runner so tests cannot touch the real eyes-on state root',
       );
     }
-    return new Paths(join(homedir(), `.${PRODUCT_NAME}`));
+    return new Paths(join(homedir(), `.${PRODUCT_NAME}`), env);
   }
 
   /** Root at an explicit directory (daemon run --root, tests). */
-  static withRoot(root: string): Paths {
-    return new Paths(resolve(root));
+  static withRoot(root: string, env: NodeJS.ProcessEnv = process.env): Paths {
+    return new Paths(resolve(root), env);
   }
 
   get configFile(): string {

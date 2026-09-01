@@ -10,7 +10,7 @@ import { call } from '../ipc/client.js';
 import { METHODS, type RegisterRepoResult } from '../ipc/protocol.js';
 import { installSkill, skillRoot } from '../skill/install.js';
 import { installPostCommitHook, inspectPostCommitHook, type HookResult } from '../git/hook.js';
-import { installService, inspectService, serviceManagerBypassed, uninstallService } from '../daemon/service.js';
+import { installService, serviceManagerBypassed, uninstallService } from '../daemon/service.js';
 import { mirrorSizeBytes } from '../git/mirror.js';
 import { loadConfig } from '../core/config.js';
 
@@ -134,13 +134,25 @@ export async function initCommand(context: Context): Promise<number> {
     ],
   };
 
-  emitDoc(context.writers, context.format, doc, renderMarkdown(doc, context));
+  emitDoc(context.writers, context.format, doc, () => renderMarkdown(doc, clone, service, hook));
   return 0;
 }
 
-function renderMarkdown(doc: ToonObject, context: Context): string {
-  const service = inspectService(context.paths);
-  const hookStatus = inspectPostCommitHook(context.cwd);
+/**
+ * Only the human rendering pays for this, and only for what `doc` cannot
+ * already answer: the installed service is the result `installService` just
+ * returned, and the hook is inspected once - and only when `--watch` did not
+ * already install one, so the clone is read at most once per init.
+ */
+function renderMarkdown(
+  doc: ToonObject,
+  clone: string,
+  service: { installed: boolean; label: string },
+  hook: HookResult | null,
+): string {
+  // Every action `installPostCommitHook` can return leaves the eyes-on hook in
+  // place, so a hook this run installed needs no second look at the clone.
+  const hookManaged = hook !== null || inspectPostCommitHook(clone).managed;
   const lines = [
     'eyes-on is set up for this repository.',
     '',
@@ -149,9 +161,9 @@ function renderMarkdown(doc: ToonObject, context: Context): string {
     `  state root   ${String(doc.state_root)}`,
     `  mirror       ${String(doc.mirror)} (${String(doc.mirror_refs)} refs, ${formatBytes(Number(doc.mirror_bytes))})`,
     `  daemon       ${String(doc.daemon)}${doc.daemon_pid ? ` (pid ${String(doc.daemon_pid)})` : ''}`,
-    `  service      ${service.supported && service.installed ? service.label : String(doc.service_note || 'not installed')}`,
+    `  service      ${service.installed ? service.label : String(doc.service_note || 'not installed')}`,
     `  skill        /eyes-on installed for this user`,
-    `  post-commit  ${hookStatus.managed ? 'installed' : String(doc.hook)}`,
+    `  post-commit  ${hookManaged ? 'installed' : String(doc.hook)}`,
     '',
     'Assess a change before it is merged: `eyes-on check` (stage 1).',
     'See what is available and what is degraded: `eyes-on doctor`.',

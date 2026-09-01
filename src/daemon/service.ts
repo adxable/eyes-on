@@ -241,18 +241,25 @@ export type LabelRead = { ok: true; label: string | null } | { ok: false; reason
  * file" and "this file names no job" are different facts and only the first is
  * worth a word from `doctor`: `-lint` answers whether the file is a property
  * list, `-extract` answers whether it declares a label. `-extract` alone cannot
- * tell them apart - it exits non-zero for both.
+ * tell them apart - it exits non-zero for both - so `-lint` runs to explain a
+ * non-zero extract and only then. `doctor` reads every file in
+ * ~/Library/LaunchAgents, and a declared label is the common case there, so the
+ * question that usually answers itself is asked first.
  */
 export function readPlistLabelFile(file: string): LabelRead {
+  const extracted = runPlutil(['-extract', 'Label', 'raw', '-o', '-', '--', file]);
+  if (typeof extracted !== 'string' && extracted.status === 0) {
+    const label = extracted.stdout.trim();
+    return { ok: true, label: label.length > 0 ? label : null };
+  }
   const lint = runPlutil(['-lint', '--', file]);
   if (typeof lint === 'string') return { ok: false, reason: lint };
   if (lint.status !== 0) {
     return { ok: false, reason: plutilMessage(lint, `plutil -lint exited ${lint.status}`) };
   }
-  const extracted = runPlutil(['-extract', 'Label', 'raw', '-o', '-', '--', file]);
-  if (typeof extracted === 'string' || extracted.status !== 0) return { ok: true, label: null };
-  const label = extracted.stdout.trim();
-  return { ok: true, label: label.length > 0 ? label : null };
+  // A property list that reads cleanly and declares no `Label` names no job, so
+  // it can collide with nothing.
+  return { ok: true, label: null };
 }
 
 /** The `Label` a property list declares, or null when it declares none. */

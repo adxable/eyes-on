@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { run as runCli } from '../src/cli/run.js';
 import { EXIT_OK, EXIT_USAGE, type Writers } from '../src/cli/output.js';
 import {
@@ -112,6 +112,70 @@ test('acceptance: a full session leaves a foreign state root untouched', async (
   }
 
   assert.deepEqual(newerThan(nmHome, marker), [], 'eyes-on wrote into the no-mistakes state root');
+});
+
+/** Every path under dir, relative and sorted, so "nothing was written" can be
+ *  asserted as an equality rather than as an absence of warnings. */
+function inventory(dir: string): string[] {
+  const found: string[] = [];
+  const walk = (current: string, prefix: string): void => {
+    let entries;
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      found.push(relative);
+      if (entry.isDirectory()) walk(join(current, entry.name), relative);
+    }
+  };
+  walk(dir, '');
+  return found;
+}
+
+/**
+ * The first hard prohibition, enforced rather than described.
+ *
+ * Every file eyes-on writes lives under its state root, so a root nested
+ * anywhere inside the no-mistakes home puts config, database, mirrors, logs and
+ * socket under `~/.no-mistakes/**` at once. The refusal therefore belongs where
+ * the root is resolved, before any command can act on it - and what this
+ * asserts is that nothing was written, not that a warning was printed.
+ */
+test('acceptance: a state root inside the no-mistakes home is refused before anything is written', async () => {
+  const repo = tempRepo('coex-nested');
+  const nmHome = tempDir('coex-nested-nm');
+  mkdirSync(join(nmHome, 'repos', 'abc.git'), { recursive: true });
+  writeFileSync(join(nmHome, 'state.sqlite'), 'not a real database');
+  const before = inventory(nmHome);
+
+  const nested = join(nmHome, 'eyes-on');
+  const env = {
+    EYES_HOME: nested,
+    EYES_ON_SKILL_ROOT: tempDir('coex-nested-skills'),
+    EYES_ON_SKIP_SERVICE_MANAGER: '1',
+    NM_HOME: nmHome,
+  };
+
+  for (const argv of [
+    ['init'],
+    ['init', '--watch'],
+    ['doctor'],
+    ['status'],
+    ['daemon', 'start'],
+    ['daemon', 'status'],
+    ['daemon', 'run', '--root', join(nmHome, 'deeper', 'still', 'eyes-on')],
+  ]) {
+    const result = await cli(argv, { cwd: repo.path, env });
+    assert.equal(result.code, EXIT_USAGE, `eyes-on ${argv.join(' ')} must be refused`);
+    assert.match(result.err, /is inside the no-mistakes state root/);
+    assert.match(result.err, /help: Set EYES_HOME/, 'a refusal must say how to pick a different root');
+  }
+
+  assert.equal(existsSync(nested), false, 'the refused state root must not exist');
+  assert.deepEqual(inventory(nmHome), before, 'eyes-on wrote into the no-mistakes state root');
 });
 
 test('acceptance: the working clone is byte-identical before and after', async () => {

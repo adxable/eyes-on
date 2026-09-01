@@ -2,7 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Paths, STATE_SUBDIRS } from '../core/paths.js';
 import { loadConfig } from '../core/config.js';
-import { RotatingLog } from '../core/logstore.js';
+import { boundCaptureFile, RotatingLog, type LogPolicy } from '../core/logstore.js';
 import { repoID as computeRepoID, canonicalPath } from '../core/repoid.js';
 import { Database, findRepoByPath, listRepos, upsertRepo } from '../db/db.js';
 import { defaultBranch } from '../git/git.js';
@@ -42,6 +42,7 @@ import { version } from '../core/version.js';
 export class Daemon {
   private readonly paths: Paths;
   private readonly log: RotatingLog;
+  private readonly logPolicy: LogPolicy;
   private lock: SingletonLock | null = null;
   private db: Database | null = null;
   private server: RpcServer | null = null;
@@ -51,10 +52,8 @@ export class Daemon {
   constructor(paths: Paths) {
     this.paths = paths;
     const config = loadConfig(paths);
-    this.log = new RotatingLog(paths.daemonLog, {
-      maxBytes: config.logs.max_bytes,
-      backups: config.logs.backups,
-    });
+    this.logPolicy = { maxBytes: config.logs.max_bytes, backups: config.logs.backups };
+    this.log = new RotatingLog(paths.daemonLog, this.logPolicy);
   }
 
   /** Creates the directory layout from Appendix C.2. Safe to repeat. */
@@ -67,6 +66,13 @@ export class Daemon {
 
   async start(): Promise<void> {
     Daemon.ensureStateRoot(this.paths);
+    // The service manager holds these two open for the life of the job and
+    // appends to them without a bound of its own. Every start-up passes here,
+    // including each restart of a daemon that dies on start-up, which is the
+    // only case that can fill them.
+    for (const name of ['service.out.log', 'service.err.log']) {
+      boundCaptureFile(join(this.paths.logsDir, name), this.logPolicy);
+    }
     // Lock first. Everything below this line assumes we are the only daemon.
     this.lock = SingletonLock.acquire(this.paths.lockFile);
     this.db = Database.open(this.paths.db);

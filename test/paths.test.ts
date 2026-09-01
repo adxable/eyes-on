@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { Paths } from '../src/core/paths.js';
+import { ForeignStateRootError, Paths, isInsideStateRoot } from '../src/core/paths.js';
 
 /**
  * The layout is Appendix C.2 and it is asserted literally, because every later
@@ -45,5 +45,39 @@ test('nothing in the layout escapes the root', () => {
   const paths = Paths.withRoot(root);
   for (const path of [paths.configFile, paths.db, paths.socket, paths.lockFile, paths.mirrorDir('x'), paths.reportFile('y')]) {
     assert.ok(path.startsWith(join(root, '')), `${path} escapes the state root`);
+  }
+});
+
+/**
+ * Containment, not a comparison of two named files: `~/.no-mistakes/eyes-on`
+ * would put every eyes-on write - config, database, mirrors, logs, socket -
+ * under a root this product may never write into, whatever the files are
+ * called and however deep the nesting is.
+ */
+test('a state root inside the no-mistakes state root is refused, at any depth', () => {
+  const nmHome = '/tmp/eyes-on-foreign-home';
+  const env = { NM_HOME: nmHome } as NodeJS.ProcessEnv;
+  for (const root of [nmHome, `${nmHome}/eyes-on`, `${nmHome}/a/b/c/eyes-on`, `${nmHome}/./eyes-on`]) {
+    assert.throws(() => Paths.withRoot(root, env), ForeignStateRootError, `${root} must be refused`);
+  }
+  assert.throws(
+    () => Paths.fromEnv({ NM_HOME: nmHome, EYES_HOME: `${nmHome}/eyes-on` } as NodeJS.ProcessEnv),
+    /never writes anything under it/,
+  );
+
+  // A sibling, and a root whose path merely starts with the same characters,
+  // are both fine: containment is by path component, not by prefix.
+  assert.doesNotThrow(() => Paths.withRoot('/tmp/eyes-on-root', env));
+  assert.doesNotThrow(() => Paths.withRoot(`${nmHome}-elsewhere/eyes-on`, env));
+  assert.equal(isInsideStateRoot(`${nmHome}-elsewhere`, nmHome), false);
+});
+
+test('the refusal says how to choose a different root', () => {
+  try {
+    Paths.withRoot('/tmp/eyes-on-foreign-home/eyes-on', { NM_HOME: '/tmp/eyes-on-foreign-home' } as NodeJS.ProcessEnv);
+    assert.fail('the nested root must be refused');
+  } catch (error) {
+    assert.ok(error instanceof ForeignStateRootError);
+    assert.ok(error.help.some((line) => line.includes('EYES_HOME')), 'the help must name the variable to change');
   }
 });

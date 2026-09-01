@@ -1,4 +1,14 @@
-import { closeSync, existsSync, mkdirSync, openSync, renameSync, statSync, unlinkSync, writeSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  statSync,
+  truncateSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs';
 import { dirname } from 'node:path';
 
 /**
@@ -13,6 +23,15 @@ import { dirname } from 'node:path';
  * Rotation renames the current file into the `.1 .. .N` chain and opens a fresh
  * one. Backups are numbered newest-first, so `daemon.log.1` is always the most
  * recent retired segment.
+ *
+ * The same bound has to reach three files this class does not own: the two
+ * capture files a LaunchAgent opens (`logs/service.out.log`,
+ * `logs/service.err.log`) and `logs/daemon.out.log` from the spawn fallback.
+ * They carry whatever the daemon writes before its own logging exists - a stack
+ * trace on every restart of a daemon that dies at start-up, with nothing to
+ * truncate them - so `boundCaptureFile` and `rotateFileIfOversized` below apply
+ * the policy to them too. Which of the two applies depends on who holds the
+ * file open, and that difference is the whole reason there are two.
  */
 export interface LogPolicy {
   maxBytes: number;
@@ -57,6 +76,12 @@ export class RotatingLog {
     this.write(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }));
   }
 
+  /** Retires the current file without writing anything, for a caller bounding
+   *  a log it is about to hand to another process. */
+  rotateNow(): void {
+    this.rotate();
+  }
+
   private rotate(): void {
     if (this.fd !== null) {
       closeSync(this.fd);
@@ -84,4 +109,47 @@ export class RotatingLog {
       this.fd = null;
     }
   }
+}
+
+/**
+ * Bounds a file another process holds open, by truncating it in place.
+ *
+ * launchd opens `StandardOutPath` and `StandardErrorPath` itself and keeps the
+ * descriptor for the life of the job, so renaming the file would leave the job
+ * writing into the renamed inode and the bound would never bite again. A
+ * descriptor opened `O_APPEND` follows the truncation - the next write lands at
+ * offset 0 - so truncating is the form of the policy that actually holds here.
+ * The cost is that the oldest capture is dropped rather than retired, which is
+ * the right trade for a file whose content is a repeated crash trace.
+ *
+ * Returns true when the file was over the bound and has been emptied.
+ */
+export function boundCaptureFile(path: string, policy: LogPolicy = DEFAULT_LOG_POLICY): boolean {
+  try {
+    if (statSync(path).size <= policy.maxBytes) return false;
+    truncateSync(path, 0);
+    return true;
+  } catch {
+    // A capture file that does not exist yet, or that this process may not
+    // touch, is not a reason to fail the daemon it belongs to.
+    return false;
+  }
+}
+
+/**
+ * Bounds a file this process is about to open itself, by retiring it into the
+ * same `.1 .. .N` chain `RotatingLog` uses. Unlike `boundCaptureFile` this
+ * keeps the content, which is possible precisely because nothing holds the file
+ * open across the rename.
+ */
+export function rotateFileIfOversized(path: string, policy: LogPolicy = DEFAULT_LOG_POLICY): boolean {
+  try {
+    if (statSync(path).size <= policy.maxBytes) return false;
+  } catch {
+    return false;
+  }
+  const log = new RotatingLog(path, policy);
+  log.rotateNow();
+  log.close();
+  return true;
 }

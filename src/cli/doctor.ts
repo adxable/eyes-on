@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Context } from './context.js';
@@ -8,11 +8,12 @@ import type { ToonObject, ToonValue } from './toon.js';
 import { gitVersion, toplevel } from '../git/git.js';
 import { canonicalPath, repoID } from '../core/repoid.js';
 import { inspectMirror, mirrorSizeBytes } from '../git/mirror.js';
-import { daemonState, daemonStatus } from '../daemon/lifecycle.js';
-import { inspectService, launchdPlistPath, readPlistLabelFile } from '../daemon/service.js';
+import { daemonState, daemonStatus, describeDaemon } from '../daemon/lifecycle.js';
+import { inspectService, launchdPlistPath, readPlistLabelFile, type ServiceStatus } from '../daemon/service.js';
 import { inspectSkill, skillRoot } from '../skill/install.js';
 import { inspectPostCommitHook } from '../git/hook.js';
 import { Database } from '../db/db.js';
+import { foreignStateRoot, isInsideStateRoot } from '../core/paths.js';
 
 /**
  * `eyes-on doctor` (report section 2.2, R3, R8, R9, R11).
@@ -107,11 +108,7 @@ export async function doctorCommand(context: Context): Promise<number> {
   rows.push({
     check: 'daemon',
     status: state.running ? 'ok' : 'warn',
-    detail: state.running
-      ? `running (pid ${state.pid}, up ${state.uptimeSeconds}s)`
-      : state.lockHolder
-        ? `not answering, but the singleton lock is held by pid ${state.lockHolder.pid}`
-        : 'stopped (run `eyes-on daemon start`)',
+    detail: describeDaemon(state, context.paths.lockFile),
   });
 
   const service = inspectService(context.paths);
@@ -190,7 +187,7 @@ export async function doctorCommand(context: Context): Promise<number> {
   });
 
   // 6. Coexistence with no-mistakes.
-  const coexistence = inspectCoexistence(context);
+  const coexistence = inspectCoexistence(context, service);
   for (const row of coexistence.rows) rows.push(row);
   degradations.push(...coexistence.degradations);
 
@@ -218,12 +215,10 @@ interface Coexistence {
  * a read: nothing under a foreign state root is written, which is the stage 0
  * acceptance test (report section 4).
  */
-function inspectCoexistence(context: Context): Coexistence {
+function inspectCoexistence(context: Context, own: ServiceStatus): Coexistence {
   const rows: Row[] = [];
   const degradations: string[] = [];
-  const nmHome = context.env.NM_HOME && context.env.NM_HOME.length > 0
-    ? context.env.NM_HOME
-    : join(homedir(), '.no-mistakes');
+  const nmHome = foreignStateRoot(context.env);
   const nmPresent = existsSync(nmHome);
 
   rows.push({
@@ -242,7 +237,6 @@ function inspectCoexistence(context: Context): Coexistence {
   // Service labels. Both tools scope their label by a hash of their own state
   // root, so a collision is impossible by construction (report U4, K15) - but
   // saying so is worth less than showing the two labels side by side.
-  const own = inspectService(context.paths);
   const scan = scanLaunchAgents(join(homedir(), 'Library', 'LaunchAgents'));
   const related = scan.agents.filter(
     (agent) => agent.label.includes('no-mistakes') || agent.label.includes('eyes-on'),
@@ -277,25 +271,21 @@ function inspectCoexistence(context: Context): Coexistence {
     rows.push(row);
   }
 
-  // Socket and database paths must be distinct files. They are, by living under
-  // different roots - but a misconfigured EYES_HOME could point at the wrong one.
-  const nmSocket = join(nmHome, 'socket');
-  const sameSocket = existsSync(nmSocket) && sameFile(nmSocket, context.paths.socket);
-  const nmDb = join(nmHome, 'state.sqlite');
-  const sameDb = existsSync(nmDb) && sameFile(nmDb, context.paths.db);
-  if (sameSocket || sameDb) {
-    rows.push({
-      check: 'state isolation',
-      status: 'missing',
-      detail: `EYES_HOME (${context.paths.root}) resolves onto the no-mistakes state root - eyes-on refuses to share it`,
-    });
-  } else {
-    rows.push({
-      check: 'state isolation',
-      status: 'ok',
-      detail: `separate root, socket, database and lock from ${nmHome}`,
-    });
-  }
+  // Every write eyes-on makes lands under its state root, so isolation is a
+  // question about one directory rather than about named files inside it: a
+  // root nested anywhere under the foreign home puts config, database, mirrors,
+  // logs and socket under `~/.no-mistakes/**` at once. Resolving the root
+  // already refuses that (Paths), so this row reports a condition the CLI could
+  // not have started with - it is reachable when NM_HOME changes, or when the
+  // foreign root appears above an existing eyes-on root afterwards.
+  const nested = isInsideStateRoot(context.paths.root, nmHome);
+  rows.push({
+    check: 'state isolation',
+    status: nested ? 'missing' : 'ok',
+    detail: nested
+      ? `EYES_HOME (${context.paths.root}) is inside the no-mistakes state root ${nmHome} - eyes-on refuses to run with it and writes nothing there`
+      : `separate root, socket, database and lock from ${nmHome}`,
+  });
 
   if (context.guard.insideGate) {
     rows.push({
@@ -406,16 +396,6 @@ function serviceJobDetail(service: ReturnType<typeof inspectService>): string {
   if (!service.loaded) return '';
   if (service.running) return `, loaded and running${service.pid === null ? '' : ` (pid ${service.pid})`}`;
   return ', loaded but not running - run `eyes-on init` to start it';
-}
-
-function sameFile(a: string, b: string): boolean {
-  try {
-    const left = statSync(a);
-    const right = statSync(b);
-    return left.dev === right.dev && left.ino === right.ino;
-  } catch {
-    return false;
-  }
 }
 
 const SYMBOLS: Record<Level, string> = { ok: 'ok  ', warn: 'warn', missing: 'MISS' };

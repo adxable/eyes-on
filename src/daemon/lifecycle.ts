@@ -4,8 +4,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { Paths } from '../core/paths.js';
+import { loadConfig } from '../core/config.js';
+import { rotateFileIfOversized } from '../core/logstore.js';
 import { Daemon } from './daemon.js';
-import { SingletonLock, type LockHolder } from './lock.js';
+import { inspectLock, processAlive, type LockInspection } from './lock.js';
 import { startManagedJob, type ManagedJobStart } from './service.js';
 import { call, DaemonUnreachableError } from '../ipc/client.js';
 import { METHODS, type HealthResult, type StatusResult } from '../ipc/protocol.js';
@@ -20,15 +22,32 @@ import { probeSocket } from '../ipc/server.js';
  * file is a diagnostic, not a verdict.
  */
 
+/**
+ * What the daemon is doing, in the terms a message may use.
+ *
+ * `wedged` and `stale-lock` are the two cases the lock can distinguish and the
+ * two that used to be reported as each other: a live process holding the lock
+ * while the socket stays silent is a daemon that needs stopping, and a readable
+ * holder record is a lock nobody holds with a dead process's pid still in it.
+ */
+export type DaemonDiagnosis =
+  | { kind: 'running'; pid: number | null }
+  | { kind: 'wedged'; pid: number | null }
+  | { kind: 'stale-lock'; pid: number }
+  | { kind: 'lock-unreadable'; detail: string }
+  | { kind: 'stopped' };
+
 export interface DaemonState {
   running: boolean;
   pid: number | null;
   root: string;
   version: string | null;
   uptimeSeconds: number | null;
-  /** Lock holder when the daemon is not answering but the lock is taken - the
-   *  shape of a wedged process, worth telling the user about. */
-  lockHolder: LockHolder | null;
+  /** The lock as it reads right now, or null while the daemon answers - a
+   *  daemon that responds holds its own lock and nothing needs inspecting. */
+  lock: LockInspection | null;
+  /** The condition actually detected, which is what every message renders. */
+  diagnosis: DaemonDiagnosis;
   socketPresent: boolean;
 }
 
@@ -42,20 +61,64 @@ export async function daemonState(paths: Paths): Promise<DaemonState> {
       root: health.root,
       version: health.version,
       uptimeSeconds: Math.floor((Date.now() - health.startedAt) / 1000),
-      lockHolder: null,
+      lock: null,
+      diagnosis: { kind: 'running', pid: health.pid },
       socketPresent,
     };
   } catch (error) {
     if (!(error instanceof DaemonUnreachableError)) throw error;
+    const pid = readPidFile(paths);
+    const lock = inspectLock(paths.lockFile);
     return {
       running: false,
-      pid: readPidFile(paths),
+      pid,
       root: paths.root,
       version: null,
       uptimeSeconds: null,
-      lockHolder: SingletonLock.readHolder(paths.lockFile),
+      lock,
+      diagnosis: diagnose(lock, pid),
       socketPresent,
     };
+  }
+}
+
+/** Turns a lock reading plus the pid file into the one condition to report. */
+function diagnose(lock: LockInspection, pidFilePid: number | null): DaemonDiagnosis {
+  switch (lock.state) {
+    case 'held': {
+      // Somebody holds the lock while the socket stays silent. The pid comes
+      // from the record the lock itself cannot give us: `daemon.pid`, verified
+      // alive so a recycled or stale number is never presented as the holder.
+      const named = lock.liveHolder?.pid ?? (pidFilePid !== null && processAlive(pidFilePid) ? pidFilePid : null);
+      return { kind: 'wedged', pid: named };
+    }
+    case 'stale':
+      return { kind: 'stale-lock', pid: lock.staleHolder?.pid ?? 0 };
+    case 'unreadable':
+      return { kind: 'lock-unreadable', detail: lock.detail ?? 'the lock file could not be read' };
+    case 'free':
+      return { kind: 'stopped' };
+  }
+}
+
+/**
+ * The one sentence every surface uses for a daemon state, so `doctor` and
+ * `daemon status` can never describe the same machine differently.
+ */
+export function describeDaemon(state: DaemonState, lockPath: string): string {
+  switch (state.diagnosis.kind) {
+    case 'running':
+      return `running (pid ${state.diagnosis.pid}, up ${state.uptimeSeconds}s)`;
+    case 'wedged':
+      return state.diagnosis.pid === null
+        ? `not answering, and ${lockPath} is held by a process this run could not identify - stop it before starting another daemon`
+        : `not answering, but pid ${state.diagnosis.pid} is alive and holds ${lockPath} - stop it with \`eyes-on daemon stop\``;
+    case 'stale-lock':
+      return `stopped (${lockPath} is free; a record left by pid ${state.diagnosis.pid} remains in it)`;
+    case 'lock-unreadable':
+      return `stopped (${lockPath} could not be read: ${state.diagnosis.detail})`;
+    case 'stopped':
+      return 'stopped (run `eyes-on daemon start`)';
   }
 }
 
@@ -158,7 +221,12 @@ export async function startDaemon(paths: Paths, options: StartDaemonOptions = {}
     };
   }
 
-  const logFd = openSync(join(paths.logsDir, 'daemon.out.log'), 'a');
+  // Whatever the spawned daemon writes before its own logging exists lands
+  // here, so it carries the same bound as every other log in the root.
+  const spawnLog = join(paths.logsDir, 'daemon.out.log');
+  const logs = loadConfig(paths).logs;
+  rotateFileIfOversized(spawnLog, { maxBytes: logs.max_bytes, backups: logs.backups });
+  const logFd = openSync(spawnLog, 'a');
   const child = spawn(process.execPath, [cliEntryPath(), 'daemon', 'run', '--root', paths.root], {
     cwd: paths.root,
     detached: true,

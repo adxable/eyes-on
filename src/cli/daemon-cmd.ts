@@ -1,11 +1,10 @@
-import { Paths } from '../core/paths.js';
-import { assertMayMutate, type Context } from './context.js';
+import { assertMayMutate, pathsAt, type Context } from './context.js';
 import { flagString } from './args.js';
 import { emitDoc, EXIT_USAGE, progress, UserFacingError } from './output.js';
 import type { ToonObject } from './toon.js';
 import { runDaemon } from '../daemon/daemon.js';
 import { LockHeldError } from '../daemon/lock.js';
-import { daemonState, daemonStatus, restartDaemon, startDaemon, stopDaemon } from '../daemon/lifecycle.js';
+import { daemonState, daemonStatus, describeDaemon, restartDaemon, startDaemon, stopDaemon } from '../daemon/lifecycle.js';
 import { call } from '../ipc/client.js';
 import { METHODS, type NotifyCommitResult } from '../ipc/protocol.js';
 import { toplevel } from '../git/git.js';
@@ -50,7 +49,7 @@ export async function daemonCommand(context: Context): Promise<number> {
 
 async function daemonRun(context: Context): Promise<number> {
   const root = flagString(context.args, 'root');
-  const paths = root ? Paths.withRoot(root) : context.paths;
+  const paths = root ? pathsAt(root) : context.paths;
   progress(context.writers, `eyes-on: daemon starting on ${paths.root}`);
   try {
     await runDaemon(paths);
@@ -121,7 +120,15 @@ async function daemonStatusCommand(context: Context): Promise<number> {
     version: state.version ?? '',
     uptime_seconds: state.uptimeSeconds,
     socket: context.paths.socket,
-    lock_holder_pid: state.lockHolder?.pid ?? null,
+    lock: context.paths.lockFile,
+    // What the lock actually says, in the same words `doctor` uses. A pid
+    // appears under `lock_holder_pid` only when a live process holds the lock
+    // while the socket stays silent; a record left by a process that has since
+    // died is reported as the stale lock it is, and never as a holder.
+    lock_state: state.diagnosis.kind,
+    lock_holder_pid: state.diagnosis.kind === 'wedged' ? state.diagnosis.pid : null,
+    stale_lock_pid: state.diagnosis.kind === 'stale-lock' ? state.diagnosis.pid : null,
+    detail: describeDaemon(state, context.paths.lockFile),
     repos: (status?.repos ?? []).map((repo) => ({
       id: repo.id,
       path: repo.workingPath,
@@ -130,9 +137,16 @@ async function daemonStatusCommand(context: Context): Promise<number> {
     })),
     help: state.running
       ? ['Stop it with `eyes-on daemon stop`']
-      : ['Start it with `eyes-on daemon start`'],
+      : state.diagnosis.kind === 'wedged'
+        ? ['Stop the process holding the lock with `eyes-on daemon stop` before starting another daemon']
+        : ['Start it with `eyes-on daemon start`'],
   };
-  emitDoc(context.writers, context.format, doc, `eyes-on daemon ${String(doc.daemon)}${state.pid ? ` (pid ${state.pid})` : ''}`);
+  emitDoc(
+    context.writers,
+    context.format,
+    doc,
+    `eyes-on daemon ${describeDaemon(state, context.paths.lockFile)}`,
+  );
   return 0;
 }
 

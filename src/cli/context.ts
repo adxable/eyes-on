@@ -1,4 +1,4 @@
-import { Paths } from '../core/paths.js';
+import { ForeignStateRootError, Paths } from '../core/paths.js';
 import { refusalHelp, type GuardVerdict } from '../core/guard.js';
 import { EXIT_USAGE, UserFacingError, type Format, type Writers } from './output.js';
 import { toplevel } from '../git/git.js';
@@ -14,6 +14,23 @@ export interface Context {
   cwd: string;
   env: NodeJS.ProcessEnv;
   guard: GuardVerdict;
+}
+
+/**
+ * Resolves the state root for a command, turning the two refusals `Paths` can
+ * raise into the `error:` plus `help:` shape every other failure leaves through.
+ * Every entry point that builds a `Paths` from user input goes through here, so
+ * a refused root is reported the same way whichever command asked for it.
+ */
+export function pathsAt(root: string | null, env: NodeJS.ProcessEnv = process.env): Paths {
+  try {
+    return root ? Paths.withRoot(root, env) : Paths.fromEnv(env);
+  } catch (error) {
+    if (error instanceof ForeignStateRootError) {
+      throw new UserFacingError(error.message, error.help, EXIT_USAGE);
+    }
+    throw error;
+  }
 }
 
 /**

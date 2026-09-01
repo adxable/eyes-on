@@ -53,13 +53,25 @@ export function progress(writers: Writers, message: string): void {
   writers.err(`${message}\n`);
 }
 
-export function emitDoc(writers: Writers, format: Format, doc: ToonObject, markdown?: string): void {
+/**
+ * The Markdown rendering is accepted as a thunk as well as a string, because a
+ * command whose human rendering costs something - re-reading a hook, asking the
+ * service manager - must not pay for it under `--format json`, where it is
+ * discarded unread.
+ */
+export function emitDoc(
+  writers: Writers,
+  format: Format,
+  doc: ToonObject,
+  markdown?: string | (() => string),
+): void {
   if (format === 'json') {
     writers.out(`${JSON.stringify(doc, null, 2)}\n`);
     return;
   }
   if (format === 'md' && markdown !== undefined) {
-    writers.out(markdown.endsWith('\n') ? markdown : `${markdown}\n`);
+    const rendered = typeof markdown === 'function' ? markdown() : markdown;
+    writers.out(rendered.endsWith('\n') ? rendered : `${rendered}\n`);
     return;
   }
   writers.out(encodeToon(doc));
