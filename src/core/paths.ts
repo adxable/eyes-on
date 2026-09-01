@@ -36,15 +36,23 @@ export function privateSocketDirName(): string {
  *  or other, since eyes-on creates it 0700 itself. */
 const SOCKET_DIR_MODE = 0o700;
 
-/** A socket directory that exists but is not ours to trust. */
+/**
+ * A socket directory that exists but is not ours to trust.
+ *
+ * Both remedies have to work from the state this is raised in, which is why
+ * there are two: a directory this user owns can be repaired in place, and one
+ * owned by somebody else cannot be touched at all - so the second remedy
+ * removes the need for the directory instead. A state root short enough to hold
+ * its own socket never consults this path.
+ */
 export class SocketDirectoryError extends Error {
   readonly help: string[];
   constructor(dir: string, reason: string) {
     super(`the directory eyes-on would put its daemon socket in, ${dir}, ${reason}`);
     this.name = 'SocketDirectoryError';
     this.help = [
-      `Remove or repair ${dir}: it must be a directory you own, with mode 0700`,
-      'Set EYES_HOME to a shorter path so the socket can live inside the state root instead',
+      `If ${dir} is yours, remove it or run \`chmod 700 ${dir}\`: eyes-on needs a directory owned by this user with mode 0700`,
+      `If it is not yours to change, set EYES_HOME to a state root of at most ${MAX_SOCKET_PATH_BYTES - '/socket'.length} bytes, which keeps the socket inside the state root and never uses this directory`,
     ];
   }
 }
@@ -225,12 +233,6 @@ export class Paths {
     }
     assertPrivateSocketDir(directory);
     return join(directory, file);
-  }
-
-  /** The directory the socket lives in. `RpcServer` creates it before binding,
-   *  which for a relocated socket has to happen with mode 0700. */
-  get socketDir(): string {
-    return dirname(this.socket);
   }
 
   /** True when the socket had to move out of the state root. `doctor` says so,

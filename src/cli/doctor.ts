@@ -8,12 +8,12 @@ import type { ToonObject, ToonValue } from './toon.js';
 import { gitVersion, toplevel } from '../git/git.js';
 import { canonicalPath, repoID } from '../core/repoid.js';
 import { inspectMirror, mirrorSizeBytes } from '../git/mirror.js';
-import { daemonState, daemonStatus, describeDaemon } from '../daemon/lifecycle.js';
+import { daemonState, daemonStatus, describeDaemon, type DaemonState } from '../daemon/lifecycle.js';
 import { inspectService, launchdPlistPath, readPlistLabelFile, type ServiceStatus } from '../daemon/service.js';
 import { inspectSkill, skillRoot } from '../skill/install.js';
 import { inspectPostCommitHook } from '../git/hook.js';
 import { Database } from '../db/db.js';
-import { foreignStateRoot } from '../core/paths.js';
+import { SocketDirectoryError, foreignStateRoot, type Paths } from '../core/paths.js';
 
 /**
  * `eyes-on doctor` (report section 2.2, R3, R8, R9, R11).
@@ -38,6 +38,18 @@ export interface Row {
   check: string;
   status: Level;
   detail: string;
+}
+
+/** The socket address, or the refusal that stands in for it. Every other read
+ *  of `paths.socket` in this report is behind this one. */
+function readSocketFault(paths: Paths): SocketDirectoryError | null {
+  try {
+    void paths.socket;
+    return null;
+  } catch (error) {
+    if (error instanceof SocketDirectoryError) return error;
+    throw error;
+  }
 }
 
 function which(binary: string): string | null {
@@ -104,21 +116,33 @@ export async function doctorCommand(context: Context): Promise<number> {
   }
 
   // 3. Daemon and service.
-  const state = await daemonState(context.paths);
-  rows.push({
-    check: 'daemon',
-    status: state.running ? 'ok' : 'warn',
-    detail: describeDaemon(state, context.paths.lockFile),
-  });
-
-  if (context.paths.socketIsOutsideRoot) {
-    // Not a fault, but never a surprise either: someone debugging a daemon has
-    // to be able to find the socket the layout says is in the state root.
+  // The socket address is resolved first and defensively. It is the one path
+  // in the report that can refuse to produce a value at all, and a doctor that
+  // aborts on the fault it exists to explain is worth nothing to whoever is
+  // reading it.
+  const socketFault = readSocketFault(context.paths);
+  let state: DaemonState | null = null;
+  if (socketFault) {
+    rows.push({ check: 'daemon', status: 'missing', detail: `not reachable: ${socketFault.message}` });
+    rows.push({ check: 'daemon socket', status: 'missing', detail: socketFault.help.join('; ') });
+    degradations.push(`${socketFault.message}: eyes-on cannot start or reach a daemon until that is resolved`);
+  } else {
+    state = await daemonState(context.paths);
     rows.push({
-      check: 'daemon socket',
-      status: 'ok',
-      detail: `${context.paths.socket} - outside the state root, in a private per-user directory, because <root>/socket is longer than a unix socket address may be`,
+      check: 'daemon',
+      status: state.running ? 'ok' : 'warn',
+      detail: describeDaemon(state, context.paths.lockFile),
     });
+
+    if (context.paths.socketIsOutsideRoot) {
+      // Not a fault, but never a surprise either: someone debugging a daemon has
+      // to be able to find the socket the layout says is in the state root.
+      rows.push({
+        check: 'daemon socket',
+        status: 'ok',
+        detail: `${context.paths.socket} - outside the state root, in a private per-user directory, because <root>/socket is longer than a unix socket address may be`,
+      });
+    }
   }
 
   const service = inspectService(context.paths);
@@ -135,7 +159,7 @@ export async function doctorCommand(context: Context): Promise<number> {
   // working tree is would throw and take the whole report with it.
   const top = git ? toplevel(context.cwd) : null;
   const clone = top ? canonicalPath(top) : null;
-  const status = state.running ? await daemonStatus(context.paths) : null;
+  const status = state?.running ? await daemonStatus(context.paths) : null;
   const known = clone ? (status?.repos ?? []).find((repo) => repo.workingPath === clone) : undefined;
   const id = known?.id ?? (clone ? repoID(clone) : null);
 

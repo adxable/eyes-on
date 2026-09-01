@@ -25,6 +25,7 @@ import { backtestCommand } from './backtest-cmd.js';
 import { exportPathInstructionsCommand } from './export-cmd.js';
 import { stubCommand } from './stubs.js';
 import { version, PRODUCT_NAME } from '../core/version.js';
+import { SocketDirectoryError } from '../core/paths.js';
 
 /**
  * The dispatcher.
@@ -128,6 +129,14 @@ export async function run(argv: readonly string[], writers: Writers = processWri
         'Install git and make sure it is on PATH',
         'Run `eyes-on doctor` to see what eyes-on can and cannot reach from here',
       ]);
+      return EXIT_ERROR;
+    }
+    // A socket directory eyes-on may not use is a condition of the machine, and
+    // its own two remedies are the only ones that work from it. Reporting it as
+    // a bug and pointing at `doctor` would be false twice over: `doctor` reads
+    // the same address and would fail identically.
+    if (error instanceof SocketDirectoryError) {
+      emitError(writers, format, error.message, error.help);
       return EXIT_ERROR;
     }
     // An unexpected failure is still reported in the contract's shape: an agent

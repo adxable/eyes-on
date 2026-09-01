@@ -8,13 +8,15 @@ import type { Paths } from '../core/paths.js';
 /**
  * Recording an assessment (report Appendix C.2).
  *
- * A check is identified by the repository, the two commits it spans and the
- * intent it was given, so re-running `check` on an unchanged head updates one
- * row instead of accumulating a row per invocation. The id is derived rather
- * than random for the same reason: stage 2's gate and stage 3's ledger both
- * have to find the assessment of a given head again, and a random id would
- * make that a lookup by timestamp - which is the kind of thing that works until
- * two runs land in the same second.
+ * A check is identified by the repository and the two commits it spans, so
+ * re-running `check` on an unchanged head updates one row instead of
+ * accumulating a row per invocation. The intent is recorded on that row rather
+ * than being part of its identity, so the last one given wins.
+ *
+ * The id is derived rather than random for the same reason: stage 2's gate and
+ * stage 3's ledger both have to find the assessment of a given head again, and
+ * a random id would make that a lookup by timestamp - which is the kind of
+ * thing that works until two runs land in the same second.
  */
 
 export function checkID(repoId: string, baseSHA: string, headSHA: string): string {

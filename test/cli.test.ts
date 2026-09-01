@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { userInfo } from 'node:os';
 import { run as runCli } from '../src/cli/run.js';
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, type Writers } from '../src/cli/output.js';
 import { COMMANDS } from '../src/cli/commands.js';
@@ -290,4 +291,64 @@ test('a daemon.lock that is not a usable lock file names the step that clears it
     !doc.help.some((line) => line === 'Start it with `eyes-on daemon start`'),
     'starting is not a remedy while the file is unreadable',
   );
+});
+
+
+/**
+ * A state root too deep for its own socket, with the per-user directory the
+ * socket would relocate into already taken by something eyes-on may not use.
+ *
+ * TMPDIR is short and private so the relocation lands inside it rather than in
+ * the shared `/tmp` fallback, and so the fixture never touches the directory a
+ * real daemon on this machine would use.
+ */
+function refusedSocketDirectory(): { env: Record<string, string>; cleanup: () => void } {
+  const shortTmp = mkdtempSync('/tmp/eo-');
+  // A plain file where the directory belongs: the cheapest hostile state this
+  // user can actually create, and the one `assertPrivateSocketDir` reports as
+  // "is not a directory".
+  writeFileSync(join(shortTmp, `eyes-on-${userInfo().uid}`), '');
+  const deepRoot = join(tempDir('deep-root'), 'a'.repeat(48), 'eyes-home');
+  return {
+    env: { ...sandbox(), EYES_HOME: deepRoot, TMPDIR: shortTmp },
+    cleanup: () => rmSync(shortTmp, { recursive: true, force: true }),
+  };
+}
+
+test('a socket directory eyes-on may not use is reported as itself, with remedies that work', async () => {
+  const fixture = refusedSocketDirectory();
+  try {
+    const result = await cli(['status'], { env: fixture.env });
+    assert.equal(result.code, EXIT_ERROR);
+    assert.match(result.err, /^error: the directory eyes-on would put its daemon socket in, .* is not a directory$/m);
+    // The remedies the refusal carries are the only ones that work from this
+    // state, so they must survive to the surface.
+    assert.match(result.err, /^help: .*chmod 700/m);
+    assert.match(result.err, /EYES_HOME/);
+    // Neither half of the generic sentence is true here: it is not a bug, and
+    // `doctor` reads the same address.
+    assert.doesNotMatch(result.err, /This is an eyes-on bug/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('doctor reports a refused socket directory instead of failing on it', async () => {
+  const fixture = refusedSocketDirectory();
+  try {
+    const result = await cli(['doctor', '--format', 'json'], { env: fixture.env });
+    const doc = JSON.parse(result.out) as { ok: boolean; checks: { check: string; status: string; detail: string }[] };
+    const socket = doc.checks.find((row) => row.check === 'daemon socket');
+    assert.ok(socket, 'doctor completed its report rather than aborting on the socket');
+    assert.equal(socket.status, 'missing');
+    assert.match(socket.detail, /chmod 700|EYES_HOME/);
+    assert.equal(doc.checks.find((row) => row.check === 'daemon')?.status, 'missing');
+    // The rest of the report still ran: the fault is one row, not the end of it.
+    assert.ok(doc.checks.some((row) => row.check === 'git'));
+    assert.ok(doc.checks.some((row) => row.check === 'state isolation'));
+    assert.equal(doc.ok, false);
+    assert.equal(result.code, EXIT_ERROR);
+  } finally {
+    fixture.cleanup();
+  }
 });
