@@ -19,8 +19,19 @@ the figures below, are the standing evidence for those properties:
 
 **Result 1 has no automated counterpart**, because it needs a live no-mistakes
 install and a real service manager. It, and every measured figure in the
-sections below, come from one manual session: 1 September 2026, at commit
-`3cfa36a`, on macOS 25.2.0, Node v22.21.1, git 2.39.5, gh 2.82.0.
+sections below, come from one manual session on **1 September 2026**, against
+**the head of the stage 0 pull request as it stood partway through review**, on
+macOS 25.2.0, Node v22.21.1, git 2.39.5, gh 2.82.0. eyes-on was at version
+0.1.0 throughout.
+
+The anchor is described rather than named, and that is the point. This document
+first carried the commit id the session ran against, and a table of the five
+commits that landed after it. None of those identifiers survived: the pull
+request was squash-merged, so every one of them is now unreachable from `main`
+and reachable only from a branch on the pipeline's own remote. An identifier
+that stops resolving is worse than no identifier, because it reads as precision.
+What survives a squash is the description: which pull request, when, at what
+version, and what changed afterwards - which is what the next section says.
 
 The reference clone is `~/Projects/firstmate/projects/adx-worker` (91.7 MB
 `.git`, 369 refs) and it was read only: no ref, hook, remote or config entry in
@@ -31,20 +42,24 @@ The session ran against a temporary state root `~/.eyes-on-acceptance` with the
 rather than a simulation. Afterwards the state root, the LaunchAgent and the
 daemon were all removed; nothing from this session persists on the machine.
 
-### What landed after the measured commit
+### What landed between the measured session and the merge
 
-| Commit | What it changed |
-|---|---|
-| `9b6717b` | this document only |
-| `6640d1e` | lock-holder diagnostics; a state root inside `NM_HOME` is now refused when the root is resolved (result 2); `prepack` builds the published entry point; the raw capture logs gained a bound |
-| `47c73b5` | the wedged and stale lock readings and their wording; the holder row is cleared on a clean release; capture-log bounding moved to the daemon entry point |
-| `462dbe0` | a `config.yaml` that no longer parses no longer stops the daemon from starting; `daemon status` reports the lock reading separately from the daemon's condition |
-| `2323e40` | `doctor` reports a missing git instead of failing on it; a `daemon.lock` this version cannot open is refused with the repair that clears it |
+Review continued after the session, and five further changes landed on the pull
+request before it merged. Described by what they did, since their commit ids no
+longer resolve:
+
+| What changed |
+|---|
+| this document only |
+| lock-holder diagnostics; a state root inside `NM_HOME` is now refused when the root is resolved (result 2); `prepack` builds the published entry point; the raw capture logs gained a bound |
+| the wedged and stale lock readings and their wording; the holder row is cleared on a clean release; capture-log bounding moved to the daemon entry point |
+| a `config.yaml` that no longer parses no longer stops the daemon from starting; `daemon status` reports the lock reading separately from the daemon's condition |
+| `doctor` reports a missing git instead of failing on it; a `daemon.lock` this version cannot open is refused with the repair that clears it |
 
 None of these changed the mirror, the clone-facing code or the recursion guard.
 Where one of them touched an area a result covers - result 2 above all - the
-automated counterpart named in the table is what still holds; the manual figure
-describes `3cfa36a`.
+automated counterpart named in the table is what still holds; the manual figures
+below describe the branch as it stood when they were taken.
 
 ## Results
 
@@ -238,6 +253,21 @@ The generated hook carries the registered state root explicitly
 A foreign `post-commit` hook present beforehand is moved to
 `post-commit.eyes-on-user` and still runs after ours, and a deliberately failing
 user hook does not fail the commit (`test/hook.test.ts`).
+
+## What stage 1 found in this code afterwards
+
+Recorded here because it is a statement about stage 0's own acceptance
+properties. `eyes-on init` under one state root could register a repository into
+a **different** root's database and mirror while reporting the root it was given:
+a unix socket address is a fixed-size kernel field (104 bytes on macOS) and an
+address past it is truncated rather than refused, so two deep roots sharing a
+long prefix bound and connected to one address. It is fixed in stage 1, and
+`docs/stage-1-acceptance.md` records the measurement.
+
+It does not invalidate any figure above. The session used one state root at a
+time and `~/.eyes-on-acceptance` is far short of the limit; the collision needs
+two roots whose paths agree for a hundred bytes, which is what a scratch
+directory hierarchy produces and a home directory does not.
 
 ## Known limitation, deferred to a separate task
 
