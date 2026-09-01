@@ -18,7 +18,9 @@ import { parseYaml, stringifyYaml, type YamlMap } from './yaml.js';
 export interface GlobalConfig {
   schema: string;
   daemon: {
-    /** Whether `init` registers an OS-managed service for the daemon. */
+    /** Whether `init` registers an OS-managed service for the daemon. `init`
+     *  owns this decision both ways: set to false it also removes a job it
+     *  registered earlier, rather than leaving one loaded. */
     managed_service: boolean;
   };
   logs: {

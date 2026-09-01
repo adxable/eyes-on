@@ -73,7 +73,10 @@ first) · `npm run genskill`.
   report "no risk found" for a change nobody assessed.
 - **Tests may never touch a real state root.** `Paths.fromEnv()` refuses the
   default root under the test runner. Tests that install a skill or a service
-  must set `EYES_ON_SKILL_ROOT` and `EYES_ON_SKIP_SERVICE_MANAGER=1`.
+  must set `EYES_ON_SKILL_ROOT` and `EYES_ON_SKIP_SERVICE_MANAGER=1`. A test
+  that mutates state also needs a private `NM_HOME` and no inherited
+  `NO_MISTAKES_GATE`, or the recursion guard reads the suite - which itself runs
+  from a gate worktree - as a pipeline descendant and refuses.
 
 ## Maintaining this file
 

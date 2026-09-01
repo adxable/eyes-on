@@ -40,15 +40,18 @@ leaves a healthy install alone. `eyes-on init --watch` additionally installs a
 | `eyes-on init [--watch] [--force]` | Register the repository; idempotent |
 | `eyes-on doctor` | Readiness, degradations, and collisions with no-mistakes |
 | `eyes-on status` | Daemon and registered repositories |
-| `eyes-on daemon {start\|stop\|restart\|status\|run --root <dir>}` | Manage the daemon |
+| `eyes-on daemon {start\|stop\|restart\|status\|run --root <dir>\|notify-commit}` | Manage the daemon |
 | `eyes-on axi status` | The agent surface |
 
-`eyes-on check`, `why`, `rules`, `spotlight`, `drift`, `comment`, `label`,
-`leaks`, `calibrate` and `backtest` arrive in stages 1 to 3.
+`eyes-on check`, `why`, `rules`, `export-path-instructions`, `backtest`,
+`spotlight`, `drift`, `comment`, `label`, `leaks` and `calibrate` arrive in
+stages 1 to 3. `eyes-on help` prints the full surface with the stage that owns
+each one.
 
 ## Output contract
 
-- Machine payload on **stdout**, TOON by default; `--format json|md` to change it.
+- Machine payload on **stdout**: TOON by default under `axi`, Markdown elsewhere;
+  `--format toon|json|md` overrides it.
 - Progress on **stderr**. Never parse stderr.
 - Exit `0` success or no-op, `1` error, `2` usage error.
 - Every failure carries `error:` and `help:`.

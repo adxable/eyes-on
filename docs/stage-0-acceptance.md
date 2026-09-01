@@ -23,16 +23,19 @@ measured by hand and the numbers below are that measurement.
 ## What these numbers were measured against
 
 The session above ran on commit `dbc1b52`. Every review-fix commit since -
-`f01ca51`, `435e0e7`, `f363f06`, `5ed536a`, `ef16f1a` and this one - changed
-code, and each change belongs to a different result:
+`f01ca51`, `435e0e7`, `f363f06`, `5ed536a`, `ef16f1a`, `2c3ceca` and `dda0740` -
+changed code, and each change belongs to a different result (`ee62180` touched
+tests only):
 
 - **Results 1 and 6 (daemon coexistence, idempotency).** The service
   install/reload decision became a semantic comparison with a separate
   byte-write and then stopped deciding process lifecycle at all; starting the
   daemon moved behind a single path that addresses the managed job instead of
   spawning beside it, with the direct spawn kept for hosts where no service
-  manager holds anything; and `doctor` now reads LaunchAgent labels through
-  `plutil -lint` plus `-extract`.
+  manager holds anything; `init` became the single owner of whether a root has a
+  managed service, removing the job when `daemon.managed_service` is off instead
+  of leaving one loaded for the next `daemon start` to revive; and `doctor` now
+  reads LaunchAgent labels through `plutil -lint` plus `-extract`.
 - **Result 3 (clone untouched).** Every clone read moved behind `gitReadClone`,
   which now also refuses the write forms of `config`, `remote` and
   `symbolic-ref`. This one is *strengthened* rather than made stale: its
@@ -125,7 +128,7 @@ Captured on adx-worker immediately before and after the session:
 
 The mirror is fetched *into*, never pushed *from*, so no ref in the clone moves.
 `--watch` was deliberately not used on adx-worker, which is why its hook count
-stays at zero; the hook is measured separately in section 6.
+stays at zero; the hook is measured separately in section 7.
 
 ## 4. Mirror cost
 
