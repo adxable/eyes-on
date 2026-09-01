@@ -1,6 +1,6 @@
-import { homedir, tmpdir } from 'node:os';
+import { homedir, tmpdir, userInfo } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
-import { realpathSync } from 'node:fs';
+import { lstatSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { PRODUCT_NAME } from './version.js';
 
@@ -11,6 +11,72 @@ import { PRODUCT_NAME } from './version.js';
  * spare rather than sitting exactly on the boundary.
  */
 export const MAX_SOCKET_PATH_BYTES = 100;
+
+/**
+ * A relocated socket may not sit directly in the shared temporary directory.
+ *
+ * `/tmp` on Linux is world-writable, and the relocated address is derived from
+ * the state root by a published rule - so anyone able to guess the root (a CI
+ * or sandbox root is predictable) could bind that path first and then answer
+ * every client's JSON-RPC call, including the `init` call that carries the
+ * clone's path. The socket's own 0700 mode protects it only once eyes-on owns
+ * it, not the name it is about to take.
+ *
+ * The directory below is what removes that: one per user, created 0700, and
+ * refused if it is anything else. It is still derived from nothing but the
+ * state root and the calling user, so the daemon and every client still agree
+ * on the address without coordinating - which is the property that stopped two
+ * deep roots from silently sharing one daemon.
+ */
+export function privateSocketDirName(): string {
+  return `${PRODUCT_NAME}-${userInfo().uid}`;
+}
+
+/** Mode a socket directory outside the state root must have: nothing for group
+ *  or other, since eyes-on creates it 0700 itself. */
+const SOCKET_DIR_MODE = 0o700;
+
+/** A socket directory that exists but is not ours to trust. */
+export class SocketDirectoryError extends Error {
+  readonly help: string[];
+  constructor(dir: string, reason: string) {
+    super(`the directory eyes-on would put its daemon socket in, ${dir}, ${reason}`);
+    this.name = 'SocketDirectoryError';
+    this.help = [
+      `Remove or repair ${dir}: it must be a directory you own, with mode 0700`,
+      'Set EYES_HOME to a shorter path so the socket can live inside the state root instead',
+    ];
+  }
+}
+
+/**
+ * Refuses a relocated socket directory that another user could write into.
+ *
+ * A directory that does not exist yet is not a fault - there is simply no
+ * daemon, and `RpcServer.listen` creates it 0700 before binding. What is a
+ * fault is one that exists and is not a directory we own privately, because
+ * then the address is somebody else's to claim.
+ */
+export function assertPrivateSocketDir(dir: string): void {
+  let stats;
+  try {
+    stats = lstatSync(dir);
+  } catch {
+    return;
+  }
+  if (!stats.isDirectory()) {
+    throw new SocketDirectoryError(dir, 'is not a directory');
+  }
+  if (typeof stats.uid === 'number' && stats.uid !== userInfo().uid) {
+    throw new SocketDirectoryError(dir, `is owned by uid ${stats.uid}, not by this user`);
+  }
+  if ((stats.mode & ~SOCKET_DIR_MODE & 0o777) !== 0) {
+    throw new SocketDirectoryError(
+      dir,
+      `is reachable by other users (mode ${(stats.mode & 0o777).toString(8).padStart(4, '0')}, expected 0700)`,
+    );
+  }
+}
 
 /** The no-mistakes state root this machine uses: NM_HOME, else ~/.no-mistakes. */
 export function foreignStateRoot(env: NodeJS.ProcessEnv = process.env): string {
@@ -139,20 +205,32 @@ export class Paths {
    *
    * So a root whose socket would not fit gets a short address instead, derived
    * from a hash of the canonical root so that the daemon and every client
-   * compute the same one without having to agree on anything else. The default
-   * root (`~/.eyes-on`) is nowhere near the limit; this is for the deep
-   * temporary roots that tests, sandboxes and measurement sessions live in.
+   * compute the same one without having to agree on anything else. It lives in
+   * a per-user directory (`privateSocketDirName`) rather than loose in the
+   * shared temporary directory, and that directory is refused unless it is ours
+   * and private. The default root (`~/.eyes-on`) is nowhere near the limit;
+   * this is for the deep temporary roots that tests, sandboxes and measurement
+   * sessions live in.
    */
   get socket(): string {
     const direct = join(this.root, 'socket');
     if (Buffer.byteLength(direct, 'utf8') <= MAX_SOCKET_PATH_BYTES) return direct;
     const digest = createHash('sha256').update(this.canonicalRoot()).digest('hex').slice(0, 12);
-    const short = join(tmpdir(), `${PRODUCT_NAME}-${digest}.sock`);
+    const file = `${PRODUCT_NAME}-${digest}.sock`;
+    let directory = join(tmpdir(), privateSocketDirName());
     // `/tmp` is the last resort: a macOS per-user temporary directory is itself
     // long enough to overflow the field on a deep root.
-    return Buffer.byteLength(short, 'utf8') <= MAX_SOCKET_PATH_BYTES
-      ? short
-      : `/tmp/${PRODUCT_NAME}-${digest}.sock`;
+    if (Buffer.byteLength(join(directory, file), 'utf8') > MAX_SOCKET_PATH_BYTES) {
+      directory = `/tmp/${privateSocketDirName()}`;
+    }
+    assertPrivateSocketDir(directory);
+    return join(directory, file);
+  }
+
+  /** The directory the socket lives in. `RpcServer` creates it before binding,
+   *  which for a relocated socket has to happen with mode 0700. */
+  get socketDir(): string {
+    return dirname(this.socket);
   }
 
   /** True when the socket had to move out of the state root. `doctor` says so,

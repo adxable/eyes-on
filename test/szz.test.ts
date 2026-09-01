@@ -158,3 +158,37 @@ test('merge commits are excluded from the history walk, so their lines are not c
     'no merge commit reaches the history walk',
   );
 });
+
+test('a blame that could not be read is not written into the cache', () => {
+  const repo = tempRepo('szz-unreadable');
+  repo.commitFiles('feat: a bug', { 'src/a.ts': 'one\ntwo\nthree\n' });
+  repo.commitFiles('fix: the bug', { 'src/a.ts': 'one\nTWO\nthree\n' });
+
+  const reader = readerFor(repo.path);
+  const db = Database.open(join(tempDir('db'), 'state.sqlite'));
+  const commits = reader.history({ until: 'HEAD' });
+  const fix = commits.find((commit) => isFixCommit(commit, FIX_PATTERN));
+  assert.ok(fix);
+
+  // A commit whose patch git will not produce - a broken object in a partial
+  // clone is the real case - answers nothing. That is a statement about the
+  // repository right now, not about the commit, so it must not be frozen into
+  // a cache whose whole premise is that a blame never changes.
+  const broken = Object.create(reader) as RepoReader;
+  broken.commitPatch = () => {
+    throw new Error('object is missing');
+  };
+  const failed = attributeFixes(commits, { reader: broken, db, fixPattern: FIX_PATTERN });
+  assert.equal(failed.computed, 1);
+  assert.deepEqual(failed.attributions[0]?.files, {});
+  assert.equal(
+    db.get('SELECT payload FROM blame_cache WHERE commit_sha = ?', fix.sha),
+    undefined,
+    'nothing was cached',
+  );
+
+  const repaired = attributeFixes(commits, { reader, db, fixPattern: FIX_PATTERN });
+  assert.equal(repaired.computed, 1, 'the next run recomputes rather than reading an empty answer back');
+  assert.deepEqual(repaired.attributions[0]?.files, { 'src/a.ts': 1 });
+  db.close();
+});

@@ -30,17 +30,43 @@ interface Line {
    *  text, so it is taken from here rather than from the structural `text`,
    *  where a `#` would have been read as a comment and the indentation lost. */
   raw: string;
+  /** Nothing but a comment. Kept rather than dropped, because inside a literal
+   *  block scalar a line beginning with `#` is content, and a parser that
+   *  silently deleted it would produce a document that is quietly wrong - the
+   *  one outcome this subset exists to avoid. Every structural read skips it. */
+  comment: boolean;
 }
 
 function scanLines(source: string): Line[] {
   const lines: Line[] = [];
   source.split(/\r?\n/).forEach((raw, index) => {
     const withoutComment = stripComment(raw);
-    if (withoutComment.trim().length === 0) return;
+    if (withoutComment.trim().length === 0) {
+      // A blank line carries no indentation to judge it by and is dropped; a
+      // comment-only line has one, so it can be placed and kept.
+      if (raw.trim().length === 0) return;
+      lines.push({
+        indent: raw.length - raw.trimStart().length,
+        text: '',
+        number: index + 1,
+        raw,
+        comment: true,
+      });
+      return;
+    }
     const indent = withoutComment.length - withoutComment.trimStart().length;
-    lines.push({ indent, text: withoutComment.trim(), number: index + 1, raw });
+    lines.push({ indent, text: withoutComment.trim(), number: index + 1, raw, comment: false });
   });
   return lines;
+}
+
+/** The next line the structure cares about: comment-only lines exist for the
+ *  block scalars that read them as content and are invisible to everything
+ *  else. */
+function nextStructural(lines: Line[], from: number): number {
+  let index = from;
+  while (index < lines.length && lines[index]?.comment === true) index += 1;
+  return index;
 }
 
 /** Strips a trailing `#` comment that is not inside a quoted scalar. */
@@ -156,39 +182,46 @@ function splitKey(text: string, line: number): { key: string; rest: string } {
 }
 
 function parseBlock(lines: Line[], start: number, indent: number): { value: YamlValue; next: number } {
-  const first = lines[start];
-  if (!first) return { value: null, next: start };
+  const begin = nextStructural(lines, start);
+  const first = lines[begin];
+  if (!first) return { value: null, next: begin };
   if (first.text.startsWith('- ') || first.text === '-') {
     const items: YamlValue[] = [];
-    let index = start;
+    let index = begin;
     while (index < lines.length) {
+      index = nextStructural(lines, index);
       const line = lines[index];
       if (!line || line.indent !== indent || !(line.text.startsWith('- ') || line.text === '-')) break;
       const body = line.text === '-' ? '' : line.text.slice(2).trim();
       if (body.length === 0) {
-        const nested = parseBlock(lines, index + 1, (lines[index + 1]?.indent ?? indent + 1));
+        const childIndex = nextStructural(lines, index + 1);
+        const nested = parseBlock(lines, childIndex, (lines[childIndex]?.indent ?? indent + 1));
         items.push(nested.value);
         index = nested.next;
         continue;
       }
       if (body.includes(': ') || body.endsWith(':')) {
         // Inline first key of a sequence item mapping: `- glob: "..."`.
-        const virtual: Line[] = [{ indent: indent + 2, text: body, number: line.number, raw: line.raw }];
+        const virtual: Line[] = [{ indent: indent + 2, text: body, number: line.number, raw: line.raw, comment: false }];
         let scan = index + 1;
         // The item's own keys sit at whatever indentation the document uses;
         // they are re-based onto `indent + 2` so the inline first key lines up
         // with them. Relative depth *inside* the item is preserved, or a nested
         // mapping - or a block scalar, whose content is indented deeper than
         // its key - would be flattened into the item's own keys.
-        const itemIndent = lines[scan]?.indent ?? indent + 2;
-        while (scan < lines.length && (lines[scan]?.indent ?? -1) > indent) {
+        const itemIndent = lines[nextStructural(lines, scan)]?.indent ?? indent + 2;
+        while (scan < lines.length) {
           const continuation = lines[scan];
           if (!continuation) break;
+          // A comment travels with the item whatever column it sits in: inside
+          // a block scalar it is content, and anywhere else it is skipped.
+          if (!continuation.comment && continuation.indent <= indent) break;
           virtual.push({
             indent: indent + 2 + (continuation.indent - itemIndent),
             text: continuation.text,
             number: continuation.number,
             raw: continuation.raw,
+            comment: continuation.comment,
           });
           scan += 1;
         }
@@ -204,8 +237,9 @@ function parseBlock(lines: Line[], start: number, indent: number): { value: Yaml
   }
 
   const map: YamlMap = {};
-  let index = start;
+  let index = begin;
   while (index < lines.length) {
+    index = nextStructural(lines, index);
     const line = lines[index];
     if (!line || line.indent < indent) break;
     if (line.indent > indent) throw new YamlError('unexpected indentation', line.number);
@@ -227,13 +261,14 @@ function parseBlock(lines: Line[], start: number, indent: number): { value: Yaml
       index += 1;
       continue;
     }
-    const child = lines[index + 1];
+    const childIndex = nextStructural(lines, index + 1);
+    const child = lines[childIndex];
     if (!child || child.indent <= indent) {
       map[key] = null;
       index += 1;
       continue;
     }
-    const nested = parseBlock(lines, index + 1, child.indent);
+    const nested = parseBlock(lines, childIndex, child.indent);
     map[key] = nested.value;
     index = nested.next;
   }
@@ -247,10 +282,14 @@ function parseBlock(lines: Line[], start: number, indent: number): { value: Yaml
  * indentation removed and nothing else interpreted. `|` keeps one trailing
  * newline, `|-` keeps none - the two chomping modes anybody actually writes.
  *
+ * A line whose first non-space character is `#` is content here, not a comment,
+ * and the scanner keeps it for exactly this reason - the structural parser is
+ * the one that skips it.
+ *
  * One limitation, stated rather than hidden: blank lines inside the block are
- * dropped, because the scanner removes them before the parser ever sees the
- * document. Every value eyes-on reads or writes in this style is a few lines of
- * prose with no paragraph breaks.
+ * dropped, because a blank line carries no indentation and the scanner removes
+ * it before the parser ever sees the document. Every value eyes-on reads or
+ * writes in this style is a few lines of prose with no paragraph breaks.
  */
 function readBlockScalar(
   lines: Line[],
@@ -274,8 +313,10 @@ function readBlockScalar(
 
 export function parseYaml(source: string): YamlValue {
   const lines = scanLines(source);
-  if (lines.length === 0) return {};
-  const { value } = parseBlock(lines, 0, lines[0]?.indent ?? 0);
+  const begin = nextStructural(lines, 0);
+  // A document of nothing but comments is an empty document.
+  if (begin >= lines.length) return {};
+  const { value } = parseBlock(lines, begin, lines[begin]?.indent ?? 0);
   return value;
 }
 

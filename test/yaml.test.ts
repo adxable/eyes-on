@@ -93,3 +93,47 @@ rules:
   assert.deepEqual(parsed.rules[0]?.model, { command: ['claude', '-p'], max_hunks: 12 });
   assert.equal(parsed.rules[1]?.glob, 'b/**');
 });
+
+test('a block scalar keeps a body line that begins with #, because there it is content', () => {
+  // A comment-only line used to be dropped by the scanner before the block
+  // scalar could read it, so the value silently lost a line. A document that
+  // parses to the wrong thing is worse than one that fails.
+  const parsed = parseYaml(`
+hard_rules:
+  - glob: "deploy/**"
+    why: |
+      first
+      # second
+      third
+instructions: |-
+  # a leading hash
+  and a second line
+`) as { hard_rules: { why: string }[]; instructions: string };
+  assert.equal(parsed.hard_rules[0]?.why, 'first\n# second\nthird\n');
+  assert.equal(parsed.instructions, '# a leading hash\nand a second line');
+});
+
+test('a comment between structural lines is still invisible, wherever it sits', () => {
+  const parsed = parseYaml(`
+  # an indented comment before anything
+schema: eyes-on/v1
+logs:
+# a comment less indented than the mapping it interrupts
+  max_bytes: 8388608
+  # and one more indented
+  backups: 2
+rules:
+  - glob: "a/**"
+  # between two sequence items
+  - glob: "b/**"
+`) as Record<string, unknown>;
+  assert.deepEqual(parsed, {
+    schema: 'eyes-on/v1',
+    logs: { max_bytes: 8388608, backups: 2 },
+    rules: [{ glob: 'a/**' }, { glob: 'b/**' }],
+  });
+});
+
+test('a document of nothing but comments is empty rather than a parse error', () => {
+  assert.deepEqual(parseYaml('# only\n# comments\n'), {});
+});

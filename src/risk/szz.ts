@@ -68,9 +68,10 @@ export function isFixCommit(commit: CommitRecord, pattern: RegExp): boolean {
 
 export interface SzzOptions {
   reader: RepoReader;
-  /** Opened state database, or null to run without a cache. `backtest` runs
-   *  without one deliberately: it replays history at many split dates and must
-   *  not leave the cache shaped like whichever split ran last. */
+  /** Opened state database, or null to run without a cache. A cache entry is
+   *  keyed by the fix commit's SHA and does not depend on who asked for it, so
+   *  every command that has a database may share this one - `backtest`
+   *  included, at whatever split date it is replaying. */
   db: Database | null;
   fixPattern: RegExp;
   /** Called once per commit actually blamed, so a long first run can report
@@ -106,8 +107,19 @@ export function attributeFixes(commits: readonly CommitRecord[], options: SzzOpt
     }
     const measured = blameFix(options.reader, fix);
     computed += 1;
-    writeCache(options.db, fix.sha, measured);
-    attributions.push({ sha: fix.sha, timestamp: fix.timestamp, subject: fix.subject, ...measured });
+    // Only a blame that was actually computed may be cached. A commit's blame
+    // never changes once it exists, which is what makes this cache correct -
+    // but a read that failed is a statement about the repository right now, and
+    // freezing it would turn a repairable clone into a permanently empty
+    // answer.
+    if (measured.complete) writeCache(options.db, fix.sha, measured);
+    attributions.push({
+      sha: fix.sha,
+      timestamp: fix.timestamp,
+      subject: fix.subject,
+      files: measured.files,
+      introducers: measured.introducers,
+    });
     options.onProgress?.(cached + computed, fixes.length);
   }
 
@@ -115,16 +127,21 @@ export function attributeFixes(commits: readonly CommitRecord[], options: SzzOpt
 }
 
 /** The blame work for one fix commit. Exported for the tests that prove the
- *  cache returns the same answer the computation does. */
+ *  cache returns the same answer the computation does.
+ *
+ *  `complete` says whether the empty-looking answers mean it: a root commit
+ *  really has nothing to blame, while a patch git would not produce means only
+ *  that this run could not read it. The caller caches the first and not the
+ *  second. */
 export function blameFix(
   reader: RepoReader,
   fix: CommitRecord,
-): { files: Record<string, number>; introducers: Record<string, number> } {
+): { files: Record<string, number>; introducers: Record<string, number>; complete: boolean } {
   const files: Record<string, number> = {};
   const introducers: Record<string, number> = {};
   const parent = fix.parents[0];
   // A root commit removes nothing: there is no parent to blame.
-  if (!parent) return { files, introducers };
+  if (!parent) return { files, introducers, complete: true };
 
   let patch: string;
   try {
@@ -132,7 +149,7 @@ export function blameFix(
   } catch {
     // A commit whose patch git will not produce (a broken object in a partial
     // clone, most often) contributes nothing rather than stopping the walk.
-    return { files, introducers };
+    return { files, introducers, complete: false };
   }
 
   for (const range of parseRemovedRanges(patch)) {
@@ -143,7 +160,7 @@ export function blameFix(
       introducers[sha] = (introducers[sha] ?? 0) + 1;
     }
   }
-  return { files, introducers };
+  return { files, introducers, complete: true };
 }
 
 function readCache(db: Database | null, sha: string): { files: Record<string, number>; introducers: Record<string, number> } | null {

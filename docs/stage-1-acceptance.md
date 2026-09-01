@@ -7,7 +7,7 @@ condition that did not.
 
 As in stage 0, the evidence comes in two kinds and they age differently.
 
-**Five of the seven conditions have automated counterparts** that run on every
+**Four of the seven conditions have automated counterparts** that run on every
 `npm test` against whatever the code currently is. Those tests, not the figures
 below, are the standing evidence for them:
 
@@ -17,12 +17,18 @@ below, are the standing evidence for them:
 | Rules are trusted | `acceptance: a branch that deletes the rule still gets the rule` and the three tests beside it, in `test/rules.test.ts` |
 | Non-blocking | `acceptance: a hard-rule hit sets the band to pelna and still exits 0` (`test/check.test.ts`) and `acceptance: a hard-rule hit exits 0, and only --strict changes that` (`test/rules.test.ts`) |
 | Export cap | `an export of any size stays inside both of no-mistakes' caps`, in `test/export.test.ts` |
-| Signal discrimination | `the signal separates the files that went on to be fixed from the ones that did not` and `a repository where nothing predicts anything reports a lift of about one, not a pass`, in `test/backtest.test.ts` |
 
-**The two conditions with reference numbers - discrimination and cost - have no
-automated counterpart**, because they are statements about one particular
-repository with 271 commits of real history. They were measured in one session
-described below.
+**The remaining three - fix-history discrimination, churn discrimination and
+cost - have no automated counterpart**, because they are statements about one
+particular repository with 271 commits of real history. They were measured in
+one session described below.
+
+One further test covers the *mechanism* rather than any condition, and is
+listed separately so it cannot be read as evidence for the figures:
+
+| Not one of the seven | Test |
+|---|---|
+| Backtest mechanism | `the signal separates the files that went on to be fixed from the ones that did not` and `a repository where nothing predicts anything reports a lift of about one, not a pass`, in `test/backtest.test.ts` - they prove `backtest` computes and reports a lift on synthetic repositories built by the suite. The adx-worker lift figures below are a one-off measurement on one repository and no test asserts them. |
 
 ## The measured session
 
@@ -245,7 +251,9 @@ given. A unix socket address is a fixed-size kernel field - 104 bytes on macOS -
 and an address past it is truncated rather than refused, so two deep scratch
 roots sharing their first 104 bytes bound and connected to one address. Fixed in
 this branch: a root whose `<root>/socket` would not fit gets a short address
-derived from a hash of the canonical root, and `doctor` reports the relocation.
+derived from a hash of the canonical root, in a per-user directory created 0700
+rather than loose in the shared temporary directory, and `doctor` reports the
+relocation.
 The default root is nowhere near the limit, so no ordinary installation was
 affected.
 

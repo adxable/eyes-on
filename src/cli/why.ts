@@ -45,7 +45,7 @@ export async function whyCommand(context: Context): Promise<number> {
   const filter = fileFilter(config);
   const path = normalizePath(target ?? '');
 
-  const anchor = resolveDefaultBranch(risk.clonePath, risk.reader);
+  const anchor = resolveDefaultBranch(risk.clonePath, risk.reader, flagString(context.args, 'default-branch'));
   const headSHA = anchor?.sha ?? risk.reader.resolve('HEAD');
   if (!headSHA) {
     throw new UserFacingError(`cannot resolve a commit to read history from in ${risk.clonePath}`, [

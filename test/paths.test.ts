@@ -1,7 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { join } from 'node:path';
-import { ForeignStateRootError, MAX_SOCKET_PATH_BYTES, Paths, isInsideStateRoot } from '../src/core/paths.js';
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { userInfo } from 'node:os';
+import { dirname, join } from 'node:path';
+import {
+  ForeignStateRootError,
+  MAX_SOCKET_PATH_BYTES,
+  Paths,
+  SocketDirectoryError,
+  assertPrivateSocketDir,
+  isInsideStateRoot,
+  privateSocketDirName,
+} from '../src/core/paths.js';
+import { tempDir } from './helpers.js';
 
 /**
  * The layout is Appendix C.2 and it is asserted literally, because every later
@@ -98,6 +109,34 @@ test('a state root too deep for a unix socket gets a short, root-specific addres
   assert.ok(Buffer.byteLength(b.socket) <= MAX_SOCKET_PATH_BYTES);
   assert.notEqual(a.socket, b.socket, 'two roots never share one daemon');
   assert.equal(a.socket, Paths.withRoot(a.root, { NM_HOME: '/nm' } as NodeJS.ProcessEnv).socket, 'and it is stable');
+  // The relocated address is derivable by anyone who knows the state root, so
+  // it may not sit loose in a shared temporary directory where another user
+  // could bind it first and answer every client's call.
+  assert.equal(dirname(a.socket).split('/').pop(), privateSocketDirName());
+  assert.equal(dirname(a.socket), dirname(b.socket), 'one private directory per user, not per root');
+});
+
+test('a socket directory another user could write into is refused, not used', () => {
+  const parent = tempDir('socket-dir');
+
+  const hostile = join(parent, 'world-writable');
+  mkdirSync(hostile, { recursive: true });
+  chmodSync(hostile, 0o777);
+  assert.throws(() => assertPrivateSocketDir(hostile), SocketDirectoryError);
+
+  const notADirectory = join(parent, 'a-file');
+  writeFileSync(notADirectory, '');
+  assert.throws(() => assertPrivateSocketDir(notADirectory), SocketDirectoryError);
+
+  const ours = join(parent, 'private');
+  mkdirSync(ours, { recursive: true });
+  chmodSync(ours, 0o700);
+  assert.doesNotThrow(() => assertPrivateSocketDir(ours));
+
+  // Absent is not a fault: there is simply no daemon yet, and the server
+  // creates the directory 0700 before it binds.
+  assert.doesNotThrow(() => assertPrivateSocketDir(join(parent, 'absent')));
+  assert.equal(privateSocketDirName().endsWith(`-${userInfo().uid}`), true);
 });
 
 test('an ordinary state root keeps its socket inside itself', () => {

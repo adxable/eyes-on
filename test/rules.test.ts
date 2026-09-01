@@ -163,8 +163,12 @@ test('acceptance: a hard-rule hit exits 0, and only --strict changes that', asyn
   const lenient = await cli(['rules', '--check', '--format', 'json'], { cwd: repo.path, env });
   assert.equal(JSON.parse(lenient.out).rules_hit, 1);
   assert.equal(lenient.code, EXIT_OK, 'a rule hit never blocks on its own');
+  assert.equal(JSON.parse(lenient.out).exit_code, EXIT_OK);
 
   const strict = await cli(['rules', '--check', '--strict', '--format', 'json'], { cwd: repo.path, env });
   assert.equal(JSON.parse(strict.out).rules_hit, 1);
   assert.equal(strict.code, EXIT_ERROR, '--strict is the only door out of exit 0');
+  // The document reports the exit code the process used, not the one the
+  // common case has.
+  assert.equal(JSON.parse(strict.out).exit_code, EXIT_ERROR);
 });

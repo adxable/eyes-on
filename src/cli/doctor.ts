@@ -117,7 +117,7 @@ export async function doctorCommand(context: Context): Promise<number> {
     rows.push({
       check: 'daemon socket',
       status: 'ok',
-      detail: `${context.paths.socket} - outside the state root, because <root>/socket is longer than a unix socket address may be`,
+      detail: `${context.paths.socket} - outside the state root, in a private per-user directory, because <root>/socket is longer than a unix socket address may be`,
     });
   }
 

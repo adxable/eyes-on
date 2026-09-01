@@ -142,6 +142,9 @@ test('acceptance: a hard-rule hit sets the band to pelna and still exits 0', asy
 
   const strict = await cli(['check', '--strict', '--format', 'json'], { cwd: repo.path, env });
   assert.equal(strict.code, EXIT_ERROR, '--strict is the only door out of exit 0');
+  // The payload says what actually happened: an agent reading `exit_code` must
+  // never be told 0 while the shell sees 1.
+  assert.equal((JSON.parse(strict.out) as { exit_code: number }).exit_code, EXIT_ERROR);
 });
 
 test('the score, the band, the rationale and the report file agree with each other', async (t) => {

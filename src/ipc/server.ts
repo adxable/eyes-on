@@ -55,7 +55,11 @@ export class RpcServer {
     if (await probeSocket(endpoint)) {
       throw new SocketInUseError(endpoint);
     }
-    mkdirSync(dirname(endpoint), { recursive: true });
+    // 0700 matters for a socket that had to move out of the state root: the
+    // directory is what stops another user from taking the address first, and
+    // `assertPrivateSocketDir` refuses to use one that is anything else. A
+    // directory that already exists keeps whatever mode it has.
+    mkdirSync(dirname(endpoint), { recursive: true, mode: 0o700 });
     try {
       unlinkSync(endpoint);
     } catch (error) {

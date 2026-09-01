@@ -53,6 +53,7 @@ export async function checkCommand(context: Context): Promise<number> {
     // Stage 2 delivers the drift signal and the fragment ranking. Saying so
     // beats an empty `spotlight` key that reads as "nothing worth reading".
     noModel: flagBool(context.args, 'no-model'),
+    strict,
   });
 
   if (risk.db) {
@@ -70,8 +71,7 @@ export async function checkCommand(context: Context): Promise<number> {
 
   // Exit 0 is the contract. `--strict` is the only door out of it, and it opens
   // only for the top band - the one that says a human must read this.
-  if (strict && assessment.band === 'pelna') return EXIT_ERROR;
-  return EXIT_OK;
+  return exitCodeFor(assessment, strict);
 }
 
 interface RenderOptions {
@@ -79,6 +79,16 @@ interface RenderOptions {
   baseFrom: string;
   intent: string | null;
   noModel: boolean;
+  /** Whether `--strict` was passed, because the payload reports the exit code
+   *  the process is actually going to use and `--strict` is what changes it. */
+  strict: boolean;
+}
+
+/** The one place the exit code is decided. Both the returned code and the
+ *  `exit_code` field in the payload read it, so an agent parsing the document
+ *  can never be told something different from what the shell sees. */
+function exitCodeFor(assessment: Assessment, strict: boolean): number {
+  return strict && assessment.band === 'pelna' ? EXIT_ERROR : EXIT_OK;
 }
 
 export function renderDoc(assessment: Assessment, options: RenderOptions): ToonObject {
@@ -128,7 +138,7 @@ export function renderDoc(assessment: Assessment, options: RenderOptions): ToonO
     commits_walked: assessment.cost.commits_walked,
     blames_cached: assessment.cost.blames_cached,
     blames_computed: assessment.cost.blames_computed,
-    exit_code: 0,
+    exit_code: exitCodeFor(assessment, options.strict),
     help: helpLines(assessment, options),
   };
 }
@@ -145,7 +155,11 @@ function helpLines(assessment: Assessment, options: RenderOptions): ToonValue {
   if (!options.noModel) {
     lines.push('Fragment ranking (`spotlight`) and intent drift arrive in stage 2; signal `drift` is weighted 0 here');
   }
-  lines.push('Exit code is 0 by design: eyes-on directs attention, it does not block');
+  lines.push(
+    exitCodeFor(assessment, options.strict) === EXIT_OK
+      ? 'Exit code is 0 by design: eyes-on directs attention, it does not block'
+      : 'Exit code is 1 because --strict was passed and the band is `pelna`; without --strict this same result exits 0',
+  );
   return lines as ToonValue;
 }
 

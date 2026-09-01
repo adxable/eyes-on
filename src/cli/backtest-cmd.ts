@@ -49,7 +49,7 @@ export async function backtestCommand(context: Context): Promise<number> {
   // backtest may read it and add to it: a commit's blame does not depend on
   // which split date asked for it.
   const risk = riskContext(context, { dbMode: 'optional', needRange: false });
-  const anchor = resolveDefaultBranch(risk.clonePath, risk.reader) ?? null;
+  const anchor = resolveDefaultBranch(risk.clonePath, risk.reader, flagString(context.args, 'default-branch')) ?? null;
   const anchorSHA = anchor?.sha ?? risk.reader.resolve('HEAD');
   if (!anchorSHA) {
     throw new UserFacingError(`cannot resolve a commit to replay history from in ${risk.clonePath}`, [

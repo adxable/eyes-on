@@ -26,6 +26,10 @@ export async function rulesCommand(context: Context): Promise<number> {
   const changed = risk.reader.changedFiles(risk.baseSHA, risk.headSHA);
   const paths = changed.map((file) => file.path);
   const hits = evaluateHardRules(config.hard_rules, paths);
+  // Decided once, before the payload is built: the document reports the exit
+  // code the process is actually going to use, not the one the common case has.
+  const strict = flagBool(context.args, 'strict');
+  const exitCode = strict && hits.length > 0 ? EXIT_ERROR : EXIT_OK;
 
   const doc: ToonObject = {
     band: hits.length > 0 ? 'pelna' : 'not set by a rule',
@@ -46,19 +50,20 @@ export async function rulesCommand(context: Context): Promise<number> {
       matched: hit.matched_files.length,
       matched_files: hit.matched_files.join(' '),
     })) as ToonValue,
-    exit_code: 0,
+    exit_code: exitCode,
     help: [
       `Rules are read from ${risk.trusted.branch} at a pinned commit, never from the branch being assessed: a branch that deletes a rule still gets it`,
       'Matching runs over the full changed-file list, before any include or exclude filter',
-      hits.length > 0
-        ? 'A hit sets the band to `pelna`. The exit code stays 0 unless --strict was passed'
-        : 'No rule matched this change',
+      hits.length === 0
+        ? 'No rule matched this change'
+        : exitCode === EXIT_OK
+          ? 'A hit sets the band to `pelna`. The exit code stays 0 unless --strict was passed'
+          : 'A hit sets the band to `pelna`, and --strict turns that into exit code 1; without --strict this same result exits 0',
     ] as ToonValue,
   };
 
   emitDoc(context.writers, context.format, doc, () => renderMarkdown(doc, hits.map(hitSentence)));
-  if (flagBool(context.args, 'strict') && hits.length > 0) return EXIT_ERROR;
-  return EXIT_OK;
+  return exitCode;
 }
 
 function renderMarkdown(doc: ToonObject, sentences: string[]): string {
