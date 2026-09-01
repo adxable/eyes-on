@@ -1,0 +1,4 @@
+# eyes-on repository configuration read by no-mistakes.
+# This repository intentionally has no CI: it is a local-first tool and every
+# gate that matters runs in the pipeline itself (review, tests, lint, docs).
+no_ci: true
