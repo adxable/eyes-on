@@ -9,15 +9,21 @@ the code being good; eyes-on is responsible for a human reading the part that
 matters, and for making it possible to check afterwards whether the threshold
 was set correctly.
 
-## Status: stage 0
+## Status: stage 1
 
-Stage 0 is the skeleton every later feature stands on: the state root, the
-daemon, the mirror, the command surface and the agent skill. **Risk scoring is
-not implemented yet.** Commands that compute risk are listed, documented, and
-report the stage that will deliver them - they never return a made-up answer.
+Stage 1 delivers the product's reason for existing: a risk score computed from
+repository history, and hard rules on sensitive paths. Stage 0 before it built
+the skeleton - the state root, the daemon, the mirror, the command surface and
+the agent skill.
 
-See [docs/stage-0-acceptance.md](docs/stage-0-acceptance.md) for the measured
-acceptance results.
+**The fragment ranking and the intent-drift signal are not implemented yet**;
+they arrive in stage 2, and the `drift` signal is reported with a weight of zero
+rather than hidden. Commands that belong to a later stage are listed and
+documented, and report the stage that will deliver them - they never return a
+made-up answer.
+
+Measured acceptance results: [stage 1](docs/stage-1-acceptance.md),
+[stage 0](docs/stage-0-acceptance.md).
 
 ## Install
 
@@ -41,12 +47,51 @@ leaves a healthy install alone. `eyes-on init --watch` additionally installs a
 | `eyes-on doctor` | Readiness, degradations, and collisions with no-mistakes |
 | `eyes-on status` | Daemon and registered repositories |
 | `eyes-on daemon {start\|stop\|restart\|status\|run --root <dir>\|notify-commit}` | Manage the daemon |
-| `eyes-on axi status` | The agent surface |
+| `eyes-on check [--base <ref>] [--head <ref>] [--strict]` | Score the change and apply the hard rules |
+| `eyes-on why <file>` \| `eyes-on why --top <n>` | Where one file's risk came from, or where risk lives in the repository |
+| `eyes-on rules --check` | The hard rules alone, read from the default branch |
+| `eyes-on export-path-instructions` | A `review.path_instructions` block for `.no-mistakes.yaml` |
+| `eyes-on backtest --split <date>[,<date>...]` | Whether the signal knew anything, on this repository's own history |
+| `eyes-on axi [status\|check]` | The agent surface |
 
-`eyes-on check`, `why`, `rules`, `export-path-instructions`, `backtest`,
 `spotlight`, `drift`, `comment`, `label`, `leaks` and `calibrate` arrive in
-stages 1 to 3. `eyes-on help` prints the full surface with the stage that owns
+stages 2 and 3. `eyes-on help` prints the full surface with the stage that owns
 each one.
+
+## How the score is built
+
+Seven signals, each normalised by `min(1, ln(1+x)/ln(1+K))` and summed with its
+weight, times 100. Two thresholds turn the number into a band: under 35 needs no
+reading, 35 to 64 means read the indicated fragments, 65 and over means a full
+review.
+
+| signal | weight | K | what x counts |
+|---|---|---|---|
+| `fix_history` | 0.30 | 5 | fix commits whose removed lines blame into the file |
+| `churn` | 0.20 | 20 | commits touching the file in the window |
+| `size` | 0.20 | 400 | lines added and removed in code files |
+| `spread` | 0.10 | 12 | directories the change reaches into |
+| `no_test` | 0.15 | 1 | share of changed code files with no test changed beside them |
+| `recency` | 0.05 | 30 | days of freshness: 30 is touched today, 0 is untouched for a month |
+| `drift` | 0.00 | 5 | intent against diff - stage 2 |
+
+Three rules about it are not adjustable and are the product rather than the
+implementation:
+
+- **fix history and churn are counted over code files only.** Without that, the
+  riskiest file in a repository is its `AGENTS.md`, and a reviewer sent there
+  learns to ignore the ranking. Measured, not assumed - see the stage 1
+  acceptance document.
+- **hard rules are read from the default branch at a pinned commit**, never from
+  the branch being assessed, and they match the full changed-file list before any
+  filter. A branch that deletes a rule still gets it.
+- **nothing blocks.** `check` exits 0 whatever the band is and whatever the rules
+  say. `--strict` exists for a caller who has explicitly asked otherwise, and it
+  is the only thing that produces a non-zero exit.
+
+Every score comes with the evidence: which signal contributed how many points,
+which file decided it, and - through `eyes-on why <file>` - the fix commits, by
+subject and date, that pointed at a file in the first place.
 
 ## Output contract
 

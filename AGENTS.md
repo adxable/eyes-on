@@ -41,7 +41,10 @@ a design violation, not a flaky test.
   `~/Projects/firstmate/projects/no-mistakes`. **Read-only.** Its line numbers in
   comments are from commit `a68298e`; grep for the symbol name rather than
   trusting the line.
-- **Measured stage 0 results**: `docs/stage-0-acceptance.md`.
+- **Measured results**: `docs/stage-1-acceptance.md` and
+  `docs/stage-0-acceptance.md`. Both are anchored by description rather than by
+  commit id, because a pull-request SHA does not survive the squash-merge that
+  lands it.
 
 ## Commands
 
@@ -75,9 +78,31 @@ first) · `npm run genskill`.
   and the `/eyes-on` skill are all generated from it, and `test/skill.test.ts`
   fails when the checked-in `skills/eyes-on/SKILL.md` drifts. After changing a
   command, run `npm run genskill`.
-- **Unimplemented commands must stay honest.** A stage 1+ command exits 1 naming
+- **Unimplemented commands must stay honest.** A stage 2+ command exits 1 naming
   its stage. Never make one return an empty-but-plausible result: an agent would
   report "no risk found" for a change nobody assessed.
+- **The scoring constants are the report's, not tuning knobs.** Weights,
+  saturation constants and the two thresholds live in `src/risk/repoconfig.ts`
+  and come from scope report section 5. Changing one is a decision argued from
+  `backtest` over real history - and, from stage 3, `calibrate` - never from
+  taste. `test/signals.test.ts` asserts the numbers.
+- **S1 and S2 count code files only, and hard rules count all files.** The first
+  is measured (without it `AGENTS.md` ranks first on adx-worker); the second is
+  the point of a hard rule, which must fire for a `deploy/values.yaml` no code
+  filter would keep. Both are asserted in `test/check.test.ts` and
+  `test/rules.test.ts`.
+- **A history walk stops at the base, not the head.** Counting a branch's own
+  commits as history lets it raise its own churn signal by committing more often.
+- **Every git read goes through `RepoReader`** (`src/git/reader.ts`): refs are
+  resolved against the clone, everything else is read by SHA through the mirror,
+  which borrows the clone's objects. Do not add a second path into git.
+- **A state root deeper than ~100 bytes cannot hold its own socket.** A unix
+  socket address is truncated rather than refused past the kernel's field size,
+  so `Paths.socket` moves out of the root for a deep one and `doctor` says so.
+  This is why two scratch roots once shared one daemon; see
+  `test/paths.test.ts`.
+- **A test that runs `init` must stop the daemon it started.** The temporary
+  state root goes away with the test process; the daemon does not.
 - **Tests may never touch a real state root.** `Paths.fromEnv()` refuses the
   default root under the test runner. Tests that install a skill or a service
   must set `EYES_ON_SKILL_ROOT` and `EYES_ON_SKIP_SERVICE_MANAGER=1`. A test
