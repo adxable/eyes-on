@@ -26,6 +26,10 @@ interface Line {
   indent: number;
   text: string;
   number: number;
+  /** The line exactly as written, comment and all. A block scalar's content is
+   *  text, so it is taken from here rather than from the structural `text`,
+   *  where a `#` would have been read as a comment and the indentation lost. */
+  raw: string;
 }
 
 function scanLines(source: string): Line[] {
@@ -34,7 +38,7 @@ function scanLines(source: string): Line[] {
     const withoutComment = stripComment(raw);
     if (withoutComment.trim().length === 0) return;
     const indent = withoutComment.length - withoutComment.trimStart().length;
-    lines.push({ indent, text: withoutComment.trim(), number: index + 1 });
+    lines.push({ indent, text: withoutComment.trim(), number: index + 1, raw });
   });
   return lines;
 }
@@ -169,12 +173,23 @@ function parseBlock(lines: Line[], start: number, indent: number): { value: Yaml
       }
       if (body.includes(': ') || body.endsWith(':')) {
         // Inline first key of a sequence item mapping: `- glob: "..."`.
-        const virtual: Line[] = [{ indent: indent + 2, text: body, number: line.number }];
+        const virtual: Line[] = [{ indent: indent + 2, text: body, number: line.number, raw: line.raw }];
         let scan = index + 1;
+        // The item's own keys sit at whatever indentation the document uses;
+        // they are re-based onto `indent + 2` so the inline first key lines up
+        // with them. Relative depth *inside* the item is preserved, or a nested
+        // mapping - or a block scalar, whose content is indented deeper than
+        // its key - would be flattened into the item's own keys.
+        const itemIndent = lines[scan]?.indent ?? indent + 2;
         while (scan < lines.length && (lines[scan]?.indent ?? -1) > indent) {
           const continuation = lines[scan];
           if (!continuation) break;
-          virtual.push({ indent: indent + 2, text: continuation.text, number: continuation.number });
+          virtual.push({
+            indent: indent + 2 + (continuation.indent - itemIndent),
+            text: continuation.text,
+            number: continuation.number,
+            raw: continuation.raw,
+          });
           scan += 1;
         }
         const nested = parseBlock(virtual, 0, indent + 2);
@@ -195,6 +210,18 @@ function parseBlock(lines: Line[], start: number, indent: number): { value: Yaml
     if (!line || line.indent < indent) break;
     if (line.indent > indent) throw new YamlError('unexpected indentation', line.number);
     const { key, rest } = splitKey(line.text, line.number);
+    if (rest === '|' || rest === '|-') {
+      const block = readBlockScalar(lines, index + 1, indent, rest === '|-');
+      map[key] = block.value;
+      index = block.next;
+      continue;
+    }
+    if (rest.startsWith('>') || rest === '|+') {
+      // Folded and keep-chomped block scalars are outside the subset. Refusing
+      // them is the rule this parser is built on: a document that silently
+      // parses to the wrong thing is worse than one that fails.
+      throw new YamlError(`block scalar style ${JSON.stringify(rest)} is outside the supported subset (use | or |-)`, line.number);
+    }
     if (rest.length > 0) {
       map[key] = parseValueToken(rest, line.number);
       index += 1;
@@ -211,6 +238,38 @@ function parseBlock(lines: Line[], start: number, indent: number): { value: Yaml
     index = nested.next;
   }
   return { value: map, next: index };
+}
+
+/**
+ * A literal block scalar (`|` or `|-`).
+ *
+ * Content is every following line indented deeper than the key, with that
+ * indentation removed and nothing else interpreted. `|` keeps one trailing
+ * newline, `|-` keeps none - the two chomping modes anybody actually writes.
+ *
+ * One limitation, stated rather than hidden: blank lines inside the block are
+ * dropped, because the scanner removes them before the parser ever sees the
+ * document. Every value eyes-on reads or writes in this style is a few lines of
+ * prose with no paragraph breaks.
+ */
+function readBlockScalar(
+  lines: Line[],
+  start: number,
+  keyIndent: number,
+  strip: boolean,
+): { value: string; next: number } {
+  const body: string[] = [];
+  let index = start;
+  let contentIndent: number | null = null;
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line || line.indent <= keyIndent) break;
+    if (contentIndent === null) contentIndent = line.indent;
+    body.push(line.raw.slice(Math.min(contentIndent, line.raw.length - line.raw.trimStart().length)).trimEnd());
+    index += 1;
+  }
+  const text = body.join('\n');
+  return { value: strip ? text : `${text}\n`, next: index };
 }
 
 export function parseYaml(source: string): YamlValue {

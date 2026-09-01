@@ -58,3 +58,38 @@ test('what stringify writes, parse reads back', () => {
   };
   assert.deepEqual(parseYaml(stringifyYaml(value)), value);
 });
+
+test('literal block scalars parse, in both chomping modes the subset accepts', () => {
+  const parsed = parseYaml(`
+review:
+  path_instructions:
+    - path: "deploy/**"
+      instructions: |
+        Read this in full.
+        A # here is text, not a comment.
+    - path: "src/**"
+      instructions: |-
+        One line, no trailing newline.
+`) as { review: { path_instructions: { path: string; instructions: string }[] } };
+  const entries = parsed.review.path_instructions;
+  assert.equal(entries[0]?.instructions, 'Read this in full.\nA # here is text, not a comment.\n');
+  assert.equal(entries[1]?.instructions, 'One line, no trailing newline.');
+});
+
+test('a block scalar style outside the subset is refused rather than half-read', () => {
+  assert.throws(() => parseYaml('why: >\n  folded text\n'), YamlError);
+  assert.throws(() => parseYaml('why: |+\n  kept text\n'), YamlError);
+});
+
+test('a sequence item keeps its own nesting rather than flattening it', () => {
+  const parsed = parseYaml(`
+rules:
+  - glob: "a/**"
+    model:
+      command: ["claude", "-p"]
+      max_hunks: 12
+  - glob: "b/**"
+`) as { rules: { glob: string; model?: { command: string[]; max_hunks: number } }[] };
+  assert.deepEqual(parsed.rules[0]?.model, { command: ['claude', '-p'], max_hunks: 12 });
+  assert.equal(parsed.rules[1]?.glob, 'b/**');
+});
