@@ -82,6 +82,20 @@ population and outcome definitions here match the ones behind those references.
 reference figures are 4.2x / 3.8x / 3.6x / 2.9x, so the shortfall is real and
 not a rounding difference.
 
+**The 2.5x threshold itself is provisional.** It was set from an earlier and
+looser measurement whose method is not recorded, and the measurement here uses a
+denominator that measurement may not have: the population is the code files that
+*existed at the split*, because a file created afterwards could never have been
+flagged and counting it would flatter every signal. Lower numbers under a
+stricter denominator are not the same thing as a weaker signal. The threshold
+waits on confirmation from a longer history than this repository's seven weeks;
+`calibrate` in stage 3 is where it stops being a number somebody chose.
+
+The partial result is accepted as delivered rather than tuned away
+(`~/Projects/firstmate/data/eyes-on-etap1-mvp/decyzja-prog-25.md`): fitting the
+signal to a threshold on one repository with seven weeks of history is tuning to
+the measurement, which is the failure the research report warns about directly.
+
 Two things are worth stating about it rather than explaining it away.
 
 **It is not caused by renames.** The obvious suspect - a hot file renamed after
