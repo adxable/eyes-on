@@ -36,6 +36,12 @@ async function cli(argv: string[], options: { cwd?: string; env?: Record<string,
   const previousCwd = process.cwd();
   const previousEnv = { ...process.env };
   if (options.cwd) process.chdir(options.cwd);
+  // The suite must behave identically inside and outside a no-mistakes run.
+  // The pipeline stamps NO_MISTAKES_GATE=1 on every process it spawns, and
+  // eyes-on refuses to mutate under it, so an inherited marker would turn every
+  // init in this file into a recursion refusal. Tests that want that refusal
+  // set the marker themselves through options.env.
+  delete process.env.NO_MISTAKES_GATE;
   Object.assign(process.env, options.env ?? {});
   try {
     return { code: await runCli(argv, writers), out, err };
@@ -114,6 +120,9 @@ test('acceptance: the working clone is byte-identical before and after', async (
     EYES_HOME: join(tempDir('coex-clone-home'), 'eyes-on'),
     EYES_ON_SKILL_ROOT: tempDir('coex-clone-skills'),
     EYES_ON_SKIP_SERVICE_MANAGER: '1',
+    // Private, so the guard does not read a suite running from under the real
+    // `<NM_HOME>/worktrees` as a pipeline descendant.
+    NM_HOME: tempDir('coex-clone-nm-home'),
   };
 
   const statusBefore = run(repo.path, ['status', '--porcelain']);
@@ -145,6 +154,9 @@ test('acceptance: creating and refreshing the mirror stays inside the cost budge
     EYES_HOME: join(tempDir('coex-cost-home'), 'eyes-on'),
     EYES_ON_SKILL_ROOT: tempDir('coex-cost-skills'),
     EYES_ON_SKIP_SERVICE_MANAGER: '1',
+    // Private, so the guard does not read a suite running from under the real
+    // `<NM_HOME>/worktrees` as a pipeline descendant.
+    NM_HOME: tempDir('coex-cost-nm-home'),
   };
   try {
     const created = JSON.parse((await cli(['init', '--format', 'json'], { cwd: repo.path, env })).out) as {

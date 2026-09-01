@@ -21,6 +21,12 @@ async function cli(argv: string[], options: { cwd?: string; env?: Record<string,
   const previousCwd = process.cwd();
   const previousEnv = { ...process.env };
   if (options.cwd) process.chdir(options.cwd);
+  // The suite must behave identically inside and outside a no-mistakes run.
+  // The pipeline stamps NO_MISTAKES_GATE=1 on every process it spawns, and
+  // eyes-on refuses to mutate under it, so an inherited marker would turn every
+  // init in this file into a recursion refusal. Tests that want that refusal
+  // set the marker themselves through options.env.
+  delete process.env.NO_MISTAKES_GATE;
   Object.assign(process.env, options.env ?? {});
   try {
     const code = await runCli(argv, writers);
@@ -34,13 +40,19 @@ async function cli(argv: string[], options: { cwd?: string; env?: Record<string,
   }
 }
 
-/** An isolated environment: private state root, private skill bases, no OS
- *  service registration. Nothing here touches a real installation. */
+/** An isolated environment: private state root, private skill bases, private
+ *  no-mistakes home, no OS service registration. Nothing here touches a real
+ *  installation. The private NM_HOME matters when the suite itself runs from a
+ *  checkout under the real `<NM_HOME>/worktrees`: the guard would then read the
+ *  test process as a pipeline descendant by working directory. Its real
+ *  behaviour is covered by test/guard.test.ts and the recursion acceptance
+ *  test, which point NM_HOME at a directory that does contain the cwd. */
 function sandbox(): Record<string, string> {
   return {
     EYES_HOME: join(tempDir('cli-home'), 'eyes-on'),
     EYES_ON_SKILL_ROOT: tempDir('cli-skills'),
     EYES_ON_SKIP_SERVICE_MANAGER: '1',
+    NM_HOME: tempDir('cli-nm-home'),
   };
 }
 
