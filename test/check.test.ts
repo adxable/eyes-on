@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
@@ -48,6 +48,22 @@ function sandbox(): Record<string, string> {
 }
 
 /**
+ * Registers the repository and stops the daemon that `init` started when the
+ * test ends.
+ *
+ * Every `init` starts a real daemon process. The state root it serves is a
+ * temporary directory the suite removes on exit, but the process is not, and a
+ * suite that leaves one behind per test quietly fills the machine with daemons
+ * serving directories that no longer exist.
+ */
+async function initRepo(t: TestContext, repo: TempRepo, env: Record<string, string>): Promise<void> {
+  await cli(['init'], { cwd: repo.path, env });
+  t.after(async () => {
+    await cli(['daemon', 'stop'], { cwd: repo.path, env });
+  });
+}
+
+/**
  * A repository shaped like the problem the noise filter solves: a documentation
  * file and a log-shaped data file that churn constantly and attract every fix,
  * beside one code file that is touched far less often.
@@ -68,7 +84,7 @@ function noisyRepo(): TempRepo {
   return repo;
 }
 
-test('acceptance: no .md or .jsonl file appears in the risk ranking', async () => {
+test('acceptance: no .md or .jsonl file appears in the risk ranking', async (t) => {
   const repo = noisyRepo();
   repo.git(['checkout', '-q', '-b', 'work']);
   repo.commitFiles('feat: change everything at once', {
@@ -78,7 +94,7 @@ test('acceptance: no .md or .jsonl file appears in the risk ranking', async () =
   });
 
   const env = sandbox();
-  await cli(['init'], { cwd: repo.path, env });
+  await initRepo(t, repo, env);
   const result = await cli(['check', '--format', 'json'], { cwd: repo.path, env });
   const doc = JSON.parse(result.out) as {
     changed_files: number;
@@ -104,7 +120,7 @@ test('acceptance: no .md or .jsonl file appears in the risk ranking', async () =
   }
 });
 
-test('acceptance: a hard-rule hit sets the band to pelna and still exits 0', async () => {
+test('acceptance: a hard-rule hit sets the band to pelna and still exits 0', async (t) => {
   const repo = tempRepo('band');
   repo.commitFiles('chore: configure', {
     '.eyes-on.yml': 'schema: eyes-on/v1\nhard_rules:\n  - glob: "deploy/**"\n    why: "costs a machine"\n',
@@ -114,7 +130,7 @@ test('acceptance: a hard-rule hit sets the band to pelna and still exits 0', asy
   repo.commitFiles('chore: bump replicas', { 'deploy/values.yaml': 'replicas: 4\n' });
 
   const env = sandbox();
-  await cli(['init'], { cwd: repo.path, env });
+  await initRepo(t, repo, env);
 
   const lenient = await cli(['check', '--format', 'json'], { cwd: repo.path, env });
   const doc = JSON.parse(lenient.out) as { band: string; band_from: string; score: number; exit_code: number };
@@ -128,14 +144,14 @@ test('acceptance: a hard-rule hit sets the band to pelna and still exits 0', asy
   assert.equal(strict.code, EXIT_ERROR, '--strict is the only door out of exit 0');
 });
 
-test('the score, the band, the rationale and the report file agree with each other', async () => {
+test('the score, the band, the rationale and the report file agree with each other', async (t) => {
   const repo = tempRepo('record');
   repo.commitFiles('feat: something to change', { 'src/a.ts': 'export const a = 1;\n' });
   repo.git(['checkout', '-q', '-b', 'work']);
   repo.commitFiles('feat: change it', { 'src/a.ts': 'export const a = 2;\n' });
 
   const env = sandbox();
-  await cli(['init'], { cwd: repo.path, env });
+  await initRepo(t, repo, env);
   const result = await cli(['check', '--format', 'json'], { cwd: repo.path, env });
   const doc = JSON.parse(result.out) as {
     check_id: string;
@@ -160,10 +176,10 @@ test('the score, the band, the rationale and the report file agree with each oth
   );
 });
 
-test('a check with nothing to compare against says so instead of scoring the repository', async () => {
+test('a check with nothing to compare against says so instead of scoring the repository', async (t) => {
   const repo = tempRepo('empty-range');
   const env = sandbox();
-  await cli(['init'], { cwd: repo.path, env });
+  await initRepo(t, repo, env);
   // A single-commit repository on its default branch: there is no base.
   repo.git(['update-ref', '-d', 'refs/remotes/origin/HEAD']);
   const result = await cli(['check', '--format', 'json'], { cwd: repo.path, env });
@@ -175,14 +191,14 @@ test('a check with nothing to compare against says so instead of scoring the rep
   assert.equal(result.code, EXIT_OK);
 });
 
-test('why explains one file with the fixes that actually pointed at it', async () => {
+test('why explains one file with the fixes that actually pointed at it', async (t) => {
   const repo = tempRepo('why');
   repo.commitFiles('feat: introduce', { 'src/hot.ts': 'one\ntwo\nthree\n' });
   repo.commitFiles('fix: correct the second line', { 'src/hot.ts': 'one\nTWO\nthree\n' });
   repo.commitFiles('fix: correct the third line', { 'src/hot.ts': 'one\nTWO\nTHREE\n' });
 
   const env = sandbox();
-  await cli(['init'], { cwd: repo.path, env });
+  await initRepo(t, repo, env);
   const result = await cli(['why', 'src/hot.ts', '--format', 'json'], { cwd: repo.path, env });
   const doc = JSON.parse(result.out) as {
     file: string;
@@ -204,10 +220,10 @@ test('why explains one file with the fixes that actually pointed at it', async (
   assert.equal(result.code, EXIT_OK);
 });
 
-test('why on a file the filter excludes says why it scores nothing', async () => {
+test('why on a file the filter excludes says why it scores nothing', async (t) => {
   const repo = noisyRepo();
   const env = sandbox();
-  await cli(['init'], { cwd: repo.path, env });
+  await initRepo(t, repo, env);
   const result = await cli(['why', 'AGENTS.md', '--format', 'json'], { cwd: repo.path, env });
   const doc = JSON.parse(result.out) as { code: boolean; rank: number | null; help: string[] };
   assert.equal(doc.code, false);
@@ -215,7 +231,7 @@ test('why on a file the filter excludes says why it scores nothing', async () =>
   assert.match(doc.help.join(' '), /not code by the trusted include\/exclude patterns/);
 });
 
-test('export-path-instructions emits a block inside both caps, hard rules first', async () => {
+test('export-path-instructions emits a block inside both caps, hard rules first', async (t) => {
   const repo = tempRepo('export');
   repo.commitFiles('chore: configure', {
     '.eyes-on.yml': 'schema: eyes-on/v1\nhard_rules:\n  - glob: "deploy/**"\n    why: "costs a machine"\n',
@@ -225,7 +241,7 @@ test('export-path-instructions emits a block inside both caps, hard rules first'
   }
 
   const env = sandbox();
-  await cli(['init'], { cwd: repo.path, env });
+  await initRepo(t, repo, env);
   const result = await cli(['export-path-instructions', '--format', 'json'], { cwd: repo.path, env });
   const doc = JSON.parse(result.out) as {
     entries: number;
