@@ -28,7 +28,7 @@ this skill tells you what a reviewer must look at.
 | `eyes-on daemon {start|stop|restart|status|run --root <dir>|notify-commit}` | Manage the eyes-on daemon. `run` is the foreground entry point the OS service invokes. |
 | `eyes-on axi [status|check|respond|logs|abort]` | Agent surface: TOON on stdout, progress on stderr, exit 0 success, 1 error, 2 usage error. |
 | `eyes-on check [--base <ref>] [--head <ref>] [--intent "..."] [--no-model] [--strict] [--format toon|md|json]` | Score the change from repository history and apply the hard rules. Exits 0 whatever the band is, unless --strict is passed. Fragment ranking and intent drift arrive in stage 2. |
-| `eyes-on why <file>` | Explain where the risk of this file came from: the fix commits that blamed into it, the commits that touched it, and any hard rule naming it. |
+| `eyes-on why <file> | eyes-on why --top <n>` | Explain where the risk of this file came from: the fix commits that blamed into it, the commits that touched it, and any hard rule naming it. With --top and no file, list the riskiest code files in the repository instead. |
 | `eyes-on rules --check [--strict]` | Evaluate the hard rules alone, without scoring. Rules are read from the default branch at a pinned commit, so a branch that deletes one still gets it. |
 | `eyes-on export-path-instructions [--min-risk <0-100>]` | Emit a review.path_instructions block for .no-mistakes.yaml, inside its 32-entry and 16384-byte caps. A bridge, never a dependency. |
 | `eyes-on backtest --split <date>[,<date>...] [--horizon <days>]` | Replay the risk signal against history either side of a split date and report how much more often the flagged files were fixed afterwards. |

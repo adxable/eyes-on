@@ -1,4 +1,5 @@
 import type { Context } from './context.js';
+import { flagString } from './args.js';
 import { emitDoc, EXIT_OK, progress, UserFacingError } from './output.js';
 import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
@@ -25,8 +26,16 @@ import { resolveDefaultBranch } from '../rules/trusted.js';
  */
 export async function whyCommand(context: Context): Promise<number> {
   const target = context.args.positional[1];
-  if (!target) {
-    throw new UserFacingError('eyes-on why needs a file', ['Usage: eyes-on why <file>']);
+  const topRaw = flagString(context.args, 'top');
+  if (!target && topRaw === null) {
+    throw new UserFacingError('eyes-on why needs a file', [
+      'Usage: eyes-on why <file>',
+      'Without a file, `eyes-on why --top <n>` lists where risk lives in this repository',
+    ]);
+  }
+  const top = topRaw === null ? 0 : Number.parseInt(topRaw, 10);
+  if (topRaw !== null && (!Number.isFinite(top) || top <= 0)) {
+    throw new UserFacingError(`--top ${topRaw} is not a positive count`, ['For example: eyes-on why --top 10']);
   }
 
   // `why` describes the repository as the default branch left it, so the range
@@ -34,7 +43,7 @@ export async function whyCommand(context: Context): Promise<number> {
   const risk = riskContext(context, { dbMode: 'optional', needRange: false });
   const config = risk.trusted.config;
   const filter = fileFilter(config);
-  const path = normalizePath(target);
+  const path = normalizePath(target ?? '');
 
   const anchor = resolveDefaultBranch(risk.clonePath, risk.reader);
   const headSHA = anchor?.sha ?? risk.reader.resolve('HEAD');
@@ -63,6 +72,17 @@ export async function whyCommand(context: Context): Promise<number> {
   });
   const fixCounts = fixCountsByFile(szz.attributions);
   const ranked = rankFiles(window, fixCounts, filter, config, nowSeconds);
+
+  if (!target) {
+    emitRanking(context, ranked.slice(0, top), {
+      total: ranked.length,
+      windowDays: config.history_window_days,
+      windowFrom: anchor ? `${anchor.ref} @ ${anchor.sha.slice(0, 12)}` : headSHA.slice(0, 12),
+      includePatterns: filter.include.length,
+    });
+    return EXIT_OK;
+  }
+
   const position = ranked.findIndex((entry) => entry.path === path);
   const history = window.files.get(path);
   const daysSince = history && history.lastTouched > 0 ? Math.max(0, Math.round((nowSeconds - history.lastTouched) / 86_400)) : null;
@@ -168,4 +188,59 @@ function renderMarkdown(doc: ToonObject, fixCount: number): string {
     lines.push('', `_${line}._`);
   }
   return lines.join('\n');
+}
+
+interface RankingMeta {
+  total: number;
+  windowDays: number;
+  windowFrom: string;
+  includePatterns: number;
+}
+
+/**
+ * Where risk lives in this repository, regardless of any change.
+ *
+ * This is the ranking the noise-filter acceptance condition inspects, and the
+ * reason it is printed at all: a filter nobody can look at is a filter nobody
+ * can check. Only code files appear, by the trusted include and exclude
+ * patterns - which is exactly the property being demonstrated.
+ */
+function emitRanking(
+  context: Context,
+  ranked: readonly { path: string; risk: number; fix_commits: number; churn: number; days_since_touched: number | null }[],
+  meta: RankingMeta,
+): void {
+  const doc: ToonObject = {
+    ranked: ranked.length,
+    ranked_out_of: meta.total,
+    window_days: meta.windowDays,
+    window_from: meta.windowFrom,
+    files: ranked.map((entry, index) => ({
+      rank: index + 1,
+      path: entry.path,
+      risk: entry.risk,
+      fix_commits: entry.fix_commits,
+      churn: entry.churn,
+      days_since_touched: entry.days_since_touched,
+    })) as ToonValue,
+    help: [
+      `Only code files are ranked: ${meta.includePatterns} include patterns decide what counts, and documentation and log-shaped data files are deliberately absent`,
+      'Run `eyes-on why <file>` for the fix commits behind one of these',
+    ] as ToonValue,
+  };
+  emitDoc(context.writers, context.format, doc, () => {
+    const lines = [
+      `# where risk lives - top ${ranked.length} of ${meta.total} code files`,
+      '',
+      `Measured over ${meta.windowDays} days ending at ${meta.windowFrom}.`,
+      '',
+      '| # | file | risk | fixes | churn | last touched |',
+      '|---|---|---|---|---|---|',
+    ];
+    ranked.forEach((entry, index) => {
+      const touched = entry.days_since_touched === null ? 'outside window' : `${entry.days_since_touched}d ago`;
+      lines.push(`| ${index + 1} | \`${entry.path}\` | ${entry.risk} | ${entry.fix_commits} | ${entry.churn} | ${touched} |`);
+    });
+    return lines.join('\n');
+  });
 }

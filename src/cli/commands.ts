@@ -82,9 +82,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'why',
-    usage: 'eyes-on why <file>',
+    usage: 'eyes-on why <file> | eyes-on why --top <n>',
     summary:
-      'Explain where the risk of this file came from: the fix commits that blamed into it, the commits that touched it, and any hard rule naming it.',
+      'Explain where the risk of this file came from: the fix commits that blamed into it, the commits that touched it, and any hard rule naming it. With --top and no file, list the riskiest code files in the repository instead.',
     stage: 1,
     mutating: false,
     implemented: true,

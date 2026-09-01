@@ -28,6 +28,7 @@ const VALUE_FLAGS = new Set([
   'default-branch',
   'horizon',
   'min-risk',
+  'top',
 ]);
 
 export function parseArgs(argv: readonly string[]): ParsedArgs {
