@@ -73,8 +73,6 @@ export type Band = 'auto' | 'wskazane' | 'pelna';
  * them here would silently break that contract. `bandLabel` is what a human
  * reads.
  */
-export const BANDS: readonly Band[] = ['auto', 'wskazane', 'pelna'];
-
 export function bandLabel(band: Band): string {
   switch (band) {
     case 'auto':

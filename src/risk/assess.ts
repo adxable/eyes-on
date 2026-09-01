@@ -5,8 +5,8 @@ import type { TrustedConfig } from '../rules/trusted.js';
 import { directoryOf, fileFilter, isTestFile, testStem, type FileFilter } from './files.js';
 import { codeFiles, readHistory, type FileHistory, type HistoryWindow } from './history.js';
 import type { RepoConfig, SignalName } from './repoconfig.js';
-import { bandFor, rationale, saturate, scoreSignals, type Band, type RawSignals, type Score } from './signals.js';
-import { attributeFixes, fixCountsByFile, type FixAttribution } from './szz.js';
+import { rationale, saturate, scoreSignals, type Band, type RawSignals, type Score } from './signals.js';
+import { attributeFixes, fixCountsByFile } from './szz.js';
 
 /**
  * One assessment, end to end.
@@ -276,12 +276,6 @@ export function rawSignals(
   };
 }
 
-/** Re-derives the band a score alone would produce. Used by `--strict`, which
- *  must distinguish "a rule fired" from "the score was high". */
-export function bandFromScore(score: number, config: RepoConfig): Band {
-  return bandFor(score, config.thresholds);
-}
-
 /** The riskiest files in a window, regardless of any change: the ranking the
  *  noise-filter acceptance condition inspects, and the input `backtest` and
  *  `export-path-instructions` both rank by. */
@@ -302,9 +296,4 @@ export function rankFiles(
       days_since_touched: daysSince(file, nowSeconds),
     }))
     .sort((a, b) => b.risk - a.risk || b.churn - a.churn || a.path.localeCompare(b.path));
-}
-
-/** The fix attributions that name one file, newest first. `why` shows them. */
-export function attributionsFor(attributions: readonly FixAttribution[], path: string): FixAttribution[] {
-  return attributions.filter((entry) => entry.files[path] !== undefined).sort((a, b) => b.timestamp - a.timestamp);
 }

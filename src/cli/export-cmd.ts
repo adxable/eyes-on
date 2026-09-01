@@ -10,7 +10,6 @@ import { rankFiles } from '../risk/assess.js';
 import { resolveDefaultBranch } from '../rules/trusted.js';
 import {
   fitWithinCaps,
-  instructionBytes,
   MAX_BYTES,
   MAX_ENTRIES,
   renderPathInstructions,
@@ -161,7 +160,3 @@ function renderMarkdown(doc: ToonObject, block: string): string {
   lines.push('', '```yaml', block.trimEnd(), '```', '', `_${(doc.help as string[])[0] ?? ''}._`);
   return lines.join('\n');
 }
-
-/** Exposed for the test that proves an export of any size stays inside the
- *  caps, without going through the CLI. */
-export const exportBytes = instructionBytes;

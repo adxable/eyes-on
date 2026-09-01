@@ -1,5 +1,5 @@
 import { glob, normalizePath } from '../core/glob.js';
-import type { HardRule, RepoConfig } from '../risk/repoconfig.js';
+import type { HardRule } from '../risk/repoconfig.js';
 
 /**
  * Hard rules: paths where statistics do not get a vote.
@@ -71,14 +71,4 @@ export function hitSentence(hit: RuleHit): string {
   const rest = hit.matched_files.length > 3 ? ` and ${hit.matched_files.length - 3} more` : '';
   const why = hit.why.length > 0 ? ` - ${hit.why}` : '';
   return `${hit.glob} matched ${shown}${rest}${why}`;
-}
-
-/** True when any rule fired. A hit sets the band to `pelna` and nothing in the
- *  scoring can lower it again. */
-export function anyHit(hits: readonly RuleHit[]): boolean {
-  return hits.length > 0;
-}
-
-export function ruleCount(config: RepoConfig): number {
-  return config.hard_rules.length;
 }

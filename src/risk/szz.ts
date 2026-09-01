@@ -189,10 +189,3 @@ export function fixCountsByFile(attributions: readonly FixAttribution[]): Map<st
   }
   return counts;
 }
-
-/** The fixes that blamed into one file, newest first. `why` shows these. */
-export function fixesForFile(attributions: readonly FixAttribution[], path: string): FixAttribution[] {
-  return attributions
-    .filter((attribution) => attribution.files[path] !== undefined)
-    .sort((a, b) => b.timestamp - a.timestamp);
-}

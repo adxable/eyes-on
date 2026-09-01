@@ -118,21 +118,6 @@ export function latestCheck(db: Database, repoId: string, branch: string): Check
   );
 }
 
-export function checkForHead(db: Database, repoId: string, headSHA: string): CheckRow | undefined {
-  return db.get<CheckRow>(
-    'SELECT * FROM checks WHERE repo_id = ? AND head_sha = ? ORDER BY updated_at DESC LIMIT 1',
-    repoId,
-    headSHA,
-  );
-}
-
-export function signalsFor(db: Database, checkId: string): { name: string; raw: number; normalized: number }[] {
-  return db.all<{ name: string; raw: number; normalized: number }>(
-    'SELECT name, raw, normalized FROM signals WHERE check_id = ?',
-    checkId,
-  );
-}
-
 /**
  * Writes the full report next to the state, keeping the newest `retention`
  * files (Appendix C.2: 200).

@@ -123,10 +123,10 @@ function resolveRange(context: Context, clonePath: string, reader: RepoReader): 
         'Pass a branch, tag or commit that exists in this clone',
       ]);
     }
+    // The merge base, not the ref itself, so `--base main` means "what this
+    // branch adds" rather than "the difference between two branches", which
+    // would count everything main has moved on to as part of the change.
     const merge = reader.mergeBase(baseSHA, headSHA);
-    // An explicit base is honoured as given unless it is an ancestor's
-    // descendant - taking the merge base keeps `--base main` meaning "what this
-    // branch adds" rather than "everything main has that I do not".
     return { baseSHA: merge ?? baseSHA, baseFrom: `--base ${requestedBase}`, headSHA };
   }
 
