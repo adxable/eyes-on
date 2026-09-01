@@ -10,7 +10,13 @@ import {
   stopDaemon,
   type StartResult,
 } from '../src/daemon/lifecycle.js';
-import { type ManagedJobStart } from '../src/daemon/service.js';
+import {
+  startManagedJob,
+  type CommandResult,
+  type ManagedJobStart,
+  type ServiceManagerProbe,
+  type ServiceStatus,
+} from '../src/daemon/service.js';
 import { probeSocket } from '../src/ipc/server.js';
 import { tempDir } from './helpers.js';
 
@@ -175,4 +181,131 @@ test('a held job the manager refuses to start is a failure, not a spawn', async 
   assert.equal(result.started, false);
   assert.match(result.detail ?? '', /Input\/output error/, 'the reason must reach the caller');
   assert.equal(await probeSocket(paths.socket), false, 'no daemon may be spawned beside a held job');
+});
+
+/**
+ * `startManagedJob` decides which of the three outcomes above applies, and it is
+ * the function the previous regressions lived in. These drive it directly
+ * through an injected probe, so every branch runs on any host - including the
+ * one that only appears where the service manager cannot be reached.
+ */
+function jobStatus(overrides: Partial<ServiceStatus> = {}): ServiceStatus {
+  return {
+    supported: true,
+    label: 'com.example.eyes-on',
+    unitPath: '/tmp/com.example.eyes-on.plist',
+    installed: true,
+    loaded: false,
+    running: false,
+    pid: null,
+    ...overrides,
+  };
+}
+
+function probe(
+  statuses: ServiceStatus[],
+  run: (command: string, argv: string[]) => CommandResult,
+  platform: ServiceManagerProbe['platform'] = () => 'darwin',
+): { probe: ServiceManagerProbe; commands: string[][] } {
+  const commands: string[][] = [];
+  let call = 0;
+  return {
+    commands,
+    probe: {
+      platform,
+      inspect: () => statuses[Math.min(call++, statuses.length - 1)] as ServiceStatus,
+      run: (command, argv) => {
+        commands.push([command, ...argv]);
+        return run(command, argv);
+      },
+    },
+  };
+}
+
+const OK: CommandResult = { status: 0, stderr: '' };
+
+test('a unit file the manager cannot load leaves nothing held, so a spawn is safe', () => {
+  const paths = stateRoot('mgr-off');
+  // The L1 case: installService wrote the unit, then the manager refused it -
+  // no systemd user bus, or a launchd domain this session cannot address.
+  const harness = probe([jobStatus(), jobStatus()], () => ({
+    status: 1,
+    stderr: 'Failed to connect to bus: No such file or directory',
+  }));
+
+  const result = startManagedJob(paths, harness.probe);
+
+  assert.equal(result.outcome, 'unavailable', 'nothing is held, so the caller may spawn');
+  assert.match(result.detail ?? '', /Failed to connect to bus/);
+  assert.equal(harness.commands.length, 1, 'the manager is asked exactly once to load the job');
+});
+
+test('a job the manager holds and will not start is refused, never spawned beside', () => {
+  const paths = stateRoot('mgr-no');
+  const harness = probe([jobStatus({ loaded: true })], () => ({
+    status: 5,
+    stderr: 'Load failed: 5: Input/output error',
+  }));
+
+  const result = startManagedJob(paths, harness.probe);
+
+  assert.equal(result.outcome, 'refused');
+  assert.match(result.detail ?? '', /Input\/output error/);
+});
+
+test('a loaded job is started through the manager, running or not', () => {
+  const paths = stateRoot('mgr-up');
+  for (const running of [false, true]) {
+    const harness = probe([jobStatus({ loaded: true, running, pid: running ? 4242 : null })], () => OK);
+    const result = startManagedJob(paths, harness.probe);
+    assert.equal(result.outcome, 'started', `loaded and running=${running} must start through the manager`);
+    // The outcome reports what was actually asked of the manager, rather than a
+    // `running` flag that can still describe a daemon told to exit a moment ago.
+    assert.deepEqual(harness.commands, [['launchctl', 'kickstart', harness.commands[0]?.[2] ?? '']]);
+  }
+});
+
+test('a load that fails because the manager already holds the job counts as started', () => {
+  const paths = stateRoot('mgr-race');
+  // Two invocations race for one root: the loser's bootstrap fails, but by then
+  // the winner has loaded the job - which is what this caller wanted.
+  const harness = probe([jobStatus(), jobStatus({ loaded: true })], () => ({
+    status: 37,
+    stderr: 'Bootstrap failed: 37: Operation already in progress',
+  }));
+
+  const result = startManagedJob(paths, harness.probe);
+
+  assert.equal(result.outcome, 'started', 'a job the manager now holds must not send the caller to a spawn');
+});
+
+test('the linux path asks systemctl and reaches the same outcomes', () => {
+  const paths = stateRoot('mgr-linux');
+  const held = probe([jobStatus({ loaded: true })], () => OK, () => 'linux');
+  assert.equal(startManagedJob(paths, held.probe).outcome, 'started');
+  assert.deepEqual(held.commands, [['systemctl', '--user', 'start', 'com.example.eyes-on']]);
+
+  const unreachable = probe([jobStatus(), jobStatus()], () => ({ status: 1, stderr: 'Failed to connect to bus' }), () => 'linux');
+  assert.equal(startManagedJob(paths, unreachable.probe).outcome, 'unavailable');
+});
+
+/**
+ * And the whole way through: the real decision logic, on a host whose manager
+ * cannot be reached, must still end with a live daemon.
+ */
+test('a unit file with an unreachable manager still yields a working daemon', async () => {
+  const paths = stateRoot('mgr-e2e');
+  const harness = probe([jobStatus(), jobStatus()], () => ({ status: 1, stderr: 'Failed to connect to bus' }));
+
+  try {
+    const result = await startDaemon(paths, {
+      timeoutMs: 15_000,
+      startManagedJob: (target) => startManagedJob(target, harness.probe),
+    });
+    assert.equal(result.via, 'spawn', 'nothing is held, so the fallback must fall back');
+    assert.equal(result.started, true);
+    assert.equal((await daemonState(paths)).running, true, 'the host must end up with a working daemon');
+  } finally {
+    await stopDaemon(paths);
+  }
 });

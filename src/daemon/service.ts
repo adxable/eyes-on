@@ -5,7 +5,6 @@ import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import type { Paths } from '../core/paths.js';
 import { SERVICE_LABEL_BASE } from '../core/version.js';
-import { loadConfig } from '../core/config.js';
 
 /**
  * The OS-managed service (report M14, U4, K15).
@@ -457,11 +456,11 @@ export function inspectService(paths: Paths): ServiceStatus {
  * What the service manager did with this root's job when asked to start it.
  *
  *   - `unavailable`: no service manager holds a job here. It may be bypassed,
- *     an unsupported platform, disabled in config, have no unit file, or simply
- *     be unreachable - a host with no systemd user bus, or a launchd domain
- *     this session cannot address. Nothing is held, so nothing can be orphaned
- *     and the caller may spawn a daemon of its own.
- *   - `started`: the job is running, or the manager accepted the start.
+ *     an unsupported platform, have no unit file, or simply be unreachable - a
+ *     host with no systemd user bus, or a launchd domain this session cannot
+ *     address. Nothing is held, so nothing can be orphaned and the caller may
+ *     spawn a daemon of its own.
+ *   - `started`: the manager accepted the start, or already holds the job.
  *   - `refused`: the manager holds this job and would not start it. Spawning
  *     beside it is exactly the orphan split, so this is a failure to report,
  *     not a case to route around.
@@ -474,6 +473,32 @@ export interface ManagedJobStart {
   detail: string | null;
 }
 
+export interface CommandResult {
+  status: number;
+  stderr: string;
+}
+
+/**
+ * The three things `startManagedJob` asks about the outside world, injectable so
+ * a test can drive every branch without registering a real LaunchAgent or
+ * systemd unit - including the one that only appears on a host whose service
+ * manager cannot be reached.
+ */
+export interface ServiceManagerProbe {
+  platform: () => Platform;
+  inspect: (paths: Paths) => ServiceStatus;
+  run: (command: string, argv: string[]) => CommandResult;
+}
+
+export const REAL_SERVICE_MANAGER: ServiceManagerProbe = {
+  platform,
+  inspect: inspectService,
+  run: (command, argv) => {
+    const result = spawnSync(command, argv, { encoding: 'utf8' });
+    return { status: result.status ?? -1, stderr: (result.stderr ?? '').trim() };
+  },
+};
+
 /**
  * Starts the managed job for this root, and is the only place that does.
  *
@@ -485,34 +510,40 @@ export interface ManagedJobStart {
  * anything, so `init`, `daemon start` and `daemon restart` all get the property
  * rather than only one of them.
  *
- * What decides between `unavailable` and `refused` is whether the manager
- * actually holds the job, never whether a unit file happens to sit on disk:
- * `installService` writes that file before it ever tries to load it, so on a
- * host with no usable service manager the file exists and the job does not.
+ * It asks the service manager what it holds and has no policy of its own: no
+ * configuration is read here, because a job the manager still holds must never
+ * be shadowed by a spawned daemon whatever the config says. Turning the managed
+ * service off is `init`'s job, and it does it by removing the job rather than
+ * by ignoring one that is still loaded.
+ *
+ * What decides between `unavailable` and `refused` is therefore whether the
+ * manager actually holds the job, never whether a unit file happens to sit on
+ * disk: `installService` writes that file before it ever tries to load it, so
+ * on a host with no usable service manager the file exists and the job does not.
  */
-export function startManagedJob(paths: Paths): ManagedJobStart {
+export function startManagedJob(paths: Paths, probe: ServiceManagerProbe = REAL_SERVICE_MANAGER): ManagedJobStart {
   const unavailable = (detail: string, label = ''): ManagedJobStart => ({ outcome: 'unavailable', label, detail });
 
   if (serviceManagerBypassed()) return unavailable('EYES_ON_SKIP_SERVICE_MANAGER=1');
-  const current = platform();
+  const current = probe.platform();
   if (current === 'other') return unavailable(`unsupported platform ${process.platform}`);
-  if (!loadConfig(paths).daemon.managed_service) return unavailable('daemon.managed_service is disabled in config');
 
-  const status = inspectService(paths);
-  if (status.running) return { outcome: 'started', label: status.label, detail: null };
+  const status = probe.inspect(paths);
 
   if (status.loaded) {
     // `kickstart` without `-k` starts a loaded job and is a no-op on a running
-    // one, so it never kills a process that is already coming up.
+    // one, so it never kills a process that is already coming up - and asking
+    // the manager beats trusting a `running` flag that can still describe a
+    // daemon which was told to exit a moment ago.
     const command =
       current === 'darwin'
-        ? spawnSync('launchctl', ['kickstart', `${launchctlDomain()}/${status.label}`], { encoding: 'utf8' })
-        : spawnSync('systemctl', ['--user', 'start', status.label], { encoding: 'utf8' });
+        ? probe.run('launchctl', ['kickstart', `${launchctlDomain()}/${status.label}`])
+        : probe.run('systemctl', ['--user', 'start', status.label]);
     if (command.status === 0) return { outcome: 'started', label: status.label, detail: null };
     return {
       outcome: 'refused',
       label: status.label,
-      detail: (command.stderr ?? '').trim() || `exited ${command.status}`,
+      detail: command.stderr || `exited ${command.status}`,
     };
   }
 
@@ -523,11 +554,19 @@ export function startManagedJob(paths: Paths): ManagedJobStart {
   // wait for; if it cannot be reached, it holds nothing and a spawn is safe.
   const loaded =
     current === 'darwin'
-      ? spawnSync('launchctl', ['bootstrap', launchctlDomain(), status.unitPath], { encoding: 'utf8' })
-      : spawnSync('systemctl', ['--user', 'start', status.label], { encoding: 'utf8' });
+      ? probe.run('launchctl', ['bootstrap', launchctlDomain(), status.unitPath])
+      : probe.run('systemctl', ['--user', 'start', status.label]);
   if (loaded.status === 0) return { outcome: 'started', label: status.label, detail: null };
+
+  // A load can fail *because* the manager already holds the job - two eyes-on
+  // invocations racing for one root, where the loser sees `Bootstrap failed:
+  // 37: Operation already in progress`. The job being loaded is what the caller
+  // asked for, so only a manager that still holds nothing counts as unavailable.
+  if (probe.inspect(paths).loaded) {
+    return { outcome: 'started', label: status.label, detail: null };
+  }
   return unavailable(
-    `the service manager would not load ${status.label}: ${(loaded.stderr ?? '').trim() || `exited ${loaded.status}`}`,
+    `the service manager would not load ${status.label}: ${loaded.stderr || `exited ${loaded.status}`}`,
     status.label,
   );
 }

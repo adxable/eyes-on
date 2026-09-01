@@ -112,11 +112,13 @@ export interface StartDaemonOptions {
  * spawning *beside* a held job is the orphan split this product has had to fix
  * three times. The detached spawn is the fallback for every case where nothing
  * is held and so nothing can be orphaned - `EYES_ON_SKIP_SERVICE_MANAGER=1`, an
- * unsupported platform, `daemon.managed_service` disabled in config, no unit
- * file, or a service manager that cannot be reached at all (a host with no
- * systemd user bus, a launchd domain this session cannot address). That last
- * case is why the fallback keys on what the manager holds rather than on a unit
- * file existing: `installService` writes the file before it tries to load it.
+ * unsupported platform, no unit file, or a service manager that cannot be
+ * reached at all (a host with no systemd user bus, a launchd domain this
+ * session cannot address). That last case is why the fallback keys on what the
+ * manager holds rather than on a unit file existing: `installService` writes the
+ * file before it tries to load it. Whether a managed service is *wanted* is
+ * `init`'s decision, taken by removing the job; this path only asks what is
+ * there.
  *
  * The spawn is detached and with its own stdio, so the daemon outlives the CLI
  * process that asked for it - and with cwd set to the state root, never to a

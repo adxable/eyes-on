@@ -10,7 +10,7 @@ import { call } from '../ipc/client.js';
 import { METHODS, type RegisterRepoResult } from '../ipc/protocol.js';
 import { installSkill, skillRoot } from '../skill/install.js';
 import { installPostCommitHook, inspectPostCommitHook, type HookResult } from '../git/hook.js';
-import { installService, inspectService, serviceManagerBypassed } from '../daemon/service.js';
+import { installService, inspectService, serviceManagerBypassed, uninstallService } from '../daemon/service.js';
 import { mirrorSizeBytes } from '../git/mirror.js';
 import { loadConfig } from '../core/config.js';
 
@@ -48,16 +48,25 @@ export async function initCommand(context: Context): Promise<number> {
   // for the singleton lock. Spawning directly is the fallback for platforms
   // and sandboxes without a usable service manager.
   const config = loadConfig(context.paths);
-  const service =
-    config.daemon.managed_service && !serviceManagerBypassed()
-      ? installService(context.paths, cliEntryPath(), process.execPath)
-      : {
-          installed: false,
-          label: '',
-          unitPath: '',
-          skipped: 'disabled in config or bypassed by environment',
-          reloaded: false,
-        };
+  const managedServiceWanted = config.daemon.managed_service && !serviceManagerBypassed();
+  // `init` is the single owner of whether this root has a managed service. When
+  // the answer is no it *removes* the job rather than leaving one loaded: a job
+  // the manager still holds would be started by the next `daemon start`, and a
+  // daemon spawned beside it is the orphan split.
+  if (!managedServiceWanted && !serviceManagerBypassed()) {
+    if (uninstallService(context.paths)) {
+      progress(context.writers, 'eyes-on: managed service removed (daemon.managed_service is disabled)');
+    }
+  }
+  const service = managedServiceWanted
+    ? installService(context.paths, cliEntryPath(), process.execPath)
+    : {
+        installed: false,
+        label: '',
+        unitPath: '',
+        skipped: 'disabled in config or bypassed by environment',
+        reloaded: false,
+      };
   // Wait whenever the service manager actually replaced the definition and
   // reloaded the job, so the daemon coming up out of band is not mistaken for a
   // dead one a moment later.
