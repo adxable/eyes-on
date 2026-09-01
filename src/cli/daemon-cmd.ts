@@ -138,7 +138,10 @@ async function daemonStatusCommand(context: Context): Promise<number> {
     help: state.running
       ? ['Stop it with `eyes-on daemon stop`']
       : state.diagnosis.kind === 'wedged'
-        ? ['Stop the process holding the lock with `eyes-on daemon stop` before starting another daemon']
+        ? [
+            'A live process holds the lock while nothing answers the socket: end that process, or restart the eyes-on job through your service manager',
+            '`eyes-on daemon stop` acts on a daemon that answers, so it does not end this one',
+          ]
         : ['Start it with `eyes-on daemon start`'],
   };
   emitDoc(

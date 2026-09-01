@@ -230,6 +230,14 @@ thoroughly than the decision table it feeds. None of them affects any of the six
 acceptance conditions, and all of them concern behaviour after a manual edit of
 `config.yaml` or a race between two concurrent invocations.
 
+One more belongs on that list. `daemon status` and `doctor` detect a daemon that
+holds the singleton lock while its socket answers nothing, and name the pid, but
+`eyes-on daemon stop` does not end such a process: it asks a daemon that answers
+to exit, and this one does not. The diagnostics therefore point at the service
+manager or at ending the process by hand, and say plainly that `daemon stop`
+does not do it. Teaching `stop` to signal a named live holder is deferred with
+the rest of the daemon-startup edge cases.
+
 ## Not run
 
 - **Windows.** The service integration covers launchd and systemd; on any other

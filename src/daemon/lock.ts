@@ -23,7 +23,10 @@ import { dirname, join } from 'node:path';
  * be read is a record of a *past* holder, not a live one. `inspectLock` is
  * written around that fact - an unreadable file means the lock is held, a
  * readable row means it is free and somebody left a record behind - and it is
- * the only place allowed to turn the read into a claim about a process. The
+ * the only place allowed to turn the read into a claim about a process. A clean
+ * `release` clears the row while it still holds the lock, so a row that
+ * survives means the holder died without releasing, which is what the "stale"
+ * reading claims. The
  * visible cost is a `daemon.lock-journal` file that sits next to the lock for as
  * long as it is held - in exclusive locking mode SQLite keeps the rollback
  * journal rather than deleting it on commit. It is transient state, it
@@ -88,10 +91,10 @@ export class SingletonLock {
     return new SingletonLock(handle, path);
   }
 
-  /** Best-effort read of the record left by the last acquirer. Returns null
-   *  while the lock is held - the read is refused - and null when the file is
-   *  absent or not the shape we wrote. Callers that need to tell those apart
-   *  use `inspectLock`. */
+  /** Best-effort read of the record a holder that died left behind. Returns
+   *  null while the lock is held - the read is refused - after a clean release,
+   *  and when the file is absent or not the shape we wrote. Callers that need
+   *  to tell those apart use `inspectLock`. */
   static readHolder(path: string): LockHolder | null {
     const read = readHolderRow(path);
     return read.kind === 'holder' ? read.holder : null;
@@ -99,6 +102,15 @@ export class SingletonLock {
 
   release(): void {
     if (!this.handle) return;
+    try {
+      // Still holding the lock, so this write cannot race anybody: an empty
+      // holder table is what distinguishes a daemon that stopped from one that
+      // died without releasing.
+      this.handle.exec('DELETE FROM holder');
+    } catch {
+      // A record left behind reads as a stale lock, which is the safe way to be
+      // wrong here.
+    }
     try {
       this.handle.close();
     } catch {
@@ -173,7 +185,8 @@ export type LockState =
   /** A live process holds it: the record inside is unreadable, which is how we
    *  know. */
   | 'held'
-  /** Not held, and a record from an earlier holder is still inside. */
+  /** Not held, and a record an earlier holder did not clear is still inside -
+   *  the shape of a process that died rather than stopped. */
   | 'stale'
   /** Present, not held, and not a lock file this version can read. */
   | 'unreadable';

@@ -13,7 +13,7 @@ import { inspectService, launchdPlistPath, readPlistLabelFile, type ServiceStatu
 import { inspectSkill, skillRoot } from '../skill/install.js';
 import { inspectPostCommitHook } from '../git/hook.js';
 import { Database } from '../db/db.js';
-import { foreignStateRoot, isInsideStateRoot } from '../core/paths.js';
+import { foreignStateRoot } from '../core/paths.js';
 
 /**
  * `eyes-on doctor` (report section 2.2, R3, R8, R9, R11).
@@ -272,19 +272,15 @@ function inspectCoexistence(context: Context, own: ServiceStatus): Coexistence {
   }
 
   // Every write eyes-on makes lands under its state root, so isolation is a
-  // question about one directory rather than about named files inside it: a
-  // root nested anywhere under the foreign home puts config, database, mirrors,
-  // logs and socket under `~/.no-mistakes/**` at once. Resolving the root
-  // already refuses that (Paths), so this row reports a condition the CLI could
-  // not have started with - it is reachable when NM_HOME changes, or when the
-  // foreign root appears above an existing eyes-on root afterwards.
-  const nested = isInsideStateRoot(context.paths.root, nmHome);
+  // question about one directory rather than about named files inside it. The
+  // question is settled before doctor runs: `Paths` refuses a root inside the
+  // foreign one when it resolves the root, so no command - this one included -
+  // can reach a state where the two overlap. There is nothing left here to
+  // fail on, only the two roots to name.
   rows.push({
     check: 'state isolation',
-    status: nested ? 'missing' : 'ok',
-    detail: nested
-      ? `EYES_HOME (${context.paths.root}) is inside the no-mistakes state root ${nmHome} - eyes-on refuses to run with it and writes nothing there`
-      : `separate root, socket, database and lock from ${nmHome}`,
+    status: 'ok',
+    detail: `${context.paths.root} is outside ${nmHome}; a state root inside it is refused when the root is resolved`,
   });
 
   if (context.guard.insideGate) {

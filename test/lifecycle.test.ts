@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Paths } from '../src/core/paths.js';
 import {
@@ -20,6 +20,7 @@ import {
   type ServiceManagerProbe,
   type ServiceStatus,
 } from '../src/daemon/service.js';
+import { runDaemon } from '../src/daemon/daemon.js';
 import { probeSocket } from '../src/ipc/server.js';
 import { tempDir } from './helpers.js';
 
@@ -351,7 +352,11 @@ test('a wedged holder and a lock a dead holder left behind are told apart', asyn
     assert.equal(wedged.running, false, 'nothing is listening on the socket');
     assert.equal(wedged.diagnosis.kind, 'wedged', 'a live holder must not be reported as a stopped daemon');
     assert.equal(wedged.diagnosis.kind === 'wedged' ? wedged.diagnosis.pid : null, holder.pid);
-    assert.match(describeDaemon(wedged, paths.lockFile), new RegExp(`pid ${holder.pid} is alive and holds`));
+    const message = describeDaemon(wedged, paths.lockFile);
+    assert.match(message, new RegExp(`pid ${holder.pid} is alive and still holds`));
+    // The remedy named has to be one that works in this state, and
+    // `eyes-on daemon stop` is not: it acts on a daemon that answers.
+    assert.doesNotMatch(message, /daemon stop/);
   } finally {
     holder.kill('SIGKILL');
   }
@@ -360,9 +365,9 @@ test('a wedged holder and a lock a dead holder left behind are told apart', asyn
   const stale = await daemonState(paths);
   assert.equal(stale.diagnosis.kind, 'stale-lock', 'a dead holder leaves a stale lock, not a live one');
   assert.equal(stale.diagnosis.kind === 'stale-lock' ? stale.diagnosis.pid : null, holder.pid);
-  const message = describeDaemon(stale, paths.lockFile);
-  assert.match(message, /is free/, 'the message must not claim a dead pid holds the lock');
-  assert.doesNotMatch(message, /is alive/);
+  const staleMessage = describeDaemon(stale, paths.lockFile);
+  assert.match(staleMessage, /is free/, 'the message must not claim a dead pid holds the lock');
+  assert.doesNotMatch(staleMessage, /is alive/);
 });
 
 test('a root with no lock file at all is simply stopped', async () => {
@@ -370,4 +375,42 @@ test('a root with no lock file at all is simply stopped', async () => {
   const state = await daemonState(paths);
   assert.equal(state.diagnosis.kind, 'stopped');
   assert.match(describeDaemon(state, paths.lockFile), /eyes-on daemon start/);
+});
+
+
+/**
+ * A daemon that was asked to stop and did is not a stale lock, and the two must
+ * not produce the same state: a machine consumer reading `daemon status` has
+ * only this to tell an orderly shutdown from a process that died holding the
+ * lock.
+ */
+test('an ordinary stop leaves the lock free rather than stale', async () => {
+  const paths = stateRoot('lifecycle-clean-stop');
+  const started = await startDaemon(paths, { timeoutMs: 15_000 });
+  assert.equal(started.started, true);
+  const stopped = await stopDaemon(paths);
+  assert.equal(stopped.stopped, true);
+
+  const state = await daemonState(paths);
+  assert.equal(state.diagnosis.kind, 'stopped', 'a daemon that stopped cleanly must not read as a stale lock');
+  assert.equal(state.lock?.state, 'free');
+  assert.match(describeDaemon(state, paths.lockFile), /eyes-on daemon start/);
+});
+
+/**
+ * The capture files the service manager opens are bounded at the daemon entry
+ * point rather than inside `Daemon.start`, because the restart loop that fills
+ * them is driven by daemons that die before they get that far. A config.yaml
+ * the user broke by hand is exactly such a death.
+ */
+test('the service capture files are bounded even when the daemon dies while starting', async () => {
+  const paths = stateRoot('lifecycle-capture');
+  mkdirSync(paths.logsDir, { recursive: true });
+  const captured = join(paths.logsDir, 'service.err.log');
+  writeFileSync(captured, 'x'.repeat(9 * 1024 * 1024));
+  writeFileSync(paths.configFile, 'daemon: [this is not\n  a config eyes-on wrote\n');
+
+  await assert.rejects(runDaemon(paths), 'a config.yaml that does not parse must still fail the daemon');
+
+  assert.equal(statSync(captured).size, 0, 'the crash loop that fills this file must not be able to grow it');
 });

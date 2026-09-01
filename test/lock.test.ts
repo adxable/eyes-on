@@ -70,10 +70,34 @@ test('the kernel releases the lock when the holder is killed outright', async ()
   lock.release();
 });
 
-test('the holder record identifies the live daemon once readable', () => {
-  const path = join(tempDir('lock-holder'), 'daemon.lock');
+/**
+ * The record inside the lock is what tells a stale lock from a clean stop, so
+ * the two endings have to leave different files behind: a release clears the
+ * row while it still holds the lock, and only a death can leave one.
+ */
+test('a clean release clears the record, and only an abrupt death leaves one', async () => {
+  const dir = tempDir('lock-holder');
+  const path = join(dir, 'daemon.lock');
   const lock = SingletonLock.acquire(path);
   lock.release();
-  const holder = SingletonLock.readHolder(path);
-  assert.equal(holder?.pid, process.pid);
+  assert.equal(SingletonLock.readHolder(path), null, 'a daemon that stopped leaves no holder record');
+
+  const script = join(dir, 'holder.mjs');
+  writeFileSync(
+    script,
+    `import { DatabaseSync } from 'node:sqlite';
+     const db = new DatabaseSync(process.argv[2]);
+     db.exec('PRAGMA locking_mode = EXCLUSIVE');
+     db.exec('CREATE TABLE IF NOT EXISTS holder (pid INTEGER NOT NULL, started_at INTEGER NOT NULL)');
+     db.exec('DELETE FROM holder');
+     db.prepare('INSERT INTO holder (pid, started_at) VALUES (?, ?)').run(process.pid, Date.now());
+     process.stdout.write('HELD\\n');
+     setInterval(() => {}, 1000);`,
+  );
+  const holder = spawn(process.execPath, [script, path], { stdio: ['ignore', 'pipe', 'ignore'] });
+  await new Promise<void>((resolve) => holder.stdout.once('data', () => resolve()));
+  holder.kill('SIGKILL');
+  await delay(400);
+
+  assert.equal(SingletonLock.readHolder(path)?.pid, holder.pid, 'a holder that died leaves its record behind');
 });

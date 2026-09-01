@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Paths } from './paths.js';
 import { parseYaml, stringifyYaml, type YamlMap } from './yaml.js';
+import { DEFAULT_LOG_POLICY, type LogPolicy } from './logstore.js';
 
 /**
  * Global configuration at `<root>/config.yaml`.
@@ -87,6 +88,23 @@ export function loadConfig(paths: Paths): GlobalConfig {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return defaultConfig();
     throw error;
+  }
+}
+
+/**
+ * The log bound, from config when it can be read and from the default when it
+ * cannot.
+ *
+ * A hand-edited config.yaml that no longer parses is a file the user owns, not
+ * an eyes-on bug, and how many bytes a log keeps is not a policy worth failing
+ * a daemon start over. `init` is what repairs the file.
+ */
+export function logPolicy(paths: Paths): LogPolicy {
+  try {
+    const logs = loadConfig(paths).logs;
+    return { maxBytes: logs.max_bytes, backups: logs.backups };
+  } catch {
+    return DEFAULT_LOG_POLICY;
   }
 }
 
