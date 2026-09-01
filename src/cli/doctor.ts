@@ -9,7 +9,7 @@ import { gitVersion, toplevel } from '../git/git.js';
 import { canonicalPath, repoID } from '../core/repoid.js';
 import { inspectMirror, mirrorSizeBytes } from '../git/mirror.js';
 import { daemonState, daemonStatus } from '../daemon/lifecycle.js';
-import { inspectService, launchdPlistPath, plistLabel, readPlistFile } from '../daemon/service.js';
+import { inspectService, launchdPlistPath, readPlistLabelFile } from '../daemon/service.js';
 import { inspectSkill, skillRoot } from '../skill/install.js';
 import { inspectPostCommitHook } from '../git/hook.js';
 import { Database } from '../db/db.js';
@@ -119,7 +119,7 @@ export async function doctorCommand(context: Context): Promise<number> {
     check: 'service',
     status: service.supported ? (service.installed ? 'ok' : 'warn') : 'warn',
     detail: service.supported
-      ? `${service.label} (${service.installed ? 'installed' : 'not installed'}${service.loaded ? ', loaded' : ''})`
+      ? `${service.label} (${service.installed ? 'installed' : 'not installed'}${serviceJobDetail(service)})`
       : `no service manager integration for ${process.platform}`,
   });
 
@@ -345,13 +345,12 @@ export function scanLaunchAgents(dir: string): LaunchAgentScan {
   const unreadable: UnreadableAgent[] = [];
   for (const name of names) {
     const file = join(dir, name);
-    const read = readPlistFile(file);
+    const read = readPlistLabelFile(file);
     if (!read.ok) {
       unreadable.push({ file: name, reason: read.reason });
       continue;
     }
-    const label = plistLabel(read.value);
-    if (label) agents.push({ file, label });
+    if (read.label) agents.push({ file, label: read.label });
   }
   return { directory: dir, agents, unreadable, directoryError: null };
 }
@@ -400,6 +399,13 @@ export function labelCollisionRows(agents: DeclaredAgent[], ownLabel: string, ow
     });
   }
   return rows;
+}
+
+/** A loaded job with no process is not a working service, and doctor says so. */
+function serviceJobDetail(service: ReturnType<typeof inspectService>): string {
+  if (!service.loaded) return '';
+  if (service.running) return `, loaded and running${service.pid === null ? '' : ` (pid ${service.pid})`}`;
+  return ', loaded but not running - run `eyes-on init` to start it';
 }
 
 function sameFile(a: string, b: string): boolean {

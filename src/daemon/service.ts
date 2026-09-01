@@ -187,19 +187,36 @@ export type PlistRead =
   | { ok: true; value: { [key: string]: PlistValue } }
   | { ok: false; reason: string };
 
-function plutil(args: string[], input?: string): PlistRead {
-  const result = spawnSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', ...args], {
-    encoding: 'utf8',
-    input,
-    timeout: 10_000,
-  });
-  if (result.error) return { ok: false, reason: String(result.error.message ?? result.error) };
+function runPlutil(args: string[], input?: string): { status: number; stdout: string; stderr: string } | string {
+  const result = spawnSync('/usr/bin/plutil', args, { encoding: 'utf8', input, timeout: 10_000 });
+  if (result.error) return String(result.error.message ?? result.error);
+  return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+}
+
+/** plutil prefixes its diagnostics with the file it was given; the caller knows. */
+function plutilMessage(result: { stdout: string; stderr: string }, fallback: string): string {
+  const raw = (result.stderr.trim() || result.stdout.trim()).split('\n')[0] ?? '';
+  const colon = raw.indexOf(': ');
+  const message = colon >= 0 ? raw.slice(colon + 2) : raw;
+  return message.trim() || fallback;
+}
+
+/**
+ * Reads a whole property list. Used for the unit eyes-on generates itself,
+ * whose values are strings, arrays, dicts and booleans by construction - the
+ * types `-convert json` can represent. A file that cannot be converted reads as
+ * a failure, which makes `installService` rewrite and reload it rather than
+ * trust it.
+ */
+export function readPlist(content: string): PlistRead {
+  const result = runPlutil(['-convert', 'json', '-o', '-', '--', '-'], content);
+  if (typeof result === 'string') return { ok: false, reason: result };
   if (result.status !== 0) {
-    return { ok: false, reason: (result.stderr ?? '').trim() || `plutil exited ${result.status}` };
+    return { ok: false, reason: plutilMessage(result, `plutil exited ${result.status}`) };
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(result.stdout ?? '');
+    parsed = JSON.parse(result.stdout);
   } catch (error) {
     return { ok: false, reason: (error as Error).message };
   }
@@ -209,14 +226,33 @@ function plutil(args: string[], input?: string): PlistRead {
   return { ok: true, value: parsed as { [key: string]: PlistValue } };
 }
 
-/** Reads a property list held in memory. */
-export function readPlist(content: string): PlistRead {
-  return plutil(['--', '-'], content);
-}
+export type LabelRead = { ok: true; label: string | null } | { ok: false; reason: string };
 
-/** Reads a property list from disk, so binary plists work as well as XML ones. */
-export function readPlistFile(file: string): PlistRead {
-  return plutil(['--', file]);
+/**
+ * The `Label` a foreign LaunchAgent declares, read without converting the rest
+ * of the document.
+ *
+ * `-convert json` refuses any property list carrying a `<data>` or `<date>`
+ * value, because JSON cannot represent them - and a value that has nothing to
+ * do with the label must not decide whether the file is visible to the
+ * collision check at all. `-extract` handles every value type.
+ *
+ * The two questions stay separate on purpose, because "I could not read this
+ * file" and "this file names no job" are different facts and only the first is
+ * worth a word from `doctor`: `-lint` answers whether the file is a property
+ * list, `-extract` answers whether it declares a label. `-extract` alone cannot
+ * tell them apart - it exits non-zero for both.
+ */
+export function readPlistLabelFile(file: string): LabelRead {
+  const lint = runPlutil(['-lint', '--', file]);
+  if (typeof lint === 'string') return { ok: false, reason: lint };
+  if (lint.status !== 0) {
+    return { ok: false, reason: plutilMessage(lint, `plutil -lint exited ${lint.status}`) };
+  }
+  const extracted = runPlutil(['-extract', 'Label', 'raw', '-o', '-', '--', file]);
+  if (typeof extracted === 'string' || extracted.status !== 0) return { ok: true, label: null };
+  const label = extracted.stdout.trim();
+  return { ok: true, label: label.length > 0 ? label : null };
 }
 
 /** The `Label` a property list declares, or null when it declares none. */
@@ -336,31 +372,84 @@ export interface ServiceStatus {
   label: string;
   unitPath: string;
   installed: boolean;
-  /** True when the service manager reports the job as loaded. */
+  /** True when the service manager holds the job definition. */
   loaded: boolean;
+  /**
+   * True when that job also has a live process. The distinction is the whole
+   * point: the daemon exits 0 when it shuts down or finds another holding this
+   * root's lock, and the job restarts on failure only, so a loaded job with no
+   * process is a normal and permanent resting state - and it is exactly the
+   * state `init` has to repair rather than route around.
+   */
+  running: boolean;
+  pid: number | null;
+}
+
+export interface JobState {
+  loaded: boolean;
+  running: boolean;
+  pid: number | null;
+}
+
+const NOT_LOADED: JobState = { loaded: false, running: false, pid: null };
+
+/** `launchctl print` output, or null when the job is not loaded at all. */
+export function parseLaunchctlPrint(output: string | null): JobState {
+  if (output === null) return NOT_LOADED;
+  const state = /^\s*state = (.+)$/m.exec(output)?.[1]?.trim() ?? '';
+  const pid = /^\s*pid = (\d+)$/m.exec(output)?.[1];
+  return {
+    loaded: true,
+    running: state === 'running' || pid !== undefined,
+    pid: pid === undefined ? null : Number.parseInt(pid, 10),
+  };
+}
+
+/** `systemctl --user show` output, or null when the unit could not be queried. */
+export function parseSystemctlShow(output: string | null): JobState {
+  if (output === null) return NOT_LOADED;
+  const settings = new Map<string, string>();
+  for (const line of output.split('\n')) {
+    const equals = line.indexOf('=');
+    if (equals > 0) settings.set(line.slice(0, equals).trim(), line.slice(equals + 1).trim());
+  }
+  const loaded = settings.get('LoadState') === 'loaded';
+  const mainPid = Number.parseInt(settings.get('MainPID') ?? '0', 10);
+  const pid = Number.isFinite(mainPid) && mainPid > 0 ? mainPid : null;
+  return { loaded, running: loaded && settings.get('ActiveState') === 'active' && pid !== null, pid };
 }
 
 function launchctlDomain(): string {
   return `gui/${userInfo().uid}`;
 }
 
-export function inspectService(paths: Paths): ServiceStatus {
-  const current = platform();
+function jobState(paths: Paths, current: Platform): JobState {
   if (current === 'darwin') {
-    const label = launchdLabel(paths);
-    const unitPath = launchdPlistPath(paths);
-    const installed = existsSync(unitPath);
-    const listed = spawnSync('launchctl', ['print', `${launchctlDomain()}/${label}`], { encoding: 'utf8' });
-    return { supported: true, label, unitPath, installed, loaded: listed.status === 0 };
+    const listed = spawnSync('launchctl', ['print', `${launchctlDomain()}/${launchdLabel(paths)}`], {
+      encoding: 'utf8',
+    });
+    return parseLaunchctlPrint(listed.status === 0 ? (listed.stdout ?? '') : null);
   }
   if (current === 'linux') {
-    const label = systemdUnitName(paths);
-    const unitPath = systemdUnitPath(paths);
-    const installed = existsSync(unitPath);
-    const listed = spawnSync('systemctl', ['--user', 'is-active', label], { encoding: 'utf8' });
-    return { supported: true, label, unitPath, installed, loaded: (listed.stdout ?? '').trim() === 'active' };
+    const shown = spawnSync(
+      'systemctl',
+      ['--user', 'show', systemdUnitName(paths), '-p', 'LoadState', '-p', 'ActiveState', '-p', 'MainPID'],
+      { encoding: 'utf8' },
+    );
+    return parseSystemctlShow(shown.status === 0 ? (shown.stdout ?? '') : null);
   }
-  return { supported: false, label: '', unitPath: '', installed: false, loaded: false };
+  return NOT_LOADED;
+}
+
+export function inspectService(paths: Paths): ServiceStatus {
+  const current = platform();
+  if (current === 'other') {
+    return { supported: false, label: '', unitPath: '', installed: false, loaded: false, running: false, pid: null };
+  }
+  const label = current === 'darwin' ? launchdLabel(paths) : systemdUnitName(paths);
+  const unitPath = current === 'darwin' ? launchdPlistPath(paths) : systemdUnitPath(paths);
+  const job = jobState(paths, current);
+  return { supported: true, label, unitPath, installed: existsSync(unitPath), ...job };
 }
 
 export interface ServiceInstallResult {
@@ -419,6 +508,24 @@ export function inspectInstalledUnit(
   };
 }
 
+export type InstallAction = 'leave-alone' | 'kickstart' | 'reinstall';
+
+/**
+ * What `init` owes an already-installed service.
+ *
+ * The middle case is the one that matters: a job that is loaded but has no
+ * process means the definition is right and only the process is missing. Left
+ * as `leave-alone` it makes `init` fall through to spawning a daemon of its own,
+ * which is the orphan split this product has already had to fix once - launchd
+ * holding a loaded job with no process while an unmanaged daemon serves the
+ * root.
+ */
+export function installAction(sameMeaning: boolean, status: { loaded: boolean; running: boolean }): InstallAction {
+  if (!sameMeaning) return 'reinstall';
+  if (status.running) return 'leave-alone';
+  return status.loaded ? 'kickstart' : 'reinstall';
+}
+
 /**
  * Writes and loads the service definition. Idempotent: the file is refreshed
  * whenever the template's bytes differ, but the job is reloaded only when the
@@ -444,12 +551,22 @@ export function installService(paths: Paths, executable: string, nodePath: strin
       parseLaunchdPlist(installed),
     );
     if (!existing.sameBytes) writeFileSync(unitPath, content, { mode: 0o644 });
-    // A job whose declaration has not changed and is already loaded is left
+    const action = installAction(existing.sameMeaning, inspectService(paths));
+    // A job whose declaration has not changed and is already running is left
     // strictly alone. Reloading it would bounce a healthy daemon on every
     // `init`, and idempotent has to mean "repairs what is broken", not
     // "restarts what is working".
-    if (existing.sameMeaning && inspectService(paths).loaded) {
+    if (action === 'leave-alone') {
       return { installed: true, label, unitPath, skipped: null, reloaded: false };
+    }
+    // The declaration is right and the job is merely dead: start the job the
+    // service manager already holds, rather than tearing it down or - worse -
+    // letting the caller spawn an unmanaged daemon beside it.
+    if (action === 'kickstart') {
+      const kicked = spawnSync('launchctl', ['kickstart', '-k', `${launchctlDomain()}/${label}`], { encoding: 'utf8' });
+      if (kicked.status === 0) {
+        return { installed: true, label, unitPath, skipped: null, reloaded: true };
+      }
     }
     // bootout then bootstrap: launchd refuses to bootstrap an already-loaded
     // label, and this is the only sequence that is safe to repeat. It targets
@@ -476,8 +593,15 @@ export function installService(paths: Paths, executable: string, nodePath: strin
     parseSystemdUnit(installed, label),
   );
   if (!existing.sameBytes) writeFileSync(unitPath, content, { mode: 0o644 });
-  if (existing.sameMeaning && inspectService(paths).loaded) {
+  const action = installAction(existing.sameMeaning, inspectService(paths));
+  if (action === 'leave-alone') {
     return { installed: true, label, unitPath, skipped: null, reloaded: false };
+  }
+  if (action === 'kickstart') {
+    const restarted = spawnSync('systemctl', ['--user', 'restart', label], { encoding: 'utf8' });
+    if (restarted.status === 0) {
+      return { installed: true, label, unitPath, skipped: null, reloaded: true };
+    }
   }
   spawnSync('systemctl', ['--user', 'daemon-reload'], { encoding: 'utf8' });
   const enabled = spawnSync('systemctl', ['--user', 'enable', '--now', label], { encoding: 'utf8' });

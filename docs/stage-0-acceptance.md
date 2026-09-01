@@ -20,18 +20,38 @@ rule, which is not a row in the table. Idempotency (6) is automated in
 it needs a live no-mistakes install and a real service manager, so it was
 measured by hand and the numbers below are that measurement.
 
+## What these numbers were measured against
+
+The session above ran on commit `dbc1b52`. Three review-fix commits landed
+afterwards - `f01ca51`, `435e0e7` and `f363f06` - and they changed code paths
+two of these results exercise: the service install/reload decision became a
+semantic comparison with a separate byte-write, every clone read moved behind
+`gitReadClone`, and `doctor` now reads LaunchAgent labels through `plutil`.
+
+So, plainly: **daemon coexistence (1) and idempotency (6) are pre-fix
+measurements and are pending re-measurement against the final code.** Their
+automated counterparts - the clone allow-list rule and `test/cli.test.ts`, "init
+repairs what is missing on the second run" - do run against the current code, so
+what is stale is the manual launchd session, not the property. Results 2, 3, 4
+and 5 are unaffected by those commits and stand as recorded.
+
+All six will be re-run against the final code before delivery and this document
+replaced with the refreshed numbers.
+
 ## Results
 
 | Test | Criterion | Result |
 |---|---|---|
-| Daemon coexistence | both daemons live at once; `no-mistakes axi` and `doctor` answer as before | **pass** |
+| Daemon coexistence | both daemons live at once; `no-mistakes axi` and `doctor` answer as before | **pass** (measured pre-fix, see above) |
 | Foreign state untouched | `find ~/.no-mistakes -newer <marker>` is empty | **pass** - 0 entries |
 | Clone untouched | `git status --porcelain` and `for-each-ref` identical before and after | **pass** - identical |
 | Mirror cost | create < 1 s, size < 5 MB, incremental fetch < 0.5 s | **pass** - 0.367 s, 272 KB, 0.070 s |
 | Recursion refusal | `NO_MISTAKES_GATE=1 eyes-on check` refuses; `eyes-on status` works | **pass** - exit 2 / exit 0 |
-| Idempotency | a second `init` duplicates nothing and repairs what is missing | **pass** |
+| Idempotency | a second `init` duplicates nothing and repairs what is missing | **pass** (measured pre-fix, see above) |
 
 ## 1. Daemon coexistence
+
+Measured on `dbc1b52`, before the review fixes; pending re-measurement.
 
 ```
 $ launchctl list | grep -E 'no-mistakes|eyes-on'
@@ -128,6 +148,11 @@ are not implemented yet. A working directory under `<NM_HOME>/worktrees` is
 detected the same way, whatever the environment says.
 
 ## 6. Idempotency
+
+Measured on `dbc1b52`, before the review fixes; pending re-measurement. The
+reload decision has since become semantic and `init` now starts a loaded job
+whose process died instead of spawning its own daemon beside it, so the repair
+path below is not the one the current code takes.
 
 A second `init` on an already-registered repository:
 

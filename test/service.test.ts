@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Paths } from '../src/core/paths.js';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   inspectInstalledUnit,
@@ -11,8 +11,12 @@ import {
   launchdPlist,
   parseLaunchdPlist,
   parseSystemdUnit,
+  installAction,
+  parseLaunchctlPrint,
+  parseSystemctlShow,
   plistLabel,
   readPlist,
+  readPlistLabelFile,
   sameServiceDefinition,
   systemdDefinition,
   systemdUnit,
@@ -131,7 +135,7 @@ test('a LaunchAgent label is read from what the plist declares, not from its fil
  * asserted rather than assumed.
  */
 test('the plist reader copes with the shapes real LaunchAgents use', darwinOnly, () => {
-  const withSelfClosingLeaf = readPlist(
+  const withSelfClosing = readPlist(
     [
       '<?xml version="1.0" encoding="UTF-8"?>',
       '<plist version="1.0">',
@@ -150,20 +154,98 @@ test('the plist reader copes with the shapes real LaunchAgents use', darwinOnly,
       '</plist>',
     ].join('\n'),
   );
-  assert.ok(withSelfClosingLeaf.ok, 'a self-closing leaf must not hide the keys after it');
-  assert.equal(plistLabel(withSelfClosingLeaf.value), 'com.adxable.eyes-on.daemon.deadbeef');
-  assert.equal(withSelfClosingLeaf.value.ServiceDescription, '');
-  assert.deepEqual(withSelfClosingLeaf.value.ProgramArguments, []);
-  assert.deepEqual(withSelfClosingLeaf.value.EnvironmentVariables, {});
-  assert.equal(withSelfClosingLeaf.value.RunAtLoad, true);
+  assert.ok(withSelfClosing.ok, 'a self-closing leaf must not hide the keys after it');
+  assert.equal(plistLabel(withSelfClosing.value), 'com.adxable.eyes-on.daemon.deadbeef');
+  assert.equal(withSelfClosing.value.ServiceDescription, '');
+  assert.deepEqual(withSelfClosing.value.ProgramArguments, []);
+  assert.deepEqual({ ...(withSelfClosing.value.EnvironmentVariables as object) }, {});
+  assert.equal(withSelfClosing.value.RunAtLoad, true);
+});
 
-  // An empty job: read successfully, declares no label, collides with nothing.
-  const empty = readPlist('<plist version="1.0">\n<dict/>\n</plist>\n');
-  assert.ok(empty.ok);
-  assert.equal(plistLabel(empty.value), null);
+/**
+ * The label is read on its own, because the collision check must see a job
+ * whatever else the file carries. A `<data>` or `<date>` value cannot be
+ * converted to JSON at all, and a value unrelated to the label must not decide
+ * whether the file is visible.
+ */
+test('a label is read out of a plist carrying value types JSON cannot represent', darwinOnly, () => {
+  const dir = tempDir('plist-values');
+  const withData = join(dir, 'with-data.plist');
+  writeFileSync(
+    withData,
+    '<?xml version="1.0"?><plist version="1.0"><dict><key>Label</key><string>com.adxable.eyes-on.daemon.deadbeef</string><key>Blob</key><data>aGVsbG8=</data><key>When</key><date>2026-01-01T00:00:00Z</date></dict></plist>',
+  );
+  assert.equal(readPlist(readFileSync(withData, 'utf8')).ok, false, 'this is the shape that cannot become JSON');
 
-  const broken = readPlist('this is not a property list at all\n');
-  assert.equal(broken.ok, false, 'a file that is not a property list must be reported, not guessed at');
+  const read = readPlistLabelFile(withData);
+  assert.ok(read.ok, 'a <data> value must not make the file unreadable');
+  assert.equal(read.label, 'com.adxable.eyes-on.daemon.deadbeef');
+});
+
+/**
+ * "I could not read this file" and "this file names no job" are different
+ * facts, and only the first is worth a word from doctor.
+ */
+test('a plist with no label reads cleanly; one that is not a plist does not', darwinOnly, () => {
+  const dir = tempDir('plist-labels');
+  const noLabel = join(dir, 'no-label.plist');
+  writeFileSync(noLabel, '<plist version="1.0">\n<dict/>\n</plist>\n');
+  const read = readPlistLabelFile(noLabel);
+  assert.ok(read.ok);
+  assert.equal(read.label, null);
+
+  const broken = join(dir, 'broken.plist');
+  writeFileSync(broken, 'this is not a property list at all\n');
+  const failed = readPlistLabelFile(broken);
+  assert.equal(failed.ok, false, 'a file that is not a property list must be reported, not guessed at');
+  if (!failed.ok) assert.ok(failed.reason.length > 0, 'an unreadable file must say why');
+});
+
+/**
+ * A job the service manager holds but has no process for is the state `init`
+ * has to repair. Treating it as healthy is what left launchd holding a loaded
+ * job with no process while an unmanaged daemon served the root.
+ */
+test('a loaded job with no process reads as not running', () => {
+  const running = parseLaunchctlPrint(
+    ['gui/501/com.adxable.eyes-on.daemon.af804f2b = {', '\tstate = running', '\tpid = 33467', '}'].join('\n'),
+  );
+  assert.deepEqual(running, { loaded: true, running: true, pid: 33467 });
+
+  const dead = parseLaunchctlPrint(
+    ['gui/501/com.adxable.eyes-on.daemon.af804f2b = {', '\tstate = not running', '\tlast exit code = 0', '}'].join('\n'),
+  );
+  assert.deepEqual(dead, { loaded: true, running: false, pid: null });
+
+  assert.deepEqual(parseLaunchctlPrint(null), { loaded: false, running: false, pid: null });
+
+  assert.deepEqual(parseSystemctlShow('LoadState=loaded\nActiveState=active\nMainPID=4242'), {
+    loaded: true,
+    running: true,
+    pid: 4242,
+  });
+  assert.deepEqual(parseSystemctlShow('LoadState=loaded\nActiveState=inactive\nMainPID=0'), {
+    loaded: true,
+    running: false,
+    pid: null,
+  });
+  assert.deepEqual(parseSystemctlShow('LoadState=not-found\nActiveState=inactive\nMainPID=0'), {
+    loaded: false,
+    running: false,
+    pid: null,
+  });
+  assert.deepEqual(parseSystemctlShow(null), { loaded: false, running: false, pid: null });
+});
+
+test('init starts a loaded job that died instead of spawning beside it', () => {
+  // Healthy and unchanged: left alone, so a repeat init cannot bounce it.
+  assert.equal(installAction(true, { loaded: true, running: true }), 'leave-alone');
+  // Loaded with no process: the definition is right, only the process is gone.
+  assert.equal(installAction(true, { loaded: true, running: false }), 'kickstart');
+  // Nothing loaded, or a changed declaration: install and load it properly.
+  assert.equal(installAction(true, { loaded: false, running: false }), 'reinstall');
+  assert.equal(installAction(false, { loaded: true, running: true }), 'reinstall');
+  assert.equal(installAction(false, { loaded: true, running: false }), 'reinstall');
 });
 
 /**
