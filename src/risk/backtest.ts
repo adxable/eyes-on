@@ -162,7 +162,9 @@ function runSplit(split: string, options: BacktestOptions): SplitResult {
       note:
         population.length === 0
           ? 'no code files existed at the split date under the trusted include patterns'
-          : 'no commits after the split date: there is no outcome to measure',
+          : `no commits landed in the outcome window (after ${split}${
+              options.horizonDays === undefined ? ', up to the branch head' : `, within ${options.horizonDays} days`
+            }): there is no outcome to measure`,
       elapsed_ms: elapsed(started),
     };
   }
