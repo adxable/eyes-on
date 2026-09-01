@@ -1,7 +1,26 @@
 # Stage 0 acceptance
 
-Measured on 1 September 2026 against commit `3cfa36a` - the final stage 0 code,
-after every review fix - on macOS 25.2.0, Node v22.21.1, git 2.39.5, gh 2.82.0.
+Two kinds of evidence stand behind the acceptance conditions, and they age
+differently. This section says which is which, so a later commit makes this
+document incomplete rather than untrue.
+
+**Results 2 to 6, and the seventh property, have automated counterparts** that
+run on every `npm test` against whatever the code currently is. Those tests, not
+the figures below, are the standing evidence for those properties:
+
+| Property | Test |
+|---|---|
+| 2 foreign state untouched | `acceptance: a full session leaves a foreign state root untouched` and `acceptance: a state root inside the no-mistakes home is refused before anything is written`, in `test/coexistence.test.ts` |
+| 3 clone untouched | `acceptance: the working clone is byte-identical before and after`, with the clone allow-list rules, in `test/coexistence.test.ts` |
+| 4 mirror cost | `acceptance: creating and refreshing the mirror stays inside the cost budget`, in `test/coexistence.test.ts` |
+| 5 recursion refusal | `acceptance: inside a no-mistakes run, mutation is refused and reads still work`, in `test/coexistence.test.ts` |
+| 6 idempotency | `init registers the repository and is idempotent` and `init repairs what is missing on the second run`, in `test/cli.test.ts` |
+| 7 no usable service manager | `an unreachable service manager falls back to a spawn rather than failing` and `a unit file with an unreachable manager still yields a working daemon`, in `test/lifecycle.test.ts` |
+
+**Result 1 has no automated counterpart**, because it needs a live no-mistakes
+install and a real service manager. It, and every measured figure in the
+sections below, come from one manual session: 1 September 2026, at commit
+`3cfa36a`, on macOS 25.2.0, Node v22.21.1, git 2.39.5, gh 2.82.0.
 
 The reference clone is `~/Projects/firstmate/projects/adx-worker` (91.7 MB
 `.git`, 369 refs) and it was read only: no ref, hook, remote or config entry in
@@ -12,16 +31,19 @@ The session ran against a temporary state root `~/.eyes-on-acceptance` with the
 rather than a simulation. Afterwards the state root, the LaunchAgent and the
 daemon were all removed; nothing from this session persists on the machine.
 
-Five of the six results have an automated counterpart that runs on every
-`npm test`: foreign state untouched (2), clone untouched (3), mirror cost (4)
-and recursion refusal (5) in `test/coexistence.test.ts`, and idempotency (6) in
-`test/cli.test.ts`. **Daemon coexistence (1) has no automated counterpart** - it
-needs a live no-mistakes install and a real service manager - so it exists only
-as the manual measurement recorded below. `test/coexistence.test.ts` also
-carries the clone allow-list rules, which are not rows in the table.
+### What landed after the measured commit
 
-At the measured commit: 101 tests pass, `npm run typecheck` and `npm run lint`
-are clean.
+| Commit | What it changed |
+|---|---|
+| `9b6717b` | this document only |
+| `6640d1e` | lock-holder diagnostics; a state root inside `NM_HOME` is now refused when the root is resolved (result 2); `prepack` builds the published entry point; the raw capture logs gained a bound |
+| `47c73b5` | the wedged and stale lock readings and their wording; the holder row is cleared on a clean release; capture-log bounding moved to the daemon entry point |
+| this review round | a `config.yaml` that no longer parses no longer stops the daemon from starting; `daemon status` reports the lock reading separately from the daemon's condition |
+
+None of these changed the mirror, the clone-facing code or the recursion guard.
+Where one of them touched an area a result covers - result 2 above all - the
+automated counterpart named in the table is what still holds; the manual figure
+describes `3cfa36a`.
 
 ## Results
 

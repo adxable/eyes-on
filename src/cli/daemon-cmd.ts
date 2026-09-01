@@ -121,11 +121,15 @@ async function daemonStatusCommand(context: Context): Promise<number> {
     uptime_seconds: state.uptimeSeconds,
     socket: context.paths.socket,
     lock: context.paths.lockFile,
-    // What the lock actually says, in the same words `doctor` uses. A pid
-    // appears under `lock_holder_pid` only when a live process holds the lock
-    // while the socket stays silent; a record left by a process that has since
-    // died is reported as the stale lock it is, and never as a holder.
-    lock_state: state.diagnosis.kind,
+    // Two different facts, kept apart. `condition` is what this run concluded
+    // about the daemon; `lock_state` is what reading the lock file returned,
+    // and it is null when the lock was never read - a daemon that answers the
+    // socket is not asked about its lock. A pid appears under
+    // `lock_holder_pid` only when a live process holds the lock while the
+    // socket stays silent; a record left by a process that has since died is
+    // reported as the stale lock it is, and never as a holder.
+    condition: state.diagnosis.kind,
+    lock_state: state.lock?.state ?? null,
     lock_holder_pid: state.diagnosis.kind === 'wedged' ? state.diagnosis.pid : null,
     stale_lock_pid: state.diagnosis.kind === 'stale-lock' ? state.diagnosis.pid : null,
     detail: describeDaemon(state, context.paths.lockFile),

@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Paths, STATE_SUBDIRS } from '../core/paths.js';
-import { loadConfig, logPolicy } from '../core/config.js';
+import { logPolicy } from '../core/config.js';
 import { boundCaptureFile, RotatingLog } from '../core/logstore.js';
 import { repoID as computeRepoID, canonicalPath } from '../core/repoid.js';
 import { Database, findRepoByPath, listRepos, upsertRepo } from '../db/db.js';
@@ -50,11 +50,11 @@ export class Daemon {
 
   constructor(paths: Paths) {
     this.paths = paths;
-    const config = loadConfig(paths);
-    this.log = new RotatingLog(paths.daemonLog, {
-      maxBytes: config.logs.max_bytes,
-      backups: config.logs.backups,
-    });
+    // `logPolicy`, not `loadConfig`: a config.yaml the user edited into
+    // something that no longer parses is their file, and how many bytes a log
+    // keeps is not worth refusing to start over - least of all under a service
+    // manager that would then restart the daemon forever. `init` repairs it.
+    this.log = new RotatingLog(paths.daemonLog, logPolicy(paths));
   }
 
   /** Creates the directory layout from Appendix C.2. Safe to repeat. */

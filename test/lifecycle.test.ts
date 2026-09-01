@@ -21,6 +21,7 @@ import {
   type ServiceStatus,
 } from '../src/daemon/service.js';
 import { runDaemon } from '../src/daemon/daemon.js';
+import { LockHeldError, SingletonLock } from '../src/daemon/lock.js';
 import { probeSocket } from '../src/ipc/server.js';
 import { tempDir } from './helpers.js';
 
@@ -400,17 +401,42 @@ test('an ordinary stop leaves the lock free rather than stale', async () => {
 /**
  * The capture files the service manager opens are bounded at the daemon entry
  * point rather than inside `Daemon.start`, because the restart loop that fills
- * them is driven by daemons that die before they get that far. A config.yaml
- * the user broke by hand is exactly such a death.
+ * them is driven by daemons that die before they get that far. A daemon that
+ * finds the root's lock already held is such a death, and the one that can be
+ * staged deterministically.
  */
 test('the service capture files are bounded even when the daemon dies while starting', async () => {
   const paths = stateRoot('lifecycle-capture');
   mkdirSync(paths.logsDir, { recursive: true });
   const captured = join(paths.logsDir, 'service.err.log');
   writeFileSync(captured, 'x'.repeat(9 * 1024 * 1024));
-  writeFileSync(paths.configFile, 'daemon: [this is not\n  a config eyes-on wrote\n');
 
-  await assert.rejects(runDaemon(paths), 'a config.yaml that does not parse must still fail the daemon');
+  const held = SingletonLock.acquire(paths.lockFile);
+  try {
+    await assert.rejects(runDaemon(paths), LockHeldError, 'a second daemon for one root must not start');
+  } finally {
+    held.release();
+  }
 
   assert.equal(statSync(captured).size, 0, 'the crash loop that fills this file must not be able to grow it');
+});
+
+/**
+ * A config.yaml edited into something that no longer parses is the user's file,
+ * not an eyes-on bug - and the only thing the daemon reads from it at start-up
+ * is how many bytes its log may keep. Failing there put a service-managed
+ * daemon into an endless restart loop and told the user to report a bug.
+ */
+test('a config.yaml that no longer parses does not stop the daemon from starting', async () => {
+  const paths = stateRoot('lifecycle-badconfig');
+  mkdirSync(paths.root, { recursive: true });
+  writeFileSync(paths.configFile, 'daemon: [this is not\n  a config eyes-on wrote\n');
+
+  try {
+    const result = await startDaemon(paths, { timeoutMs: 15_000 });
+    assert.equal(result.started, true, 'the daemon must come up with the default log bound');
+    assert.equal((await daemonState(paths)).running, true);
+  } finally {
+    await stopDaemon(paths);
+  }
 });
