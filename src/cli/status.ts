@@ -1,10 +1,13 @@
 import { existsSync } from 'node:fs';
 import type { Context } from './context.js';
 import { emitDoc } from './output.js';
-import type { ToonObject } from './toon.js';
+import type { ToonObject, ToonValue } from './toon.js';
 import { daemonState, daemonStatus } from '../daemon/lifecycle.js';
 import { currentBranch, headSHA, toplevel } from '../git/git.js';
-import { canonicalPath } from '../core/repoid.js';
+import { canonicalPath, repoID } from '../core/repoid.js';
+import { Database, findRepoByPath } from '../db/db.js';
+import { latestCheck, type CheckRow } from '../db/checks.js';
+import { bandLabel, type Band } from '../risk/signals.js';
 
 /**
  * `eyes-on status` - read-only, and required to keep working from inside a
@@ -16,7 +19,14 @@ export async function statusCommand(context: Context): Promise<number> {
   const status = state.running ? await daemonStatus(context.paths) : null;
   const top = toplevel(context.cwd);
   const clone = top ? canonicalPath(top) : null;
-  const registered = clone !== null && (status?.repos ?? []).some((repo) => repo.workingPath === clone);
+  // Asked of the daemon when there is one, and of the database when there is
+  // not. Reading "registered: no" off a stopped daemon would describe the
+  // daemon, not the repository - and the repository is what was asked about.
+  const registered =
+    clone !== null &&
+    ((status?.repos ?? []).some((repo) => repo.workingPath === clone) || isRegistered(context, clone));
+
+  const assessment = clone ? lastAssessment(context, clone, currentBranch(context.cwd)) : null;
 
   const doc: ToonObject = {
     root: context.paths.root,
@@ -36,20 +46,67 @@ export async function statusCommand(context: Context): Promise<number> {
       mirror_refs: repo.mirrorRefs,
       mirror_ok: repo.mirrorReachable,
     })),
-    assessments: 0,
+    last_check: assessment
+      ? ({
+          branch: assessment.branch,
+          head: assessment.head_sha.slice(0, 12),
+          score: assessment.score,
+          band: assessment.band,
+          status: assessment.status,
+          when: new Date(assessment.updated_at * 1000).toISOString(),
+        } as ToonValue)
+      : null,
     help: [
-      registered
-        ? 'This repository is registered. Risk assessment (`eyes-on check`) arrives in stage 1.'
-        : 'Run `eyes-on init` to register this repository with eyes-on',
+      assessment
+        ? 'Re-run `eyes-on check` to assess the current head, or `eyes-on why <file>` for one file'
+        : registered
+          ? 'This repository is registered. Run `eyes-on check` to assess the current change'
+          : 'Run `eyes-on init` to register this repository with eyes-on',
       'Run `eyes-on doctor` for a full readiness and collision report',
     ],
   };
 
-  emitDoc(context.writers, context.format, doc, renderMarkdown(doc));
+  emitDoc(context.writers, context.format, doc, renderMarkdown(doc, assessment));
   return 0;
 }
 
-function renderMarkdown(doc: ToonObject): string {
+/** Whether the repository has a row in the state database. */
+function isRegistered(context: Context, clone: string): boolean {
+  if (!existsSync(context.paths.db)) return false;
+  try {
+    const db = Database.open(context.paths.db);
+    try {
+      return findRepoByPath(db, clone) !== undefined;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The most recent recorded assessment of this branch.
+ *
+ * Read-only and best effort: `status` must keep working on a machine where
+ * `init` has never run, and from inside a no-mistakes run where mutation is
+ * refused. A missing database is "no assessment yet", not a failure.
+ */
+function lastAssessment(context: Context, clone: string, branch: string | null): CheckRow | null {
+  if (!existsSync(context.paths.db) || branch === null) return null;
+  try {
+    const db = Database.open(context.paths.db);
+    try {
+      return latestCheck(db, repoID(clone), branch) ?? null;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+function renderMarkdown(doc: ToonObject, assessment: CheckRow | null): string {
   const lines = [
     '# eyes-on status',
     '',
@@ -59,7 +116,19 @@ function renderMarkdown(doc: ToonObject): string {
     `- branch: ${String(doc.branch) || 'n/a'}`,
     `- registered with eyes-on: ${doc.registered ? 'yes' : 'no'}`,
     '',
-    'No assessment has been recorded yet: risk scoring lands in stage 1.',
   ];
+  if (assessment) {
+    const head = assessment.head_sha.slice(0, 12);
+    const current = String(doc.head) === head ? '' : ' (the head has moved since)';
+    lines.push(
+      `**${assessment.score ?? 0}/100 - ${bandLabel((assessment.band ?? 'auto') as Band)}** at \`${head}\`${current}.`,
+      '',
+      assessment.status === 'unverified'
+        ? 'Recorded as `unverified`: the trusted configuration could not be read, so the hard rules were not evaluated.'
+        : 'Run `eyes-on check` to assess the current head.',
+    );
+  } else {
+    lines.push('No assessment has been recorded for this branch yet. Run `eyes-on check`.');
+  }
   return lines.join('\n');
 }

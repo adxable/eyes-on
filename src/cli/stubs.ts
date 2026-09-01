@@ -1,7 +1,7 @@
 import type { Context } from './context.js';
 import { assertMayMutate } from './context.js';
 import { EXIT_ERROR, UserFacingError } from './output.js';
-import type { CommandSpec } from './commands.js';
+import { implementedCommands, type CommandSpec } from './commands.js';
 
 /**
  * Commands that are named but not built yet.
@@ -28,7 +28,9 @@ export function stubCommand(context: Context, spec: CommandSpec): number {
     [
       `Planned behaviour: ${spec.summary}`,
       `Usage once it lands: ${spec.usage}`,
-      'Stage 0 delivers: init, doctor, status, daemon and axi status',
+      // Derived from the command table rather than written out, so this line
+      // cannot go on naming stage 0's surface after stage 1 has landed.
+      `Delivered so far: ${implementedCommands().map((command) => command.name).join(', ')}`,
     ],
     EXIT_ERROR,
   );
