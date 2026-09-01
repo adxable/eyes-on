@@ -39,7 +39,7 @@ daemon were all removed; nothing from this session persists on the machine.
 | `6640d1e` | lock-holder diagnostics; a state root inside `NM_HOME` is now refused when the root is resolved (result 2); `prepack` builds the published entry point; the raw capture logs gained a bound |
 | `47c73b5` | the wedged and stale lock readings and their wording; the holder row is cleared on a clean release; capture-log bounding moved to the daemon entry point |
 | `462dbe0` | a `config.yaml` that no longer parses no longer stops the daemon from starting; `daemon status` reports the lock reading separately from the daemon's condition |
-| this review round | `doctor` reports a missing git instead of failing on it; a `daemon.lock` this version cannot open is refused with the repair that clears it |
+| `2323e40` | `doctor` reports a missing git instead of failing on it; a `daemon.lock` this version cannot open is refused with the repair that clears it |
 
 None of these changed the mirror, the clone-facing code or the recursion guard.
 Where one of them touched an area a result covers - result 2 above all - the
