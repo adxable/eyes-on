@@ -111,6 +111,16 @@ export async function doctorCommand(context: Context): Promise<number> {
     detail: describeDaemon(state, context.paths.lockFile),
   });
 
+  if (context.paths.socketIsOutsideRoot) {
+    // Not a fault, but never a surprise either: someone debugging a daemon has
+    // to be able to find the socket the layout says is in the state root.
+    rows.push({
+      check: 'daemon socket',
+      status: 'ok',
+      detail: `${context.paths.socket} - outside the state root, because <root>/socket is longer than a unix socket address may be`,
+    });
+  }
+
   const service = inspectService(context.paths);
   rows.push({
     check: 'service',

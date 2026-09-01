@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { ForeignStateRootError, Paths, isInsideStateRoot } from '../src/core/paths.js';
+import { ForeignStateRootError, MAX_SOCKET_PATH_BYTES, Paths, isInsideStateRoot } from '../src/core/paths.js';
 
 /**
  * The layout is Appendix C.2 and it is asserted literally, because every later
@@ -80,4 +80,28 @@ test('the refusal says how to choose a different root', () => {
     assert.ok(error instanceof ForeignStateRootError);
     assert.ok(error.help.some((line) => line.includes('EYES_HOME')), 'the help must name the variable to change');
   }
+});
+
+test('a state root too deep for a unix socket gets a short, root-specific address', () => {
+  // A unix socket address is truncated rather than refused past the kernel's
+  // field size, so two deep roots sharing a long prefix would otherwise bind
+  // and connect to the same address - and `init` under one would register into
+  // the other. Measured on a scratch root 147 bytes deep.
+  const deep = `/private/tmp/claude-501/-Users-adix--treehouse-eyes-on-0a25-1-eyes-on/${'f'.repeat(36)}/scratchpad`;
+  const a = Paths.withRoot(join(deep, 'acceptance', 'eyes-home'), { NM_HOME: '/nm' } as NodeJS.ProcessEnv);
+  const b = Paths.withRoot(join(deep, 'probe', 'B'), { NM_HOME: '/nm' } as NodeJS.ProcessEnv);
+
+  assert.ok(Buffer.byteLength(join(a.root, 'socket')) > MAX_SOCKET_PATH_BYTES, 'the direct address would not fit');
+  assert.equal(a.socketIsOutsideRoot, true);
+  assert.equal(b.socketIsOutsideRoot, true);
+  assert.ok(Buffer.byteLength(a.socket) <= MAX_SOCKET_PATH_BYTES);
+  assert.ok(Buffer.byteLength(b.socket) <= MAX_SOCKET_PATH_BYTES);
+  assert.notEqual(a.socket, b.socket, 'two roots never share one daemon');
+  assert.equal(a.socket, Paths.withRoot(a.root, { NM_HOME: '/nm' } as NodeJS.ProcessEnv).socket, 'and it is stable');
+});
+
+test('an ordinary state root keeps its socket inside itself', () => {
+  const paths = Paths.withRoot('/tmp/eyes-on-short', { NM_HOME: '/nm' } as NodeJS.ProcessEnv);
+  assert.equal(paths.socket, '/tmp/eyes-on-short/socket');
+  assert.equal(paths.socketIsOutsideRoot, false);
 });

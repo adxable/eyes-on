@@ -1,7 +1,16 @@
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { realpathSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { PRODUCT_NAME } from './version.js';
+
+/**
+ * Largest unix-socket address eyes-on will bind directly. The kernel field is
+ * 104 bytes on macOS and 108 on Linux; the smaller of the two is used
+ * everywhere so a state root behaves the same on both, and a few bytes are left
+ * spare rather than sitting exactly on the boundary.
+ */
+export const MAX_SOCKET_PATH_BYTES = 100;
 
 /** The no-mistakes state root this machine uses: NM_HOME, else ~/.no-mistakes. */
 export function foreignStateRoot(env: NodeJS.ProcessEnv = process.env): string {
@@ -117,8 +126,40 @@ export class Paths {
   get ledger(): string {
     return join(this.root, 'ledger.jsonl');
   }
+  /**
+   * The daemon's control socket.
+   *
+   * Normally `<root>/socket`. A unix domain socket address is a fixed-size
+   * field in the kernel - 104 bytes on macOS, 108 on Linux - and an address
+   * longer than that is **truncated rather than refused**. Two state roots
+   * whose paths agree for the first hundred bytes then bind and connect to the
+   * same address, and the symptom is not an error: `eyes-on init` under one
+   * root registers the repository into another root's database and mirror while
+   * reporting the root it was given. That was measured, not imagined.
+   *
+   * So a root whose socket would not fit gets a short address instead, derived
+   * from a hash of the canonical root so that the daemon and every client
+   * compute the same one without having to agree on anything else. The default
+   * root (`~/.eyes-on`) is nowhere near the limit; this is for the deep
+   * temporary roots that tests, sandboxes and measurement sessions live in.
+   */
   get socket(): string {
-    return join(this.root, 'socket');
+    const direct = join(this.root, 'socket');
+    if (Buffer.byteLength(direct, 'utf8') <= MAX_SOCKET_PATH_BYTES) return direct;
+    const digest = createHash('sha256').update(this.canonicalRoot()).digest('hex').slice(0, 12);
+    const short = join(tmpdir(), `${PRODUCT_NAME}-${digest}.sock`);
+    // `/tmp` is the last resort: a macOS per-user temporary directory is itself
+    // long enough to overflow the field on a deep root.
+    return Buffer.byteLength(short, 'utf8') <= MAX_SOCKET_PATH_BYTES
+      ? short
+      : `/tmp/${PRODUCT_NAME}-${digest}.sock`;
+  }
+
+  /** True when the socket had to move out of the state root. `doctor` says so,
+   *  because a socket that is not where the layout says it is must not be a
+   *  surprise to whoever is debugging a daemon. */
+  get socketIsOutsideRoot(): boolean {
+    return this.socket !== join(this.root, 'socket');
   }
   /**
    * OS-level exclusive lock enforcing one live daemon per root. Distinct from
