@@ -1,14 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Paths } from '../src/core/paths.js';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
+  inspectInstalledUnit,
   instanceSuffix,
+  launchdDefinition,
   launchdLabel,
   launchdPlist,
   parseLaunchdPlist,
+  parsePlist,
   parseSystemdUnit,
   plistLabel,
   sameServiceDefinition,
+  systemdDefinition,
   systemdUnit,
   systemdUnitName,
 } from '../src/daemon/service.js';
@@ -111,4 +117,69 @@ test('a LaunchAgent label is read from what the plist declares, not from its fil
     'com.example.job',
   );
   assert.equal(plistLabel('not a plist at all'), null);
+});
+
+/**
+ * The plist reader has to cope with what is actually in ~/Library/LaunchAgents.
+ * An empty collection is written self-closing there, and a reader that treats
+ * `<array/>` as an opening tag fails the whole file - which would make the
+ * impostor it exists to catch invisible.
+ */
+test('a plist with self-closing empty collections is still read', () => {
+  const content = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<plist version="1.0">',
+    '<dict>',
+    '  <key>Label</key>',
+    '  <string>com.adxable.eyes-on.daemon.deadbeef</string>',
+    '  <key>ProgramArguments</key>',
+    '  <array/>',
+    '  <key>EnvironmentVariables</key>',
+    '  <dict/>',
+    '  <key>RunAtLoad</key>',
+    '  <true/>',
+    '</dict>',
+    '</plist>',
+  ].join('\n');
+
+  const dict = parsePlist(content);
+  assert.ok(dict, 'a self-closing collection must not fail the whole file');
+  assert.deepEqual(dict.ProgramArguments, []);
+  assert.deepEqual({ ...(dict.EnvironmentVariables as object) }, {});
+  assert.equal(dict.RunAtLoad, true);
+  assert.equal(plistLabel(content), 'com.adxable.eyes-on.daemon.deadbeef');
+});
+
+/**
+ * systemd splits ExecStart on whitespace, so a state root containing a space
+ * has to survive the round trip - otherwise every repeat init reads the unit as
+ * changed and restarts a healthy daemon.
+ */
+test('a state root containing a space round-trips through the systemd unit', () => {
+  const paths = Paths.withRoot(join(tempDir('svc space'), 'a b', 'state root'));
+  const executable = '/opt/eyes on/main.js';
+  const desired = systemdDefinition(paths, executable, '/usr/bin/node');
+  const parsed = parseSystemdUnit(systemdUnit(paths, executable, '/usr/bin/node'), systemdUnitName(paths));
+  assert.ok(parsed);
+  assert.deepEqual(parsed.argv, ['/usr/bin/node', executable, 'daemon', 'run', '--root', paths.canonicalRoot()]);
+  assert.equal(parsed.workingDirectory, paths.canonicalRoot());
+  assert.ok(sameServiceDefinition(parsed, desired), 'a path with a space must not read as a changed service');
+});
+
+/**
+ * G4: writing the file and restarting the job are separate decisions. A
+ * template change outside the compared definition must reach an existing
+ * install, while still not counting as a reason to reload.
+ */
+test('a template change outside the definition is written but does not mean a reload', () => {
+  const paths = Paths.withRoot(tempDir('svc-refresh'));
+  const desired = launchdDefinition(paths, '/opt/eyes-on/main.js', '/usr/bin/node');
+  const current = launchdPlist(paths, '/opt/eyes-on/main.js', '/usr/bin/node');
+  const stale = current.replace('<key>RunAtLoad</key>', '<key>ProcessType</key>\n  <string>Background</string>\n  <key>RunAtLoad</key>');
+  const unitPath = join(tempDir('svc-refresh-unit'), 'agent.plist');
+  writeFileSync(unitPath, stale);
+
+  const existing = inspectInstalledUnit(unitPath, current, desired, (installed) => parseLaunchdPlist(installed));
+  assert.equal(existing.sameBytes, false, 'the file on disk differs, so it must be rewritten');
+  assert.equal(existing.sameMeaning, true, 'the declaration is unchanged, so the job must not be reloaded');
 });

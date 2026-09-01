@@ -209,10 +209,48 @@ test('acceptance: no write-capable git subcommand can reach a working clone', ()
   assert.doesNotThrow(() => gitReadClone(repo.path, ['status', '--porcelain']));
 });
 
-test('acceptance: every clone-reading helper goes through the allow-list', () => {
+/**
+ * The three allow-listed subcommands that write when told to. Refusing them by
+ * name would break the reads the product depends on, so the guard is
+ * argument-aware - and that is exactly the kind of rule a later edit could
+ * loosen without noticing, so each write form is asserted here.
+ */
+test('acceptance: the write forms of config, remote and symbolic-ref are refused', () => {
+  const repo = tempRepo('coex-writeforms');
+  const refsBefore = run(repo.path, ['for-each-ref']);
+  const configBefore = run(repo.path, ['config', '--local', '--list']);
+  const remotesBefore = run(repo.path, ['remote', '-v']);
+
+  const writeForms = [
+    ['config', 'core.hooksPath', '/tmp/eyes-on-should-never-write'],
+    ['config', '--add', 'eyes-on.marker', '1'],
+    ['config', '--unset', 'user.name'],
+    ['remote', 'add', 'eyes-on', '/tmp/nowhere'],
+    ['remote', 'set-url', 'origin', '/tmp/nowhere'],
+    ['symbolic-ref', 'HEAD', 'refs/heads/somewhere-else'],
+    ['symbolic-ref', '--delete', 'HEAD'],
+  ];
+  for (const form of writeForms) {
+    assert.throws(() => gitReadClone(repo.path, form), /only reads clones/, `git ${form.join(' ')} must be refused`);
+  }
+
+  // The read forms the product actually uses keep working.
+  assert.doesNotThrow(() => gitReadClone(repo.path, ['config', '--get', 'user.name']));
+  assert.doesNotThrow(() => gitReadClone(repo.path, ['config', '--local', '--list']));
+  assert.doesNotThrow(() => gitReadClone(repo.path, ['remote', '-v']));
+  assert.doesNotThrow(() => gitReadClone(repo.path, ['symbolic-ref', '--short', '-q', 'HEAD']));
+
+  assert.equal(run(repo.path, ['for-each-ref']), refsBefore, 'a ref moved in the clone');
+  assert.equal(run(repo.path, ['config', '--local', '--list']), configBefore, 'local config changed');
+  assert.equal(run(repo.path, ['remote', '-v']), remotesBefore, 'a remote was added');
+});
+
+test('acceptance: every clone-reading helper answers without tripping the allow-list', () => {
   const repo = tempRepo('coex-helpers');
-  // Each of these would throw if it reached git any other way than through
-  // gitReadClone, because the allow-list check runs before the process spawns.
+  // What this shows is that the helpers still work now that they run through
+  // gitReadClone: none of them is refused, and each returns what it read. The
+  // rule that they *must* go through it is enforced by the module boundary -
+  // git() is not exported - which no test can observe from the outside.
   assert.equal(toplevel(repo.path), repo.path);
   assert.ok(isGitRepo(repo.path));
   assert.ok(commonGitDir(repo.path)?.length);

@@ -108,13 +108,25 @@ export function launchdPlist(paths: Paths, executable: string, nodePath: string)
 `;
 }
 
+/**
+ * systemd splits `ExecStart` on whitespace, so every argument that can contain a
+ * space is quoted. Without this a state root such as `/Users/a b/.eyes-on`
+ * produces a unit that starts the daemon with the wrong argv, and one that can
+ * never be read back as the definition it was written from - so every repeat
+ * `init` would rewrite it and bounce a healthy daemon.
+ */
+function systemdQuote(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
 export function systemdUnit(paths: Paths, executable: string, nodePath: string): string {
+  const argv = [nodePath, executable, 'daemon', 'run', '--root', paths.canonicalRoot()];
   return `[Unit]
 Description=eyes-on daemon (${paths.canonicalRoot()})
 
 [Service]
 Type=simple
-ExecStart=${nodePath} ${executable} daemon run --root ${paths.canonicalRoot()}
+ExecStart=${argv.map(systemdQuote).join(' ')}
 WorkingDirectory=${paths.canonicalRoot()}
 Restart=on-failure
 RestartSec=2
@@ -122,6 +134,40 @@ RestartSec=2
 [Install]
 WantedBy=default.target
 `;
+}
+
+/** Splits a systemd command line, honouring double quotes and backslash escapes. */
+function splitCommandLine(value: string): string[] {
+  const tokens: string[] = [];
+  let current = '';
+  let quoted = false;
+  let started = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index] as string;
+    if (character === '\\' && index + 1 < value.length) {
+      current += value[index + 1] as string;
+      index += 1;
+      started = true;
+      continue;
+    }
+    if (character === '"') {
+      quoted = !quoted;
+      started = true;
+      continue;
+    }
+    if (!quoted && /\s/.test(character)) {
+      if (started) {
+        tokens.push(current);
+        current = '';
+        started = false;
+      }
+      continue;
+    }
+    current += character;
+    started = true;
+  }
+  if (started) tokens.push(current);
+  return tokens;
 }
 
 /**
@@ -135,6 +181,8 @@ export type PlistValue = string | boolean | PlistValue[] | { [key: string]: Plis
 interface Tag {
   name: string;
   closing: boolean;
+  /** `<array/>` and `<dict/>` are empty collections, not openings. */
+  selfClosing: boolean;
   end: number;
 }
 
@@ -146,6 +194,7 @@ function nextTag(text: string, from: number): Tag | null {
   return {
     name: match[2] as string,
     closing: match[1] === '/',
+    selfClosing: match[0].endsWith('/>'),
     end: from + match.index + match[0].length,
   };
 }
@@ -170,6 +219,7 @@ function readValue(text: string, tag: Tag): { value: PlistValue; end: number } |
   }
   if (tag.name === 'array') {
     const items: PlistValue[] = [];
+    if (tag.selfClosing) return { value: items, end: tag.end };
     let cursor = tag.end;
     for (;;) {
       const inner = nextTag(text, cursor);
@@ -183,6 +233,7 @@ function readValue(text: string, tag: Tag): { value: PlistValue; end: number } |
   }
   if (tag.name === 'dict') {
     const entries: { [key: string]: PlistValue } = Object.create(null) as { [key: string]: PlistValue };
+    if (tag.selfClosing) return { value: entries, end: tag.end };
     let cursor = tag.end;
     for (;;) {
       const keyTag = nextTag(text, cursor);
@@ -309,7 +360,7 @@ export function parseSystemdUnit(content: string, unitName: string): ServiceDefi
   const restartValue = settings.get('Restart');
   return {
     label: unitName,
-    argv: execStart.split(/\s+/).filter((token) => token.length > 0),
+    argv: splitCommandLine(execStart),
     workingDirectory,
     restart: restartValue === 'always' ? 'always' : restartValue === 'on-failure' ? 'on-failure' : 'no',
     stdoutPath: null,
@@ -376,30 +427,52 @@ export interface ServiceInstallResult {
 }
 
 /**
- * True when the unit already on disk means the same thing as the one we would
- * write. An unparsable file counts as different, so a corrupted unit is
- * repaired rather than trusted.
+ * Two independent questions about the unit already on disk, because they have
+ * different answers and different costs:
+ *
+ *   - `sameBytes` decides whether to write. Writing is free, so any drift in
+ *     the template - a new key, a repaired PATH - reaches an existing install.
+ *   - `sameMeaning` decides whether to reload. Reloading restarts the daemon,
+ *     so only a change to what the unit actually declares may trigger it.
+ *
+ * An unparsable file means neither, so a corrupted unit is repaired rather than
+ * trusted.
  */
-function sameInstalledDefinition(
+export interface InstalledUnit {
+  sameBytes: boolean;
+  sameMeaning: boolean;
+}
+
+export function inspectInstalledUnit(
   unitPath: string,
+  content: string,
   desired: ServiceDefinition,
-  parse: (content: string) => ServiceDefinition | null,
-): boolean {
-  if (!existsSync(unitPath)) return false;
+  parse: (installed: string) => ServiceDefinition | null,
+): InstalledUnit {
+  let onDisk: string;
+  try {
+    if (!existsSync(unitPath)) return { sameBytes: false, sameMeaning: false };
+    onDisk = readFileSync(unitPath, 'utf8');
+  } catch {
+    return { sameBytes: false, sameMeaning: false };
+  }
   let installed: ServiceDefinition | null;
   try {
-    installed = parse(readFileSync(unitPath, 'utf8'));
+    installed = parse(onDisk);
   } catch {
-    return false;
+    installed = null;
   }
-  return installed !== null && sameServiceDefinition(installed, desired);
+  return {
+    sameBytes: onDisk === content,
+    sameMeaning: installed !== null && sameServiceDefinition(installed, desired),
+  };
 }
 
 /**
- * Writes and loads the service definition. Idempotent: a unit that already
- * means what we intend is left alone - bytes only, such as the installing
- * shell's PATH, do not count as a change - and a changed one is rewritten and
- * reloaded.
+ * Writes and loads the service definition. Idempotent: the file is refreshed
+ * whenever the template's bytes differ, but the job is reloaded only when the
+ * unit's *meaning* changed - bytes alone, such as the installing shell's PATH,
+ * never restart a healthy daemon.
  */
 export function installService(paths: Paths, executable: string, nodePath: string): ServiceInstallResult {
   const current = platform();
@@ -416,14 +489,15 @@ export function installService(paths: Paths, executable: string, nodePath: strin
     const unitPath = launchdPlistPath(paths);
     const content = launchdPlist(paths, executable, nodePath);
     mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
-    const unchanged = sameInstalledDefinition(unitPath, launchdDefinition(paths, executable, nodePath), (installed) =>
+    const existing = inspectInstalledUnit(unitPath, content, launchdDefinition(paths, executable, nodePath), (installed) =>
       parseLaunchdPlist(installed),
     );
-    if (!unchanged) writeFileSync(unitPath, content, { mode: 0o644 });
-    // An unchanged, already-loaded job is left strictly alone. Reloading it
-    // would bounce a healthy daemon on every `init`, and idempotent has to mean
-    // "repairs what is broken", not "restarts what is working".
-    if (unchanged && inspectService(paths).loaded) {
+    if (!existing.sameBytes) writeFileSync(unitPath, content, { mode: 0o644 });
+    // A job whose declaration has not changed and is already loaded is left
+    // strictly alone. Reloading it would bounce a healthy daemon on every
+    // `init`, and idempotent has to mean "repairs what is broken", not
+    // "restarts what is working".
+    if (existing.sameMeaning && inspectService(paths).loaded) {
       return { installed: true, label, unitPath, skipped: null, reloaded: false };
     }
     // bootout then bootstrap: launchd refuses to bootstrap an already-loaded
@@ -447,11 +521,11 @@ export function installService(paths: Paths, executable: string, nodePath: strin
   const unitPath = systemdUnitPath(paths);
   const content = systemdUnit(paths, executable, nodePath);
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
-  const unchanged = sameInstalledDefinition(unitPath, systemdDefinition(paths, executable, nodePath), (installed) =>
+  const existing = inspectInstalledUnit(unitPath, content, systemdDefinition(paths, executable, nodePath), (installed) =>
     parseSystemdUnit(installed, label),
   );
-  if (!unchanged) writeFileSync(unitPath, content, { mode: 0o644 });
-  if (unchanged && inspectService(paths).loaded) {
+  if (!existing.sameBytes) writeFileSync(unitPath, content, { mode: 0o644 });
+  if (existing.sameMeaning && inspectService(paths).loaded) {
     return { installed: true, label, unitPath, skipped: null, reloaded: false };
   }
   spawnSync('systemctl', ['--user', 'daemon-reload'], { encoding: 'utf8' });

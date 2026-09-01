@@ -31,9 +31,9 @@ import { Database } from '../db/db.js';
  * its own, and emphatically not somebody else's.
  */
 
-type Level = 'ok' | 'warn' | 'missing';
+export type Level = 'ok' | 'warn' | 'missing';
 
-interface Row {
+export interface Row {
   check: string;
   status: Level;
   detail: string;
@@ -243,8 +243,8 @@ function inspectCoexistence(context: Context): Coexistence {
   // root, so a collision is impossible by construction (report U4, K15) - but
   // saying so is worth less than showing the two labels side by side.
   const own = inspectService(context.paths);
-  const agents = declaredLaunchAgents(join(homedir(), 'Library', 'LaunchAgents'));
-  const related = agents.filter(
+  const scan = scanLaunchAgents(join(homedir(), 'Library', 'LaunchAgents'));
+  const related = scan.agents.filter(
     (agent) => agent.label.includes('no-mistakes') || agent.label.includes('eyes-on'),
   );
   rows.push({
@@ -253,30 +253,18 @@ function inspectCoexistence(context: Context): Coexistence {
     detail: related.length > 0 ? related.map((agent) => agent.label).join(', ') : own.label || 'none installed',
   });
 
-  // A label is what the plist *declares*, not what its filename suggests: two
-  // files can name the same job, and only the declared label decides which job
-  // `launchctl bootout` tears down. Comparing filenames would compare values
-  // that are unique by construction, so the check could never fire.
-  const duplicates = duplicateLabels(agents);
-  for (const collision of duplicates) {
+  // A directory doctor could not read in full is a check it could not make, so
+  // it says so rather than reporting a clean result it did not earn.
+  if (scan.unreadable.length > 0) {
     rows.push({
-      check: 'service collision',
-      status: 'missing',
-      detail: `service label ${collision.label} is declared by ${collision.files.join(' and ')}`,
+      check: 'service labels read',
+      status: 'warn',
+      detail: `${scan.unreadable.length} LaunchAgent file(s) could not be read for a label: ${scan.unreadable.join(', ')}`,
     });
   }
-  // A single foreign file declaring the eyes-on label is not a duplicate yet,
-  // and it is the worse case: `launchctl bootout` on our label would tear down
-  // somebody else's job.
-  const ownPlist = launchdPlistPath(context.paths);
-  const impostors = agents.filter((agent) => agent.label === own.label && agent.file !== ownPlist);
-  const alreadyReported = duplicates.some((collision) => collision.label === own.label);
-  if (own.label.length > 0 && impostors.length > 0 && !alreadyReported) {
-    rows.push({
-      check: 'service collision',
-      status: 'missing',
-      detail: `${impostors.map((agent) => agent.file).join(', ')} declares the eyes-on service label ${own.label}`,
-    });
+
+  for (const row of labelCollisionRows(scan.agents, own.label, launchdPlistPath(context.paths))) {
+    rows.push(row);
   }
 
   // Socket and database paths must be distinct files. They are, by living under
@@ -310,41 +298,86 @@ function inspectCoexistence(context: Context): Coexistence {
   return { rows, degradations };
 }
 
-interface DeclaredAgent {
+export interface DeclaredAgent {
   file: string;
   label: string;
 }
 
+export interface LaunchAgentScan {
+  agents: DeclaredAgent[];
+  /** Files that exist but yielded no label, so their job is invisible here. */
+  unreadable: string[];
+}
+
 /** Every LaunchAgent in dir, keyed by the `Label` it actually declares. */
-function declaredLaunchAgents(dir: string): DeclaredAgent[] {
-  if (!existsSync(dir)) return [];
+export function scanLaunchAgents(dir: string): LaunchAgentScan {
+  if (!existsSync(dir)) return { agents: [], unreadable: [] };
   let names: string[];
   try {
     names = readdirSync(dir).filter((name) => name.endsWith('.plist'));
   } catch {
-    return [];
+    return { agents: [], unreadable: [] };
   }
   const agents: DeclaredAgent[] = [];
+  const unreadable: string[] = [];
   for (const name of names) {
     const file = join(dir, name);
+    let label: string | null = null;
     try {
-      const label = plistLabel(readFileSync(file, 'utf8'));
-      if (label) agents.push({ file, label });
+      label = plistLabel(readFileSync(file, 'utf8'));
     } catch {
-      // A plist we cannot read is not a collision we can report.
+      label = null;
     }
+    if (label) agents.push({ file, label });
+    else unreadable.push(name);
   }
-  return agents;
+  return { agents, unreadable };
 }
 
-function duplicateLabels(agents: DeclaredAgent[]): { label: string; files: string[] }[] {
+/** True for the labels a collision would actually cost eyes-on something. */
+function ourConcern(label: string, ownLabel: string): boolean {
+  return label === ownLabel || label.includes('eyes-on') || label.includes('no-mistakes');
+}
+
+/**
+ * Collisions between declared service labels, at the severity each one deserves.
+ *
+ * A label is what the plist *declares*, not what its filename suggests: two
+ * files can name the same job, and only the declared label decides which job
+ * `launchctl bootout` tears down. A duplicate that names eyes-on or no-mistakes
+ * is fatal, because either tool's `stop` could then tear down the other's
+ * daemon. A duplicate between two unrelated third-party jobs cannot touch a
+ * root-hash-scoped label, so it is reported and nothing more - doctor fails only
+ * on what genuinely breaks eyes-on.
+ */
+export function labelCollisionRows(agents: DeclaredAgent[], ownLabel: string, ownPlist: string): Row[] {
+  const rows: Row[] = [];
   const byLabel = new Map<string, string[]>();
   for (const agent of agents) {
     byLabel.set(agent.label, [...(byLabel.get(agent.label) ?? []), agent.file]);
   }
-  return [...byLabel.entries()]
-    .filter(([, files]) => files.length > 1)
-    .map(([label, files]) => ({ label, files }));
+  const duplicated = new Set<string>();
+  for (const [label, files] of byLabel) {
+    if (files.length < 2) continue;
+    duplicated.add(label);
+    rows.push({
+      check: 'service collision',
+      status: ourConcern(label, ownLabel) ? 'missing' : 'warn',
+      detail: `service label ${label} is declared by ${files.join(' and ')}`,
+    });
+  }
+  // A single foreign file declaring the eyes-on label is not a duplicate yet,
+  // and it is the worse case: `launchctl bootout` on our label would tear down
+  // somebody else's job.
+  const impostors = agents.filter((agent) => agent.label === ownLabel && agent.file !== ownPlist);
+  if (ownLabel.length > 0 && impostors.length > 0 && !duplicated.has(ownLabel)) {
+    rows.push({
+      check: 'service collision',
+      status: 'missing',
+      detail: `${impostors.map((agent) => agent.file).join(', ')} declares the eyes-on service label ${ownLabel}`,
+    });
+  }
+  return rows;
 }
 
 function sameFile(a: string, b: string): boolean {
