@@ -237,10 +237,11 @@ test('a loaded job with no process reads as not running', () => {
   assert.deepEqual(parseSystemctlShow(null), { loaded: false, running: false, pid: null });
 });
 
-test('init starts a loaded job that died instead of spawning beside it', () => {
+test('the definition and the process are decided separately', () => {
   // Healthy and unchanged: left alone, so a repeat init cannot bounce it.
   assert.equal(installAction(true, { loaded: true, running: true }), 'leave-alone');
-  // Loaded with no process: the definition is right, only the process is gone.
+  // Loaded with no process: the definition is right, only the process is gone,
+  // and supplying one is startDaemon's job rather than a reinstall.
   assert.equal(installAction(true, { loaded: true, running: false }), 'kickstart');
   // Nothing loaded, or a changed declaration: install and load it properly.
   assert.equal(installAction(true, { loaded: false, running: false }), 'reinstall');

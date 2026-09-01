@@ -117,7 +117,7 @@ export async function doctorCommand(context: Context): Promise<number> {
   const service = inspectService(context.paths);
   rows.push({
     check: 'service',
-    status: service.supported ? (service.installed ? 'ok' : 'warn') : 'warn',
+    status: service.supported && service.installed && service.running ? 'ok' : 'warn',
     detail: service.supported
       ? `${service.label} (${service.installed ? 'installed' : 'not installed'}${serviceJobDetail(service)})`
       : `no service manager integration for ${process.platform}`,

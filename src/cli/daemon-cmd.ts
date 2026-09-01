@@ -72,7 +72,7 @@ async function daemonStart(context: Context): Promise<number> {
   assertMayMutate(context, 'daemon start');
   const result = await startDaemon(context.paths);
   if (!result.started && !result.alreadyRunning) {
-    throw new UserFacingError('the eyes-on daemon did not start', [
+    throw new UserFacingError(result.detail ?? 'the eyes-on daemon did not start', [
       `Run \`eyes-on daemon run --root ${context.paths.root}\` in the foreground to see why`,
       `Check ${context.paths.daemonLog}`,
     ]);
@@ -80,6 +80,7 @@ async function daemonStart(context: Context): Promise<number> {
   const doc: ToonObject = {
     daemon: result.alreadyRunning ? 'already running' : 'started',
     pid: result.pid,
+    via: result.via,
     root: context.paths.root,
   };
   emitDoc(context.writers, context.format, doc, `eyes-on daemon ${String(doc.daemon)} (pid ${String(doc.pid)})`);
@@ -100,7 +101,12 @@ async function daemonStop(context: Context): Promise<number> {
 async function daemonRestart(context: Context): Promise<number> {
   assertMayMutate(context, 'daemon restart');
   const result = await restartDaemon(context.paths);
-  const doc: ToonObject = { daemon: result.started ? 'restarted' : 'not running', pid: result.pid };
+  const doc: ToonObject = {
+    daemon: result.started ? 'restarted' : 'not running',
+    pid: result.pid,
+    via: result.via,
+    detail: result.detail ?? '',
+  };
   emitDoc(context.writers, context.format, doc, `eyes-on daemon ${String(doc.daemon)}`);
   return result.started ? 0 : 1;
 }

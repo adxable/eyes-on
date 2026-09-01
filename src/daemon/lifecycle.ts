@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import type { Paths } from '../core/paths.js';
 import { Daemon } from './daemon.js';
 import { SingletonLock, type LockHolder } from './lock.js';
+import { startManagedJob, type ManagedJobStart } from './service.js';
 import { call, DaemonUnreachableError } from '../ipc/client.js';
 import { METHODS, type HealthResult, type StatusResult } from '../ipc/protocol.js';
 import { probeSocket } from '../ipc/server.js';
@@ -88,19 +89,61 @@ export interface StartResult {
   started: boolean;
   alreadyRunning: boolean;
   pid: number | null;
+  /** How the daemon was obtained, so a caller never has to guess. */
+  via: 'already-running' | 'service' | 'spawn';
+  /** Why the service manager could not supply one, when it could not. */
+  detail: string | null;
+}
+
+export interface StartDaemonOptions {
+  timeoutMs?: number;
+  /**
+   * Overridden in tests so the managed-job branch can be exercised without
+   * registering a real LaunchAgent or systemd unit.
+   */
+  startManagedJob?: (paths: Paths) => ManagedJobStart;
 }
 
 /**
- * Starts a detached daemon and waits for it to answer. Detached and with its
- * own stdio, so the daemon outlives the CLI process that asked for it - and
- * with cwd set to the state root, never to a repository, so no eyes-on process
- * ever has a working directory under somebody else's worktree (report K9, M23).
+ * The one way to obtain a daemon.
+ *
+ * When a service manager holds a job for this root, that job is started and
+ * waited for; a detached spawn is the fallback for the cases where no managed
+ * job exists - `EYES_ON_SKIP_SERVICE_MANAGER=1`, an unsupported platform, or a
+ * config that disabled the managed service. Spawning *beside* a managed job is
+ * the orphan split this product has had to fix three times, so the fallback is
+ * deliberately unreachable while a job exists: a managed job that will not come
+ * up is reported as a failure rather than routed around.
+ *
+ * The spawn is detached and with its own stdio, so the daemon outlives the CLI
+ * process that asked for it - and with cwd set to the state root, never to a
+ * repository, so no eyes-on process ever has a working directory under somebody
+ * else's worktree (report K9, M23).
  */
-export async function startDaemon(paths: Paths, timeoutMs = 15_000): Promise<StartResult> {
+export async function startDaemon(paths: Paths, options: StartDaemonOptions = {}): Promise<StartResult> {
+  const timeoutMs = options.timeoutMs ?? 15_000;
   const state = await daemonState(paths);
-  if (state.running) return { started: false, alreadyRunning: true, pid: state.pid };
+  if (state.running) {
+    return { started: false, alreadyRunning: true, pid: state.pid, via: 'already-running', detail: null };
+  }
 
   Daemon.ensureStateRoot(paths);
+
+  const managed = (options.startManagedJob ?? startManagedJob)(paths);
+  if (managed.attempted) {
+    if (managed.accepted && (await waitForDaemon(paths, timeoutMs))) {
+      const current = await daemonState(paths);
+      return { started: true, alreadyRunning: false, pid: current.pid, via: 'service', detail: null };
+    }
+    return {
+      started: false,
+      alreadyRunning: false,
+      pid: null,
+      via: 'service',
+      detail: managed.detail ?? `the managed job ${managed.label} did not come up`,
+    };
+  }
+
   const logFd = openSync(join(paths.logsDir, 'daemon.out.log'), 'a');
   const child = spawn(process.execPath, [cliEntryPath(), 'daemon', 'run', '--root', paths.root], {
     cwd: paths.root,
@@ -114,9 +157,11 @@ export async function startDaemon(paths: Paths, timeoutMs = 15_000): Promise<Sta
   while (Date.now() < deadline) {
     await delay(120);
     const current = await daemonState(paths);
-    if (current.running) return { started: true, alreadyRunning: false, pid: current.pid };
+    if (current.running) {
+      return { started: true, alreadyRunning: false, pid: current.pid, via: 'spawn', detail: null };
+    }
   }
-  return { started: false, alreadyRunning: false, pid: null };
+  return { started: false, alreadyRunning: false, pid: null, via: 'spawn', detail: 'the spawned daemon did not answer' };
 }
 
 export interface StopResult {
@@ -157,9 +202,14 @@ export async function stopDaemon(paths: Paths, timeoutMs = 10_000): Promise<Stop
   return { stopped: !(await daemonState(paths)).running, wasRunning: true };
 }
 
-export async function restartDaemon(paths: Paths): Promise<StartResult> {
+/**
+ * Stop, then start through the same single path. `stopDaemon` asks a managed
+ * daemon to exit and it exits 0, which leaves the job loaded with no process -
+ * so the start half must address that job rather than spawn beside it.
+ */
+export async function restartDaemon(paths: Paths, options: StartDaemonOptions = {}): Promise<StartResult> {
   await stopDaemon(paths);
-  return startDaemon(paths);
+  return startDaemon(paths, options);
 }
 
 export async function daemonStatus(paths: Paths): Promise<StatusResult | null> {

@@ -22,18 +22,29 @@ measured by hand and the numbers below are that measurement.
 
 ## What these numbers were measured against
 
-The session above ran on commit `dbc1b52`. Three review-fix commits landed
-afterwards - `f01ca51`, `435e0e7` and `f363f06` - and they changed code paths
-two of these results exercise: the service install/reload decision became a
-semantic comparison with a separate byte-write, every clone read moved behind
-`gitReadClone`, and `doctor` now reads LaunchAgent labels through `plutil`.
+The session above ran on commit `dbc1b52`. Every review-fix commit since -
+`f01ca51`, `435e0e7`, `f363f06`, `5ed536a` and this one - changed code paths two
+of these results exercise: the service install/reload decision became a semantic
+comparison with a separate byte-write and then stopped deciding process
+lifecycle at all, starting the daemon moved behind a single path that addresses
+the managed job instead of spawning beside it, every clone read moved behind
+`gitReadClone`, and `doctor` now reads LaunchAgent labels through `plutil -lint`
+plus `-extract`.
 
 So, plainly: **daemon coexistence (1) and idempotency (6) are pre-fix
-measurements and are pending re-measurement against the final code.** Their
-automated counterparts - the clone allow-list rule and `test/cli.test.ts`, "init
-repairs what is missing on the second run" - do run against the current code, so
-what is stale is the manual launchd session, not the property. Results 2, 3, 4
-and 5 are unaffected by those commits and stand as recorded.
+measurements, pending re-measurement against the final code.** They are stale to
+different degrees, and the difference matters:
+
+- **Daemon coexistence (1) has no automated counterpart at all** (as stated
+  above), so nothing covers it against the current code. It is stale in full.
+- **Idempotency (6)** has one - `test/cli.test.ts`, "init repairs what is
+  missing on the second run" - which does run against the current code, so the
+  property is covered even though the recorded launchd numbers are not.
+
+Results 2, 3, 4 and 5 are unaffected by these commits and stand as recorded;
+their automated counterparts in `test/coexistence.test.ts` run against the
+current code. The K2 clone allow-list rule in that file is not a counterpart to
+any of the six results - it is not a row in the table.
 
 All six will be re-run against the final code before delivery and this document
 replaced with the refreshed numbers.
@@ -51,7 +62,8 @@ replaced with the refreshed numbers.
 
 ## 1. Daemon coexistence
 
-Measured on `dbc1b52`, before the review fixes; pending re-measurement.
+Measured on `dbc1b52`, before the review fixes; pending re-measurement, and with
+no automated counterpart to stand in for it in the meantime.
 
 ```
 $ launchctl list | grep -E 'no-mistakes|eyes-on'
@@ -150,9 +162,9 @@ detected the same way, whatever the environment says.
 ## 6. Idempotency
 
 Measured on `dbc1b52`, before the review fixes; pending re-measurement. The
-reload decision has since become semantic and `init` now starts a loaded job
-whose process died instead of spawning its own daemon beside it, so the repair
-path below is not the one the current code takes.
+reload decision has since become semantic, and starting the daemon now goes
+through one path that addresses the managed job instead of spawning beside it,
+so the repair path below is not the one the current code takes.
 
 A second `init` on an already-registered repository:
 

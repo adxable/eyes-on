@@ -58,17 +58,18 @@ export async function initCommand(context: Context): Promise<number> {
           skipped: 'disabled in config or bypassed by environment',
           reloaded: false,
         };
-  // Wait whenever the service manager actually (re)started the job - including
-  // when a daemon was running a moment ago and the reload has just stopped it.
-  // Spawning our own here would win the lock and leave the managed job exiting
-  // cleanly forever after.
+  // Wait whenever the service manager actually replaced the definition and
+  // reloaded the job, so the daemon coming up out of band is not mistaken for a
+  // dead one a moment later.
   if (service.reloaded) {
     await waitForDaemon(context.paths, 15_000);
   }
 
+  // One door for every caller: this starts the managed job when there is one,
+  // and only spawns when there is not.
   const start = await startDaemon(context.paths);
   if (!start.alreadyRunning && !start.started) {
-    throw new UserFacingError('the eyes-on daemon did not start', [
+    throw new UserFacingError(start.detail ?? 'the eyes-on daemon did not start', [
       `Run \`eyes-on daemon run --root ${context.paths.root}\` in the foreground to see why`,
       `Check ${context.paths.daemonLog}`,
     ]);
@@ -108,6 +109,7 @@ export async function initCommand(context: Context): Promise<number> {
     mirror_bytes: mirrorSizeBytes(registration.mirrorPath),
     daemon: start.alreadyRunning ? 'already running' : 'started',
     daemon_pid: start.pid,
+    daemon_via: start.via,
     service_label: service.label || 'not installed',
     service_note: service.skipped ?? '',
     skills: skills.map((entry) => ({ path: entry.path, written: entry.written })),
