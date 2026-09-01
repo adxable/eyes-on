@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Context } from './context.js';
@@ -9,7 +9,7 @@ import { gitVersion, toplevel } from '../git/git.js';
 import { canonicalPath, repoID } from '../core/repoid.js';
 import { inspectMirror, mirrorSizeBytes } from '../git/mirror.js';
 import { daemonState, daemonStatus } from '../daemon/lifecycle.js';
-import { inspectService, launchdPlistPath, plistLabel } from '../daemon/service.js';
+import { inspectService, launchdPlistPath, plistLabel, readPlistFile } from '../daemon/service.js';
 import { inspectSkill, skillRoot } from '../skill/install.js';
 import { inspectPostCommitHook } from '../git/hook.js';
 import { Database } from '../db/db.js';
@@ -253,13 +253,23 @@ function inspectCoexistence(context: Context): Coexistence {
     detail: related.length > 0 ? related.map((agent) => agent.label).join(', ') : own.label || 'none installed',
   });
 
-  // A directory doctor could not read in full is a check it could not make, so
-  // it says so rather than reporting a clean result it did not earn.
-  if (scan.unreadable.length > 0) {
+  // A file doctor could not read is a check it could not make, so it says so
+  // rather than reporting a clean result it did not earn. A file that reads
+  // fine and simply declares no Label is not one of those: it names no job, so
+  // it can collide with nothing, and it is not worth a word.
+  if (scan.directoryError !== null) {
     rows.push({
       check: 'service labels read',
       status: 'warn',
-      detail: `${scan.unreadable.length} LaunchAgent file(s) could not be read for a label: ${scan.unreadable.join(', ')}`,
+      detail: `${scan.directory} could not be listed (${scan.directoryError}), so no service collision was checked for`,
+    });
+  } else if (scan.unreadable.length > 0) {
+    rows.push({
+      check: 'service labels read',
+      status: 'warn',
+      detail: `${scan.unreadable.length} LaunchAgent file(s) could not be parsed, so their labels were not compared: ${scan.unreadable
+        .map((entry) => `${entry.file} (${entry.reason})`)
+        .join('; ')}`,
     });
   }
 
@@ -303,35 +313,47 @@ export interface DeclaredAgent {
   label: string;
 }
 
+export interface UnreadableAgent {
+  file: string;
+  reason: string;
+}
+
 export interface LaunchAgentScan {
+  directory: string;
   agents: DeclaredAgent[];
-  /** Files that exist but yielded no label, so their job is invisible here. */
-  unreadable: string[];
+  /**
+   * Files that could not be parsed at all, so whatever job they declare is
+   * invisible here. A file that parses and declares no `Label` is *not* one of
+   * these: it was read, and the answer was "this names no job".
+   */
+  unreadable: UnreadableAgent[];
+  /** Set when the directory itself could not be listed. */
+  directoryError: string | null;
 }
 
 /** Every LaunchAgent in dir, keyed by the `Label` it actually declares. */
 export function scanLaunchAgents(dir: string): LaunchAgentScan {
-  if (!existsSync(dir)) return { agents: [], unreadable: [] };
+  const empty: LaunchAgentScan = { directory: dir, agents: [], unreadable: [], directoryError: null };
+  if (!existsSync(dir)) return empty;
   let names: string[];
   try {
     names = readdirSync(dir).filter((name) => name.endsWith('.plist'));
-  } catch {
-    return { agents: [], unreadable: [] };
+  } catch (error) {
+    return { ...empty, directoryError: (error as Error).message };
   }
   const agents: DeclaredAgent[] = [];
-  const unreadable: string[] = [];
+  const unreadable: UnreadableAgent[] = [];
   for (const name of names) {
     const file = join(dir, name);
-    let label: string | null = null;
-    try {
-      label = plistLabel(readFileSync(file, 'utf8'));
-    } catch {
-      label = null;
+    const read = readPlistFile(file);
+    if (!read.ok) {
+      unreadable.push({ file: name, reason: read.reason });
+      continue;
     }
+    const label = plistLabel(read.value);
     if (label) agents.push({ file, label });
-    else unreadable.push(name);
   }
-  return { agents, unreadable };
+  return { directory: dir, agents, unreadable, directoryError: null };
 }
 
 /** True for the labels a collision would actually cost eyes-on something. */

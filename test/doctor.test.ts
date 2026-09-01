@@ -5,6 +5,9 @@ import { join } from 'node:path';
 import { labelCollisionRows, scanLaunchAgents, type DeclaredAgent } from '../src/cli/doctor.js';
 import { tempDir } from './helpers.js';
 
+/** Reading a property list goes through macOS' own plutil, so does this. */
+const darwinOnly = { skip: process.platform === 'darwin' ? false : 'property lists are read with macOS plutil' };
+
 /**
  * `doctor` fails only on what genuinely breaks eyes-on. Its own label is scoped
  * by a hash of its state root, so a duplicate between two unrelated third-party
@@ -53,16 +56,17 @@ test('our own plist declaring our own label is not a collision', () => {
 });
 
 /**
- * A directory doctor cannot read in full is a check it did not make. The scan
- * reports those files so the row can say so, instead of a clean result nobody
- * earned.
+ * A file doctor could not read is a check it could not make. A file it read
+ * that simply declares no label is not: it names no job, so it can collide with
+ * nothing, and a healthy machine must not carry a permanent warning for it.
  */
-test('the LaunchAgent scan reads real labels and names the files it could not', () => {
+test('the scan separates a label-less plist from one it could not read', darwinOnly, () => {
   const dir = tempDir('doctor-agents');
   writeFileSync(
     join(dir, 'renamed.plist'),
     '<?xml version="1.0"?>\n<plist version="1.0"><dict><key>Label</key><string>com.example.declared</string><key>ProgramArguments</key><array/></dict></plist>\n',
   );
+  writeFileSync(join(dir, 'no-label.plist'), '<plist version="1.0">\n<dict/>\n</plist>\n');
   writeFileSync(join(dir, 'broken.plist'), 'this is not a property list at all\n');
   writeFileSync(join(dir, 'notes.txt'), 'ignored, not a plist\n');
 
@@ -72,10 +76,16 @@ test('the LaunchAgent scan reads real labels and names the files it could not', 
     ['com.example.declared'],
     'the label comes from the file contents, not its name',
   );
-  assert.deepEqual(scan.unreadable, ['broken.plist']);
+  assert.deepEqual(
+    scan.unreadable.map((entry) => entry.file),
+    ['broken.plist'],
+    'a plist that reads cleanly and declares no label is not unreadable',
+  );
+  assert.ok((scan.unreadable[0]?.reason ?? '').length > 0, 'an unreadable file must say why');
+  assert.equal(scan.directoryError, null);
 });
 
 test('a missing LaunchAgents directory is empty, not an error', () => {
-  const scan = scanLaunchAgents(join(tempDir('doctor-no-agents'), 'does-not-exist'));
-  assert.deepEqual(scan, { agents: [], unreadable: [] });
+  const dir = join(tempDir('doctor-no-agents'), 'does-not-exist');
+  assert.deepEqual(scanLaunchAgents(dir), { directory: dir, agents: [], unreadable: [], directoryError: null });
 });

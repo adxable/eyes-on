@@ -171,107 +171,57 @@ function splitCommandLine(value: string): string[] {
 }
 
 /**
- * A minimal property-list reader. Hand-written for the same reason the TOON
- * encoder and the YAML subset are (report section 7): eyes-on ships zero runtime
- * dependencies, and the only plists it ever reads are LaunchAgent definitions,
- * whose value types are strings, arrays, dicts and booleans.
+ * Property lists are read by `/usr/bin/plutil`, the parser macOS itself uses.
+ *
+ * This is not a runtime dependency in the sense report section 7 forbids: it is
+ * a system binary that ships with every macOS, on the only platform where a
+ * LaunchAgent exists at all. A hand-written XML reader would have to learn
+ * self-closing collections, self-closing leaves, binary plists and every other
+ * shape the directory actually contains - one defect at a time - and the answer
+ * it produces decides whether `doctor` reports a service collision, so it has to
+ * be right about files nobody here wrote.
  */
-export type PlistValue = string | boolean | PlistValue[] | { [key: string]: PlistValue };
+export type PlistValue = string | number | boolean | PlistValue[] | { [key: string]: PlistValue };
 
-interface Tag {
-  name: string;
-  closing: boolean;
-  /** `<array/>` and `<dict/>` are empty collections, not openings. */
-  selfClosing: boolean;
-  end: number;
-}
+export type PlistRead =
+  | { ok: true; value: { [key: string]: PlistValue } }
+  | { ok: false; reason: string };
 
-const TAG = /<(\/?)([A-Za-z][A-Za-z0-9_-]*)[^>]*?\/?>/;
-
-function nextTag(text: string, from: number): Tag | null {
-  const match = TAG.exec(text.slice(from));
-  if (!match) return null;
-  return {
-    name: match[2] as string,
-    closing: match[1] === '/',
-    selfClosing: match[0].endsWith('/>'),
-    end: from + match.index + match[0].length,
-  };
-}
-
-function unescapeXml(value: string): string {
-  return value.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-}
-
-function readText(text: string, from: number, tagName: string): { value: string; end: number } | null {
-  const close = text.indexOf(`</${tagName}>`, from);
-  if (close < 0) return null;
-  return { value: unescapeXml(text.slice(from, close)), end: close + tagName.length + 3 };
-}
-
-function readValue(text: string, tag: Tag): { value: PlistValue; end: number } | null {
-  if (tag.name === 'true' || tag.name === 'false') {
-    return { value: tag.name === 'true', end: tag.end };
+function plutil(args: string[], input?: string): PlistRead {
+  const result = spawnSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', ...args], {
+    encoding: 'utf8',
+    input,
+    timeout: 10_000,
+  });
+  if (result.error) return { ok: false, reason: String(result.error.message ?? result.error) };
+  if (result.status !== 0) {
+    return { ok: false, reason: (result.stderr ?? '').trim() || `plutil exited ${result.status}` };
   }
-  if (tag.name === 'string' || tag.name === 'integer' || tag.name === 'real' || tag.name === 'data') {
-    const read = readText(text, tag.end, tag.name);
-    return read ? { value: read.value, end: read.end } : null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout ?? '');
+  } catch (error) {
+    return { ok: false, reason: (error as Error).message };
   }
-  if (tag.name === 'array') {
-    const items: PlistValue[] = [];
-    if (tag.selfClosing) return { value: items, end: tag.end };
-    let cursor = tag.end;
-    for (;;) {
-      const inner = nextTag(text, cursor);
-      if (!inner) return null;
-      if (inner.closing && inner.name === 'array') return { value: items, end: inner.end };
-      const item = readValue(text, inner);
-      if (!item) return null;
-      items.push(item.value);
-      cursor = item.end;
-    }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, reason: 'the property list root is not a dictionary' };
   }
-  if (tag.name === 'dict') {
-    const entries: { [key: string]: PlistValue } = Object.create(null) as { [key: string]: PlistValue };
-    if (tag.selfClosing) return { value: entries, end: tag.end };
-    let cursor = tag.end;
-    for (;;) {
-      const keyTag = nextTag(text, cursor);
-      if (!keyTag) return null;
-      if (keyTag.closing && keyTag.name === 'dict') return { value: entries, end: keyTag.end };
-      if (keyTag.name !== 'key') return null;
-      const key = readText(text, keyTag.end, 'key');
-      if (!key) return null;
-      const valueTag = nextTag(text, key.end);
-      if (!valueTag) return null;
-      const value = readValue(text, valueTag);
-      if (!value) return null;
-      entries[key.value] = value.value;
-      cursor = value.end;
-    }
-  }
-  return null;
+  return { ok: true, value: parsed as { [key: string]: PlistValue } };
 }
 
-/** The root dictionary of a property list, or null when it cannot be read. */
-export function parsePlist(content: string): { [key: string]: PlistValue } | null {
-  let cursor = 0;
-  for (;;) {
-    const tag = nextTag(content, cursor);
-    if (!tag) return null;
-    if (tag.name === 'dict' && !tag.closing) {
-      const value = readValue(content, tag);
-      if (!value || typeof value.value !== 'object' || Array.isArray(value.value)) return null;
-      return value.value;
-    }
-    cursor = tag.end;
-  }
+/** Reads a property list held in memory. */
+export function readPlist(content: string): PlistRead {
+  return plutil(['--', '-'], content);
 }
 
-/** The `Label` a LaunchAgent actually declares - not the one its filename implies. */
-export function plistLabel(content: string): string | null {
-  const dict = parsePlist(content);
-  const label = dict?.Label;
+/** Reads a property list from disk, so binary plists work as well as XML ones. */
+export function readPlistFile(file: string): PlistRead {
+  return plutil(['--', file]);
+}
+
+/** The `Label` a property list declares, or null when it declares none. */
+export function plistLabel(dict: { [key: string]: PlistValue }): string | null {
+  const label = dict.Label;
   return typeof label === 'string' && label.length > 0 ? label : null;
 }
 
@@ -318,8 +268,9 @@ export function systemdDefinition(paths: Paths, executable: string, nodePath: st
 }
 
 export function parseLaunchdPlist(content: string): ServiceDefinition | null {
-  const dict = parsePlist(content);
-  if (!dict) return null;
+  const read = readPlist(content);
+  if (!read.ok) return null;
+  const dict = read.value;
   const label = dict.Label;
   const argv = dict.ProgramArguments;
   const workingDirectory = dict.WorkingDirectory;

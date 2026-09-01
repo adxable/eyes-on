@@ -10,15 +10,18 @@ import {
   launchdLabel,
   launchdPlist,
   parseLaunchdPlist,
-  parsePlist,
   parseSystemdUnit,
   plistLabel,
+  readPlist,
   sameServiceDefinition,
   systemdDefinition,
   systemdUnit,
   systemdUnitName,
 } from '../src/daemon/service.js';
 import { tempDir } from './helpers.js';
+
+/** Reading a property list goes through macOS' own plutil, so does this. */
+const darwinOnly = { skip: process.platform === 'darwin' ? false : 'property lists are read with macOS plutil' };
 
 /**
  * The coexistence guarantee (report U4, K15): the service identifier is scoped
@@ -42,7 +45,7 @@ test('the label can never collide with the no-mistakes one', () => {
   assert.notEqual(label, 'com.kunchenguid.no-mistakes.daemon.733b4626');
 });
 
-test('the unit passes --root explicitly, because the service exports only HOME and PATH', () => {
+test('the unit passes --root explicitly, because the service exports only HOME and PATH', darwinOnly, () => {
   const paths = Paths.withRoot(tempDir('svc-root'));
   const plist = parseLaunchdPlist(launchdPlist(paths, '/opt/eyes-on/main.js', '/usr/bin/node'));
   assert.ok(plist, 'the generated plist must be readable as a property list');
@@ -79,7 +82,7 @@ test('the unit passes --root explicitly, because the service exports only HOME a
  * must not count as a changed unit, because reloading the job would bounce a
  * healthy daemon.
  */
-test('a unit that differs only in the installing shell environment is not a change', () => {
+test('a unit that differs only in the installing shell environment is not a change', darwinOnly, () => {
   const paths = Paths.withRoot(tempDir('svc-idempotent'));
   const previousPath = process.env.PATH;
   let fromOneShell: string;
@@ -107,47 +110,60 @@ test('a unit that differs only in the installing shell environment is not a chan
   assert.ok(!sameServiceDefinition(moved, one), 'a changed executable must read as a changed service');
 });
 
-test('a LaunchAgent label is read from what the plist declares, not from its filename', () => {
+test('a LaunchAgent label is read from what the plist declares, not from its filename', darwinOnly, () => {
   const paths = Paths.withRoot(tempDir('svc-label'));
-  assert.equal(plistLabel(launchdPlist(paths, '/opt/eyes-on/main.js', '/usr/bin/node')), launchdLabel(paths));
+  const own = readPlist(launchdPlist(paths, '/opt/eyes-on/main.js', '/usr/bin/node'));
+  assert.ok(own.ok);
+  assert.equal(plistLabel(own.value), launchdLabel(paths));
+
   // The label carries no relation to the file it is stored in, which is exactly
   // why doctor cannot derive collisions from filenames.
-  assert.equal(
-    plistLabel('<?xml version="1.0"?>\n<plist version="1.0"><dict><key>Label</key><string>com.example.job</string></dict></plist>'),
-    'com.example.job',
+  const foreign = readPlist(
+    '<?xml version="1.0"?>\n<plist version="1.0"><dict><key>Label</key><string>com.example.job</string></dict></plist>',
   );
-  assert.equal(plistLabel('not a plist at all'), null);
+  assert.ok(foreign.ok);
+  assert.equal(plistLabel(foreign.value), 'com.example.job');
 });
 
 /**
- * The plist reader has to cope with what is actually in ~/Library/LaunchAgents.
- * An empty collection is written self-closing there, and a reader that treats
- * `<array/>` as an opening tag fails the whole file - which would make the
- * impostor it exists to catch invisible.
+ * The shapes ~/Library/LaunchAgents actually contains. A reader that stops at
+ * any of them makes the impostor `doctor` exists to catch invisible, so each is
+ * asserted rather than assumed.
  */
-test('a plist with self-closing empty collections is still read', () => {
-  const content = [
-    '<?xml version="1.0" encoding="UTF-8"?>',
-    '<plist version="1.0">',
-    '<dict>',
-    '  <key>Label</key>',
-    '  <string>com.adxable.eyes-on.daemon.deadbeef</string>',
-    '  <key>ProgramArguments</key>',
-    '  <array/>',
-    '  <key>EnvironmentVariables</key>',
-    '  <dict/>',
-    '  <key>RunAtLoad</key>',
-    '  <true/>',
-    '</dict>',
-    '</plist>',
-  ].join('\n');
+test('the plist reader copes with the shapes real LaunchAgents use', darwinOnly, () => {
+  const withSelfClosingLeaf = readPlist(
+    [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<plist version="1.0">',
+      '<dict>',
+      '  <key>ServiceDescription</key>',
+      '  <string/>',
+      '  <key>Label</key>',
+      '  <string>com.adxable.eyes-on.daemon.deadbeef</string>',
+      '  <key>ProgramArguments</key>',
+      '  <array/>',
+      '  <key>EnvironmentVariables</key>',
+      '  <dict/>',
+      '  <key>RunAtLoad</key>',
+      '  <true/>',
+      '</dict>',
+      '</plist>',
+    ].join('\n'),
+  );
+  assert.ok(withSelfClosingLeaf.ok, 'a self-closing leaf must not hide the keys after it');
+  assert.equal(plistLabel(withSelfClosingLeaf.value), 'com.adxable.eyes-on.daemon.deadbeef');
+  assert.equal(withSelfClosingLeaf.value.ServiceDescription, '');
+  assert.deepEqual(withSelfClosingLeaf.value.ProgramArguments, []);
+  assert.deepEqual(withSelfClosingLeaf.value.EnvironmentVariables, {});
+  assert.equal(withSelfClosingLeaf.value.RunAtLoad, true);
 
-  const dict = parsePlist(content);
-  assert.ok(dict, 'a self-closing collection must not fail the whole file');
-  assert.deepEqual(dict.ProgramArguments, []);
-  assert.deepEqual({ ...(dict.EnvironmentVariables as object) }, {});
-  assert.equal(dict.RunAtLoad, true);
-  assert.equal(plistLabel(content), 'com.adxable.eyes-on.daemon.deadbeef');
+  // An empty job: read successfully, declares no label, collides with nothing.
+  const empty = readPlist('<plist version="1.0">\n<dict/>\n</plist>\n');
+  assert.ok(empty.ok);
+  assert.equal(plistLabel(empty.value), null);
+
+  const broken = readPlist('this is not a property list at all\n');
+  assert.equal(broken.ok, false, 'a file that is not a property list must be reported, not guessed at');
 });
 
 /**
@@ -167,15 +183,18 @@ test('a state root containing a space round-trips through the systemd unit', () 
 });
 
 /**
- * G4: writing the file and restarting the job are separate decisions. A
- * template change outside the compared definition must reach an existing
- * install, while still not counting as a reason to reload.
+ * Writing the file and restarting the job are separate decisions. A template
+ * change outside the compared definition must reach an existing install, while
+ * still not counting as a reason to reload.
  */
-test('a template change outside the definition is written but does not mean a reload', () => {
+test('a template change outside the definition is written but does not mean a reload', darwinOnly, () => {
   const paths = Paths.withRoot(tempDir('svc-refresh'));
   const desired = launchdDefinition(paths, '/opt/eyes-on/main.js', '/usr/bin/node');
   const current = launchdPlist(paths, '/opt/eyes-on/main.js', '/usr/bin/node');
-  const stale = current.replace('<key>RunAtLoad</key>', '<key>ProcessType</key>\n  <string>Background</string>\n  <key>RunAtLoad</key>');
+  const stale = current.replace(
+    '<key>RunAtLoad</key>',
+    '<key>ProcessType</key>\n  <string>Background</string>\n  <key>RunAtLoad</key>',
+  );
   const unitPath = join(tempDir('svc-refresh-unit'), 'agent.plist');
   writeFileSync(unitPath, stale);
 
