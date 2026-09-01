@@ -13,8 +13,11 @@ correctness bug even when everything still passes:
 - never write anything under `~/.no-mistakes/**`, and never install a hook in the
   no-mistakes gate or use its `pre-receive.no-mistakes-user` slot;
 - never write a ref, an index entry, a remote or a config value into a working
-  clone; git reaches a clone only through `gitReadClone()` in `src/git/git.ts`,
-  whose allow-list is the enforcement point;
+  clone. `git()` in `src/git/git.ts` is module-private, so a clone is reachable
+  only through `gitReadClone()`, whose allow-list refuses anything that is not a
+  read, or through `fetchCloneIntoMirror()`, which runs with `--git-dir` set to
+  the mirror and reads the clone as a fetch source. Those two exports are the
+  enforcement point;
 - never edit a pull request body, open, merge or review a pull request;
 - no eyes-on process may have a working directory under a foreign worktree - the
   daemon's cwd is always its own state root.

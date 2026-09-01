@@ -58,6 +58,36 @@ test('errors in a machine format stay on stdout as error: plus help:', async () 
   assert.match(result.out, /^help\[\d+\]: /m);
 });
 
+/**
+ * The AXI contract: under `axi` the payload is TOON on stdout, and *every*
+ * failure is part of it. Argument-level failures used to be rendered before the
+ * format was known, so an agent got exit 2 with an empty stdout and nothing to
+ * parse.
+ */
+test('an argument-level failure under axi is still TOON on stdout', async () => {
+  for (const argv of [['axi', 'status', '--format'], ['axi', 'check', '--intent'], ['axi', 'status', '--format', 'xml']]) {
+    const result = await cli(argv, { env: sandbox() });
+    assert.equal(result.code, EXIT_USAGE, `${argv.join(' ')} should be a usage error`);
+    assert.match(result.out, /^error: /m, `${argv.join(' ')} wrote nothing to stdout`);
+    assert.match(result.out, /^help\[\d+\]: /m);
+    assert.equal(result.err, '', `${argv.join(' ')} must not report the failure on stderr`);
+  }
+});
+
+/**
+ * Command names arrive from the shell, so they include whatever an agent or a
+ * typo produces. A name that happens to match an Object.prototype member must
+ * reach the unknown-command path like any other.
+ */
+test('a prototype member is an unknown command, not an internal error', async () => {
+  for (const name of ['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty']) {
+    const result = await cli([name, '--format', 'toon'], { env: sandbox() });
+    assert.equal(result.code, EXIT_USAGE, `${name} should be a usage error`);
+    assert.match(result.out, new RegExp(`^error: unknown command ${name.replace('__', '__')}$`, 'm'));
+    assert.match(result.out, /^help\[\d+\]: /m);
+  }
+});
+
 test('an unimplemented command names the stage that owns it and exits 1', async () => {
   const repo = tempRepo('cli-stub');
   for (const command of COMMANDS.filter((entry) => !entry.implemented)) {

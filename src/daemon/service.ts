@@ -124,6 +124,211 @@ WantedBy=default.target
 `;
 }
 
+/**
+ * A minimal property-list reader. Hand-written for the same reason the TOON
+ * encoder and the YAML subset are (report section 7): eyes-on ships zero runtime
+ * dependencies, and the only plists it ever reads are LaunchAgent definitions,
+ * whose value types are strings, arrays, dicts and booleans.
+ */
+export type PlistValue = string | boolean | PlistValue[] | { [key: string]: PlistValue };
+
+interface Tag {
+  name: string;
+  closing: boolean;
+  end: number;
+}
+
+const TAG = /<(\/?)([A-Za-z][A-Za-z0-9_-]*)[^>]*?\/?>/;
+
+function nextTag(text: string, from: number): Tag | null {
+  const match = TAG.exec(text.slice(from));
+  if (!match) return null;
+  return {
+    name: match[2] as string,
+    closing: match[1] === '/',
+    end: from + match.index + match[0].length,
+  };
+}
+
+function unescapeXml(value: string): string {
+  return value.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
+
+function readText(text: string, from: number, tagName: string): { value: string; end: number } | null {
+  const close = text.indexOf(`</${tagName}>`, from);
+  if (close < 0) return null;
+  return { value: unescapeXml(text.slice(from, close)), end: close + tagName.length + 3 };
+}
+
+function readValue(text: string, tag: Tag): { value: PlistValue; end: number } | null {
+  if (tag.name === 'true' || tag.name === 'false') {
+    return { value: tag.name === 'true', end: tag.end };
+  }
+  if (tag.name === 'string' || tag.name === 'integer' || tag.name === 'real' || tag.name === 'data') {
+    const read = readText(text, tag.end, tag.name);
+    return read ? { value: read.value, end: read.end } : null;
+  }
+  if (tag.name === 'array') {
+    const items: PlistValue[] = [];
+    let cursor = tag.end;
+    for (;;) {
+      const inner = nextTag(text, cursor);
+      if (!inner) return null;
+      if (inner.closing && inner.name === 'array') return { value: items, end: inner.end };
+      const item = readValue(text, inner);
+      if (!item) return null;
+      items.push(item.value);
+      cursor = item.end;
+    }
+  }
+  if (tag.name === 'dict') {
+    const entries: { [key: string]: PlistValue } = Object.create(null) as { [key: string]: PlistValue };
+    let cursor = tag.end;
+    for (;;) {
+      const keyTag = nextTag(text, cursor);
+      if (!keyTag) return null;
+      if (keyTag.closing && keyTag.name === 'dict') return { value: entries, end: keyTag.end };
+      if (keyTag.name !== 'key') return null;
+      const key = readText(text, keyTag.end, 'key');
+      if (!key) return null;
+      const valueTag = nextTag(text, key.end);
+      if (!valueTag) return null;
+      const value = readValue(text, valueTag);
+      if (!value) return null;
+      entries[key.value] = value.value;
+      cursor = value.end;
+    }
+  }
+  return null;
+}
+
+/** The root dictionary of a property list, or null when it cannot be read. */
+export function parsePlist(content: string): { [key: string]: PlistValue } | null {
+  let cursor = 0;
+  for (;;) {
+    const tag = nextTag(content, cursor);
+    if (!tag) return null;
+    if (tag.name === 'dict' && !tag.closing) {
+      const value = readValue(content, tag);
+      if (!value || typeof value.value !== 'object' || Array.isArray(value.value)) return null;
+      return value.value;
+    }
+    cursor = tag.end;
+  }
+}
+
+/** The `Label` a LaunchAgent actually declares - not the one its filename implies. */
+export function plistLabel(content: string): string | null {
+  const dict = parsePlist(content);
+  const label = dict?.Label;
+  return typeof label === 'string' && label.length > 0 ? label : null;
+}
+
+/**
+ * What a service definition *means*, with the environment-dependent parts left
+ * out on purpose.
+ *
+ * `installService` compares this rather than the file's bytes. A LaunchAgent
+ * carries the installing shell's PATH, so a byte comparison calls the unit
+ * "changed" whenever init runs from nvm, direnv, an IDE terminal or an agent -
+ * and reloading on that would bounce a healthy daemon on every init. Idempotent
+ * has to mean "repairs what is broken", so only the fields below can trigger a
+ * reload.
+ */
+export interface ServiceDefinition {
+  label: string;
+  argv: string[];
+  workingDirectory: string;
+  restart: 'always' | 'on-failure' | 'no';
+  stdoutPath: string | null;
+  stderrPath: string | null;
+}
+
+export function launchdDefinition(paths: Paths, executable: string, nodePath: string): ServiceDefinition {
+  return {
+    label: launchdLabel(paths),
+    argv: [nodePath, executable, 'daemon', 'run', '--root', paths.canonicalRoot()],
+    workingDirectory: paths.canonicalRoot(),
+    restart: 'on-failure',
+    stdoutPath: join(paths.logsDir, 'service.out.log'),
+    stderrPath: join(paths.logsDir, 'service.err.log'),
+  };
+}
+
+export function systemdDefinition(paths: Paths, executable: string, nodePath: string): ServiceDefinition {
+  return {
+    label: systemdUnitName(paths),
+    argv: [nodePath, executable, 'daemon', 'run', '--root', paths.canonicalRoot()],
+    workingDirectory: paths.canonicalRoot(),
+    restart: 'on-failure',
+    stdoutPath: null,
+    stderrPath: null,
+  };
+}
+
+export function parseLaunchdPlist(content: string): ServiceDefinition | null {
+  const dict = parsePlist(content);
+  if (!dict) return null;
+  const label = dict.Label;
+  const argv = dict.ProgramArguments;
+  const workingDirectory = dict.WorkingDirectory;
+  if (typeof label !== 'string' || !Array.isArray(argv) || typeof workingDirectory !== 'string') return null;
+  if (!argv.every((entry): entry is string => typeof entry === 'string')) return null;
+  const keepAlive = dict.KeepAlive;
+  let restart: ServiceDefinition['restart'] = 'no';
+  if (keepAlive === true) restart = 'always';
+  else if (keepAlive !== undefined && typeof keepAlive === 'object' && !Array.isArray(keepAlive)) {
+    restart = keepAlive.SuccessfulExit === false ? 'on-failure' : 'always';
+  }
+  return {
+    label,
+    argv,
+    workingDirectory,
+    restart,
+    stdoutPath: typeof dict.StandardOutPath === 'string' ? dict.StandardOutPath : null,
+    stderrPath: typeof dict.StandardErrorPath === 'string' ? dict.StandardErrorPath : null,
+  };
+}
+
+/**
+ * The unit name is not written inside the file, so the caller supplies the one
+ * the file is stored under - which is what systemd itself addresses the job by.
+ */
+export function parseSystemdUnit(content: string, unitName: string): ServiceDefinition | null {
+  const settings = new Map<string, string>();
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0 || trimmed.startsWith('#') || trimmed.startsWith('[')) continue;
+    const equals = trimmed.indexOf('=');
+    if (equals < 0) continue;
+    settings.set(trimmed.slice(0, equals).trim(), trimmed.slice(equals + 1).trim());
+  }
+  const execStart = settings.get('ExecStart');
+  const workingDirectory = settings.get('WorkingDirectory');
+  if (execStart === undefined || workingDirectory === undefined) return null;
+  const restartValue = settings.get('Restart');
+  return {
+    label: unitName,
+    argv: execStart.split(/\s+/).filter((token) => token.length > 0),
+    workingDirectory,
+    restart: restartValue === 'always' ? 'always' : restartValue === 'on-failure' ? 'on-failure' : 'no',
+    stdoutPath: null,
+    stderrPath: null,
+  };
+}
+
+export function sameServiceDefinition(a: ServiceDefinition, b: ServiceDefinition): boolean {
+  return (
+    a.label === b.label &&
+    a.workingDirectory === b.workingDirectory &&
+    a.restart === b.restart &&
+    a.stdoutPath === b.stdoutPath &&
+    a.stderrPath === b.stderrPath &&
+    a.argv.length === b.argv.length &&
+    a.argv.every((token, index) => token === b.argv[index])
+  );
+}
+
 export interface ServiceStatus {
   supported: boolean;
   label: string;
@@ -171,8 +376,30 @@ export interface ServiceInstallResult {
 }
 
 /**
- * Writes and loads the service definition. Idempotent: an unchanged unit file
- * is left alone, a changed one is rewritten and reloaded.
+ * True when the unit already on disk means the same thing as the one we would
+ * write. An unparsable file counts as different, so a corrupted unit is
+ * repaired rather than trusted.
+ */
+function sameInstalledDefinition(
+  unitPath: string,
+  desired: ServiceDefinition,
+  parse: (content: string) => ServiceDefinition | null,
+): boolean {
+  if (!existsSync(unitPath)) return false;
+  let installed: ServiceDefinition | null;
+  try {
+    installed = parse(readFileSync(unitPath, 'utf8'));
+  } catch {
+    return false;
+  }
+  return installed !== null && sameServiceDefinition(installed, desired);
+}
+
+/**
+ * Writes and loads the service definition. Idempotent: a unit that already
+ * means what we intend is left alone - bytes only, such as the installing
+ * shell's PATH, do not count as a change - and a changed one is rewritten and
+ * reloaded.
  */
 export function installService(paths: Paths, executable: string, nodePath: string): ServiceInstallResult {
   const current = platform();
@@ -189,7 +416,9 @@ export function installService(paths: Paths, executable: string, nodePath: strin
     const unitPath = launchdPlistPath(paths);
     const content = launchdPlist(paths, executable, nodePath);
     mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
-    const unchanged = existsSync(unitPath) && readFileSync(unitPath, 'utf8') === content;
+    const unchanged = sameInstalledDefinition(unitPath, launchdDefinition(paths, executable, nodePath), (installed) =>
+      parseLaunchdPlist(installed),
+    );
     if (!unchanged) writeFileSync(unitPath, content, { mode: 0o644 });
     // An unchanged, already-loaded job is left strictly alone. Reloading it
     // would bounce a healthy daemon on every `init`, and idempotent has to mean
@@ -218,7 +447,9 @@ export function installService(paths: Paths, executable: string, nodePath: strin
   const unitPath = systemdUnitPath(paths);
   const content = systemdUnit(paths, executable, nodePath);
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
-  const unchanged = existsSync(unitPath) && readFileSync(unitPath, 'utf8') === content;
+  const unchanged = sameInstalledDefinition(unitPath, systemdDefinition(paths, executable, nodePath), (installed) =>
+    parseSystemdUnit(installed, label),
+  );
   if (!unchanged) writeFileSync(unitPath, content, { mode: 0o644 });
   if (unchanged && inspectService(paths).loaded) {
     return { installed: true, label, unitPath, skipped: null, reloaded: false };

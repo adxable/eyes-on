@@ -90,7 +90,7 @@ export async function initCommand(context: Context): Promise<number> {
 
   let hook: HookResult | null = null;
   if (watch) {
-    hook = installPostCommitHook(clone, process.argv[1] ?? 'eyes-on');
+    hook = installPostCommitHook(clone, process.argv[1] ?? 'eyes-on', context.paths.canonicalRoot());
     progress(context.writers, `eyes-on: post-commit hook ${hook.action}`);
   }
 

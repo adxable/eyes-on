@@ -16,6 +16,20 @@ export interface ParsedArgs {
 const VALUE_FLAGS = new Set(['format', 'root', 'base', 'head', 'intent', 'pr', 'n', 'split', 'window', 'since']);
 
 export function parseArgs(argv: readonly string[]): ParsedArgs {
+  return scan(argv, true);
+}
+
+/**
+ * The same scan, but a value flag with no value is taken as a bare boolean
+ * instead of an error. Used to work out how a failure should be *rendered*
+ * before the strict parse decides whether there is one: an agent running
+ * `eyes-on axi status --format` must still get its error as TOON on stdout.
+ */
+export function parseArgsLenient(argv: readonly string[]): ParsedArgs {
+  return scan(argv, false);
+}
+
+function scan(argv: readonly string[], strict: boolean): ParsedArgs {
   const positional: string[] = [];
   const flags = new Map<string, string | boolean>();
   for (let index = 0; index < argv.length; index += 1) {
@@ -37,9 +51,13 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     if (VALUE_FLAGS.has(withoutDashes)) {
       const value = argv[index + 1];
       if (value === undefined || value.startsWith('-')) {
-        throw new UserFacingError(`flag --${withoutDashes} needs a value`, [
-          `Pass a value, for example --${withoutDashes} <value>`,
-        ], EXIT_USAGE);
+        if (strict) {
+          throw new UserFacingError(`flag --${withoutDashes} needs a value`, [
+            `Pass a value, for example --${withoutDashes} <value>`,
+          ], EXIT_USAGE);
+        }
+        flags.set(withoutDashes, true);
+        continue;
       }
       flags.set(withoutDashes, value);
       index += 1;

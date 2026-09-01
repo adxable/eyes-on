@@ -11,8 +11,14 @@ The session ran against a temporary state root `~/.eyes-on-acceptance` with the
 rather than a simulation. The root and its LaunchAgent were removed afterwards;
 nothing from this run persists on the machine.
 
-Everything below is also automated in `test/coexistence.test.ts`, which runs the
-same five properties against throwaway repositories on every `npm test`.
+Four of the six results below have an automated counterpart in
+`test/coexistence.test.ts`, which runs them against throwaway repositories on
+every `npm test`: foreign state untouched (2), clone untouched (3), mirror cost
+(4) and recursion refusal (5). That file also carries the K2 clone allow-list
+rule, which is not a row in the table. Idempotency (6) is automated in
+`test/cli.test.ts`. **Daemon coexistence (1) has no automated counterpart** -
+it needs a live no-mistakes install and a real service manager, so it was
+measured by hand and the numbers below are that measurement.
 
 ## Results
 

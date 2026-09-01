@@ -13,12 +13,12 @@ import { tempRepo, run } from './helpers.js';
 
 test('the hook installs into the clone and is recognised as ours', () => {
   const repo = tempRepo('hook');
-  const result = installPostCommitHook(repo.path, '/nonexistent/eyes-on');
+  const result = installPostCommitHook(repo.path, '/nonexistent/eyes-on', '/tmp/eyes-on-root');
   assert.equal(result.action, 'installed');
   assert.equal(inspectPostCommitHook(repo.path).managed, true);
 
   // A second install is a no-op, not a second hook.
-  assert.equal(installPostCommitHook(repo.path, '/nonexistent/eyes-on').action, 'unchanged');
+  assert.equal(installPostCommitHook(repo.path, '/nonexistent/eyes-on', '/tmp/eyes-on-root').action, 'unchanged');
 });
 
 /**
@@ -32,7 +32,7 @@ test('a foreign hook is preserved and still runs after ours', () => {
   writeFileSync(join(hooks, 'post-commit'), `#!/bin/sh\necho ran > ${witness}\n`, { mode: 0o755 });
   chmodSync(join(hooks, 'post-commit'), 0o755);
 
-  const result = installPostCommitHook(repo.path, '/nonexistent/eyes-on');
+  const result = installPostCommitHook(repo.path, '/nonexistent/eyes-on', '/tmp/eyes-on-root');
   assert.equal(result.action, 'preserved-foreign');
   assert.equal(result.preservedPath, join(hooks, PRESERVED_HOOK));
   assert.ok(readFileSync(join(hooks, PRESERVED_HOOK), 'utf8').includes('echo ran'));
@@ -47,7 +47,7 @@ test('a foreign hook is preserved and still runs after ours', () => {
  */
 test('the hook never fails a commit, even with no daemon to talk to', () => {
   const repo = tempRepo('hook-nonblocking');
-  installPostCommitHook(repo.path, '/definitely/not/a/binary');
+  installPostCommitHook(repo.path, '/definitely/not/a/binary', '/tmp/eyes-on-root');
   const sha = repo.commit('commits cleanly with the hook installed');
   assert.match(sha, /^[0-9a-f]{40}$/);
   assert.equal(run(repo.path, ['log', '--oneline']).trim().split('\n').length, 2);
@@ -58,7 +58,7 @@ test('a broken preserved hook still cannot fail the commit', () => {
   const hooks = join(repo.path, '.git', 'hooks');
   writeFileSync(join(hooks, 'post-commit'), '#!/bin/sh\nexit 3\n', { mode: 0o755 });
   chmodSync(join(hooks, 'post-commit'), 0o755);
-  installPostCommitHook(repo.path, '/definitely/not/a/binary');
+  installPostCommitHook(repo.path, '/definitely/not/a/binary', '/tmp/eyes-on-root');
 
   const commit = spawnSync('git', ['commit', '-q', '--allow-empty', '-m', 'empty'], {
     cwd: repo.path,
@@ -72,7 +72,7 @@ test('removing our hook restores the one we displaced', () => {
   const hooks = join(repo.path, '.git', 'hooks');
   writeFileSync(join(hooks, 'post-commit'), '#!/bin/sh\n# theirs\n', { mode: 0o755 });
   chmodSync(join(hooks, 'post-commit'), 0o755);
-  installPostCommitHook(repo.path, '/nonexistent/eyes-on');
+  installPostCommitHook(repo.path, '/nonexistent/eyes-on', '/tmp/eyes-on-root');
 
   assert.equal(removePostCommitHook(repo.path), true);
   assert.ok(readFileSync(join(hooks, 'post-commit'), 'utf8').includes('# theirs'));
@@ -84,6 +84,35 @@ test('a foreign hook is never silently discarded when a companion already exists
   const hooks = join(repo.path, '.git', 'hooks');
   writeFileSync(join(hooks, 'post-commit'), '#!/bin/sh\n# theirs\n', { mode: 0o755 });
   writeFileSync(join(hooks, PRESERVED_HOOK), '#!/bin/sh\n# older theirs\n', { mode: 0o755 });
-  assert.throws(() => installPostCommitHook(repo.path, '/nonexistent/eyes-on'), /already exists/);
+  assert.throws(() => installPostCommitHook(repo.path, '/nonexistent/eyes-on', '/tmp/eyes-on-root'), /already exists/);
   assert.ok(readFileSync(join(hooks, 'post-commit'), 'utf8').includes('# theirs'));
+});
+
+/**
+ * The hook must reach the daemon that registered *this* clone. Before this was
+ * fixed the hook carried only the binary path, so an install under a non-default
+ * EYES_HOME produced a hook that talked to ~/.eyes-on and failed silently
+ * forever - the hook discards output and always exits 0.
+ */
+test('the hook talks to the state root it was installed for, not the committing shell\'s', () => {
+  const repo = tempRepo('hook-root');
+  const witness = join(repo.path, 'notify-argv.txt');
+  const fakeBinary = join(repo.path, 'fake-eyes-on');
+  writeFileSync(fakeBinary, `#!/bin/sh\nprintf '%s\\n' "$*" > ${witness}\n`, { mode: 0o755 });
+  chmodSync(fakeBinary, 0o755);
+
+  installPostCommitHook(repo.path, fakeBinary, '/srv/eyes-on');
+  // The hook fires its notification in the background, so run the installed
+  // hook directly and wait for it rather than racing the commit.
+  const hook = spawnSync('/bin/sh', [join(repo.path, '.git', 'hooks', 'post-commit')], {
+    cwd: repo.path,
+    encoding: 'utf8',
+    env: { ...process.env, EYES_HOME: '/somewhere/else' },
+  });
+  assert.equal(hook.status, 0);
+  for (let attempt = 0; attempt < 100 && !existsSync(witness); attempt += 1) {
+    spawnSync('sleep', ['0.02']);
+  }
+  assert.ok(existsSync(witness), 'the hook never invoked the binary');
+  assert.equal(readFileSync(witness, 'utf8').trim(), 'daemon notify-commit --root /srv/eyes-on');
 });

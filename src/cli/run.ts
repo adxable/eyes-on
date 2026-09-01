@@ -1,6 +1,6 @@
 import { Paths } from '../core/paths.js';
 import { classify } from '../core/guard.js';
-import { parseArgs, flagString, flagBool, resolveFormat, type ParsedArgs } from './args.js';
+import { parseArgs, parseArgsLenient, flagString, flagBool, resolveFormat, type ParsedArgs } from './args.js';
 import {
   emitError,
   EXIT_ERROR,
@@ -41,19 +41,26 @@ import { version, PRODUCT_NAME } from '../core/version.js';
 
 type Handler = (context: Context) => Promise<number> | number;
 
-const HANDLERS: Record<string, Handler> = {
-  init: initCommand,
-  doctor: doctorCommand,
-  status: statusCommand,
-  daemon: daemonCommand,
-  axi: axiCommand,
-};
+// A Map, not an object literal: `eyes-on constructor` must reach the
+// unknown-command path and be reported as `error:` plus `help:`, not resolve
+// `Object.prototype.constructor` and hand the dispatcher something that is not
+// a handler.
+const HANDLERS = new Map<string, Handler>([
+  ['init', initCommand],
+  ['doctor', doctorCommand],
+  ['status', statusCommand],
+  ['daemon', daemonCommand],
+  ['axi', axiCommand],
+]);
 
 /** Commands whose machine payload is the primary output, so TOON is the default. */
 const TOON_FIRST = new Set(['axi']);
 
 export async function run(argv: readonly string[], writers: Writers = processWriters): Promise<number> {
-  let format: Format = 'md';
+  // Resolved before anything can throw. `parseArgs` and `resolveFormat` both
+  // reject bad input, and an error rendered with the wrong format would land on
+  // stderr and leave an agent under `axi` with exit 2 and empty stdout.
+  let format: Format = initialFormat(argv);
   try {
     const args = parseArgs(argv);
     const commandName = args.positional[0] ?? '';
@@ -83,7 +90,7 @@ export async function run(argv: readonly string[], writers: Writers = processWri
       }
     }
 
-    const handler = HANDLERS[commandName];
+    const handler = HANDLERS.get(commandName);
     if (handler) {
       return await handler(context);
     }
@@ -109,6 +116,21 @@ export async function run(argv: readonly string[], writers: Writers = processWri
       'This is an eyes-on bug. Run `eyes-on doctor` and include its output when reporting it',
     ]);
     return EXIT_ERROR;
+  }
+}
+
+/**
+ * Best-effort output format for a command line that may not parse. Never
+ * throws: an unusable `--format` falls back to the command's default, and the
+ * strict parse reports the failure a moment later in the right shape.
+ */
+function initialFormat(argv: readonly string[]): Format {
+  const args = parseArgsLenient(argv);
+  const fallback: Format = TOON_FIRST.has(args.positional[0] ?? '') ? 'toon' : 'md';
+  try {
+    return resolveFormat(args, fallback);
+  } catch {
+    return fallback;
   }
 }
 

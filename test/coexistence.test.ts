@@ -4,7 +4,18 @@ import { join } from 'node:path';
 import { mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { run as runCli } from '../src/cli/run.js';
 import { EXIT_OK, EXIT_USAGE, type Writers } from '../src/cli/output.js';
-import { CLONE_READ_ONLY_SUBCOMMANDS, gitReadClone } from '../src/git/git.js';
+import {
+  CLONE_READ_ONLY_SUBCOMMANDS,
+  commonGitDir,
+  currentBranch,
+  defaultBranch,
+  gitReadClone,
+  headSHA,
+  hooksDir,
+  isGitRepo,
+  toplevel,
+} from '../src/git/git.js';
+import { ensureMirror } from '../src/git/mirror.js';
 import { tempDir, tempRepo, run } from './helpers.js';
 
 /**
@@ -177,9 +188,14 @@ test('acceptance: inside a no-mistakes run, mutation is refused and reads still 
 });
 
 /**
- * K2 as an executable rule rather than a review promise: the allow-list is the
- * only way git reaches a working clone, so a command that would write cannot be
- * introduced without this failing.
+ * K2 as an executable rule rather than a review promise.
+ *
+ * `git()` is module-private, so the only exported ways a clone can appear in a
+ * git invocation are `gitReadClone()` - which refuses anything outside the
+ * read-only allow-list - and `fetchCloneIntoMirror()`, which never runs inside
+ * the clone and writes only into the mirror. Both halves are asserted here,
+ * because "the allow-list is the enforcement point" is only true while every
+ * clone-touching helper actually goes through it.
  */
 test('acceptance: no write-capable git subcommand can reach a working clone', () => {
   const repo = tempRepo('coex-allowlist');
@@ -191,4 +207,42 @@ test('acceptance: no write-capable git subcommand can reach a working clone', ()
     assert.throws(() => gitReadClone(repo.path, [forbidden]), /only reads clones/);
   }
   assert.doesNotThrow(() => gitReadClone(repo.path, ['status', '--porcelain']));
+});
+
+test('acceptance: every clone-reading helper goes through the allow-list', () => {
+  const repo = tempRepo('coex-helpers');
+  // Each of these would throw if it reached git any other way than through
+  // gitReadClone, because the allow-list check runs before the process spawns.
+  assert.equal(toplevel(repo.path), repo.path);
+  assert.ok(isGitRepo(repo.path));
+  assert.ok(commonGitDir(repo.path)?.length);
+  assert.ok(hooksDir(repo.path)?.endsWith('hooks'));
+  assert.match(headSHA(repo.path) ?? '', /^[0-9a-f]{40}$/);
+  assert.ok((currentBranch(repo.path) ?? '').length > 0);
+  assert.ok(defaultBranch(repo.path).length > 0);
+});
+
+/**
+ * The one invocation that names a clone without being on the allow-list. It is
+ * allowed because of what it does, not because of what it is called: the clone
+ * is the fetch *source*, read through upload-pack, and the assertions below are
+ * the reason that distinction is safe.
+ */
+test('acceptance: the mirror fetch reads the clone and writes only into the mirror', () => {
+  const repo = tempRepo('coex-fetch');
+  repo.commit('something to fetch');
+  const mirrorPath = join(tempDir('coex-fetch-mirror'), 'mirror.git');
+
+  const statusBefore = run(repo.path, ['status', '--porcelain']);
+  const refsBefore = run(repo.path, ['for-each-ref']);
+  const configBefore = run(repo.path, ['config', '--local', '--list']);
+  const remotesBefore = run(repo.path, ['remote', '-v']);
+
+  const result = ensureMirror(mirrorPath, repo.path);
+  assert.ok(result.status.refs > 0, 'the mirror gained the clone\'s heads');
+
+  assert.equal(run(repo.path, ['status', '--porcelain']), statusBefore, 'the working tree changed');
+  assert.equal(run(repo.path, ['for-each-ref']), refsBefore, 'a ref moved in the clone');
+  assert.equal(run(repo.path, ['config', '--local', '--list']), configBefore, 'local config changed');
+  assert.equal(run(repo.path, ['remote', '-v']), remotesBefore, 'a remote was added to the clone');
 });

@@ -3,9 +3,19 @@ import { spawnSync } from 'node:child_process';
 /**
  * Every git invocation eyes-on makes goes through here, and the reason is
  * report K2: eyes-on may read the captain's working clone and must never write
- * to it. Routing all of git through one function makes that auditable - a
- * single allow-list, one place to test, and no second path where a stray
- * `checkout` could appear.
+ * to it.
+ *
+ * `git()` itself is deliberately module-private, so no caller outside this file
+ * can choose an arbitrary working directory. A clone is reachable through
+ * exactly two exported doors:
+ *
+ *   - `gitReadClone()`, which refuses any subcommand outside the read-only
+ *     allow-list below;
+ *   - `fetchCloneIntoMirror()`, the one sanctioned invocation that names a clone
+ *     without running inside it - the clone is the fetch *source*, read through
+ *     upload-pack, and every byte written lands in eyes-on's own mirror.
+ *
+ * Everything else targets the mirror, which is ours.
  */
 
 /** Subcommands eyes-on is allowed to run against a working clone. Read-only,
@@ -59,7 +69,7 @@ export interface GitOptions {
   timeoutMs?: number;
 }
 
-export function git(args: string[], options: GitOptions = {}): GitResult {
+function git(args: string[], options: GitOptions = {}): GitResult {
   const full = options.gitDir ? ['--git-dir', options.gitDir, ...args] : args;
   const result = spawnSync('git', full, {
     cwd: options.cwd,
@@ -103,13 +113,41 @@ export function gitReadClone(clonePath: string, args: string[], options: GitOpti
   return git(args, { ...options, cwd: clonePath });
 }
 
+/**
+ * Git against eyes-on's own mirror. The mirror is a rebuildable cache eyes-on
+ * owns outright, so writes here are unremarkable - `--git-dir` keeps them there.
+ */
+export function gitMirror(mirrorPath: string, args: string[], options: GitOptions = {}): GitResult {
+  return git(args, { ...options, gitDir: mirrorPath, cwd: undefined });
+}
+
+/** Creates the bare mirror repository itself, before it has a git dir to name. */
+export function initBareMirror(mirrorPath: string): GitResult {
+  return git(['init', '--bare', '--quiet', mirrorPath], { check: true });
+}
+
+/**
+ * Fetches the clone's heads into the mirror. This is the single exception to
+ * "eyes-on only ever runs allow-listed subcommands against a clone", and it is
+ * an exception in name only: `--git-dir` is the mirror, the process never runs
+ * inside the clone, and the clone is touched exactly the way any `git fetch
+ * <path>` touches its source - a read through upload-pack. No ref, index entry
+ * or config value in the clone moves.
+ */
+export function fetchCloneIntoMirror(mirrorPath: string, clonePath: string, refspec: string): GitResult {
+  return git(['fetch', '--quiet', '--no-tags', '--prune', clonePath, refspec], {
+    gitDir: mirrorPath,
+    check: true,
+  });
+}
+
 export function isGitRepo(path: string): boolean {
-  return git(['rev-parse', '--is-inside-work-tree'], { cwd: path }).status === 0;
+  return gitReadClone(path, ['rev-parse', '--is-inside-work-tree']).status === 0;
 }
 
 /** Absolute top level of the working tree containing path. */
 export function toplevel(path: string): string | null {
-  const result = git(['rev-parse', '--show-toplevel'], { cwd: path });
+  const result = gitReadClone(path, ['rev-parse', '--show-toplevel']);
   if (result.status !== 0) return null;
   return result.stdout.trim() || null;
 }
@@ -121,14 +159,14 @@ export function toplevel(path: string): string | null {
  * per-worktree git dir holds no objects of its own.
  */
 export function commonGitDir(path: string): string | null {
-  const result = git(['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: path });
+  const result = gitReadClone(path, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
   if (result.status !== 0) return null;
   return result.stdout.trim() || null;
 }
 
 /** Hooks directory git would actually consult for this repository. */
 export function hooksDir(path: string): string | null {
-  const configured = git(['config', '--get', 'core.hooksPath'], { cwd: path });
+  const configured = gitReadClone(path, ['config', '--get', 'core.hooksPath']);
   if (configured.status === 0 && configured.stdout.trim().length > 0) {
     const value = configured.stdout.trim();
     if (value.startsWith('/')) return value;
@@ -140,14 +178,14 @@ export function hooksDir(path: string): string | null {
 }
 
 export function currentBranch(path: string): string | null {
-  const result = git(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: path });
+  const result = gitReadClone(path, ['rev-parse', '--abbrev-ref', 'HEAD']);
   if (result.status !== 0) return null;
   const branch = result.stdout.trim();
   return branch === 'HEAD' || branch.length === 0 ? null : branch;
 }
 
 export function headSHA(path: string): string | null {
-  const result = git(['rev-parse', 'HEAD'], { cwd: path });
+  const result = gitReadClone(path, ['rev-parse', 'HEAD']);
   if (result.status !== 0) return null;
   return result.stdout.trim() || null;
 }
@@ -158,14 +196,14 @@ export function headSHA(path: string): string | null {
  * Resolved without contacting the network.
  */
 export function defaultBranch(path: string): string {
-  const remoteHead = git(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { cwd: path });
+  const remoteHead = gitReadClone(path, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
   if (remoteHead.status === 0) {
     const value = remoteHead.stdout.trim();
     const slash = value.lastIndexOf('/');
     if (slash >= 0) return value.slice(slash + 1);
   }
   for (const candidate of ['main', 'master']) {
-    if (git(['show-ref', '--verify', '--quiet', `refs/heads/${candidate}`], { cwd: path }).status === 0) {
+    if (gitReadClone(path, ['show-ref', '--verify', '--quiet', `refs/heads/${candidate}`]).status === 0) {
       return candidate;
     }
   }

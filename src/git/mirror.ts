@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { git, commonGitDir } from './git.js';
+import { commonGitDir, fetchCloneIntoMirror, gitMirror, initBareMirror } from './git.js';
 
 /**
  * The mirror: a bare repository at `<root>/mirrors/<repoID>.git` whose
@@ -54,7 +54,7 @@ export function inspectMirror(mirrorPath: string): MirrorStatus {
     return { path: mirrorPath, exists: false, alternate: null, alternateReachable: false, refs: 0 };
   }
   const alternate = readAlternate(mirrorPath);
-  const refs = git(['for-each-ref', '--format=%(refname)', 'refs/remotes/clone'], { gitDir: mirrorPath });
+  const refs = gitMirror(mirrorPath, ['for-each-ref', '--format=%(refname)', 'refs/remotes/clone']);
   return {
     path: mirrorPath,
     exists: true,
@@ -93,13 +93,13 @@ export function ensureMirror(mirrorPath: string, clonePath: string, options: { f
   }
   if (!existsSync(join(mirrorPath, 'HEAD'))) {
     mkdirSync(mirrorPath, { recursive: true });
-    git(['init', '--bare', '--quiet', mirrorPath], { check: true });
+    initBareMirror(mirrorPath);
     created = true;
     // A mirror that repacks would start copying the borrowed objects it exists
     // to avoid, and an auto-gc racing the clone's own gc is the one way a
     // read-only tool could corrupt somebody's day.
-    git(['config', 'gc.auto', '0'], { gitDir: mirrorPath, check: true });
-    git(['config', 'gc.autoDetach', 'false'], { gitDir: mirrorPath, check: true });
+    gitMirror(mirrorPath, ['config', 'gc.auto', '0'], { check: true });
+    gitMirror(mirrorPath, ['config', 'gc.autoDetach', 'false'], { check: true });
   }
 
   mkdirSync(join(mirrorPath, 'objects', 'info'), { recursive: true });
@@ -109,7 +109,7 @@ export function ensureMirror(mirrorPath: string, clonePath: string, options: { f
   }
 
   const started = process.hrtime.bigint();
-  git(['fetch', '--quiet', '--no-tags', '--prune', clonePath, MIRROR_REFSPEC], { gitDir: mirrorPath, check: true });
+  fetchCloneIntoMirror(mirrorPath, clonePath, MIRROR_REFSPEC);
   const fetchMs = Number(process.hrtime.bigint() - started) / 1e6;
 
   return { status: inspectMirror(mirrorPath), created, repaired, fetchMs };

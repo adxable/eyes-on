@@ -26,17 +26,25 @@ import { hooksDir } from './git.js';
 export const PRESERVED_HOOK = 'post-commit.eyes-on-user';
 export const HOOK_MARKER = '# eyes-on post-commit hook';
 
-export function postCommitHookScript(binary: string): string {
+/**
+ * The hook carries the state root it was installed for, because it must reach
+ * the daemon that actually registered this clone. A hook that inherited the
+ * root from the committing shell's EYES_HOME would silently talk to
+ * `~/.eyes-on` after an `EYES_HOME=/srv/... eyes-on init --watch`, and since
+ * the hook discards output and always exits 0, nobody would ever find out.
+ */
+export function postCommitHookScript(binary: string, stateRoot: string): string {
   return `#!/bin/sh
 ${HOOK_MARKER}
 # Notifies the eyes-on daemon that a new head exists, then gets out of the way.
 # This hook must never fail a commit: every path below exits 0.
 EYES_ON_BIN=${shellQuote(binary)}
+EYES_ON_ROOT=${shellQuote(stateRoot)}
 if [ ! -x "$EYES_ON_BIN" ]; then
   EYES_ON_BIN=$(command -v eyes-on 2>/dev/null || echo '')
 fi
 if [ -n "$EYES_ON_BIN" ] && [ "\${EYES_ON_HOOK_DISABLED:-0}" != "1" ]; then
-  ( EYES_ON_HOOK=1 "$EYES_ON_BIN" daemon notify-commit >/dev/null 2>&1 & ) >/dev/null 2>&1
+  ( EYES_ON_HOOK=1 "$EYES_ON_BIN" daemon notify-commit --root "$EYES_ON_ROOT" >/dev/null 2>&1 & ) >/dev/null 2>&1
 fi
 HOOK_PATH=$0
 case "$HOOK_PATH" in
@@ -72,13 +80,13 @@ export interface HookResult {
  * Installs or refreshes the managed post-commit hook in the clone's hooks
  * directory, preserving any hook that was already there.
  */
-export function installPostCommitHook(clonePath: string, binary: string): HookResult {
+export function installPostCommitHook(clonePath: string, binary: string, stateRoot: string): HookResult {
   const dir = hooksDir(clonePath);
   if (!dir) throw new Error(`cannot resolve the hooks directory of ${clonePath}`);
   mkdirSync(dir, { recursive: true });
   const hookPath = join(dir, 'post-commit');
   const companion = join(dir, PRESERVED_HOOK);
-  const desired = postCommitHookScript(binary);
+  const desired = postCommitHookScript(binary, stateRoot);
 
   if (existsSync(hookPath)) {
     const existing = readFileSync(hookPath, 'utf8');

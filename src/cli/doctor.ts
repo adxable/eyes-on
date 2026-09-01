@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Context } from './context.js';
@@ -9,7 +9,7 @@ import { gitVersion, toplevel } from '../git/git.js';
 import { canonicalPath, repoID } from '../core/repoid.js';
 import { inspectMirror, mirrorSizeBytes } from '../git/mirror.js';
 import { daemonState, daemonStatus } from '../daemon/lifecycle.js';
-import { inspectService } from '../daemon/service.js';
+import { inspectService, launchdPlistPath, plistLabel } from '../daemon/service.js';
 import { inspectSkill, skillRoot } from '../skill/install.js';
 import { inspectPostCommitHook } from '../git/hook.js';
 import { Database } from '../db/db.js';
@@ -68,9 +68,13 @@ export async function doctorCommand(context: Context): Promise<number> {
 
   const gh = which('gh');
   const ghAuth = gh ? ghAuthenticated() : false;
+  // A missing gh is a degradation, never a failure: the product is specified to
+  // work without no-mistakes, without gh and without a model, and only stages
+  // 2-3 lose anything. Reporting `missing` here would make `doctor` exit 1 on a
+  // perfectly healthy stage 0 install.
   rows.push({
     check: 'gh',
-    status: gh ? (ghAuth ? 'ok' : 'warn') : 'missing',
+    status: gh && ghAuth ? 'ok' : 'warn',
     detail: gh ? (ghAuth ? `${gh} (authenticated)` : `${gh} (not authenticated)`) : 'not found',
   });
   if (!gh) degradations.push('gh is missing: pull-request observation and the sticky comment (stages 2-3) are unavailable');
@@ -239,26 +243,40 @@ function inspectCoexistence(context: Context): Coexistence {
   // root, so a collision is impossible by construction (report U4, K15) - but
   // saying so is worth less than showing the two labels side by side.
   const own = inspectService(context.paths);
-  const agentsDir = join(homedir(), 'Library', 'LaunchAgents');
-  let foreignLabels: string[] = [];
-  if (existsSync(agentsDir)) {
-    try {
-      foreignLabels = readdirSync(agentsDir)
-        .filter((name) => name.includes('no-mistakes') || name.includes('eyes-on'))
-        .map((name) => name.replace(/\.plist$/, ''));
-    } catch {
-      foreignLabels = [];
-    }
-  }
+  const agents = declaredLaunchAgents(join(homedir(), 'Library', 'LaunchAgents'));
+  const related = agents.filter(
+    (agent) => agent.label.includes('no-mistakes') || agent.label.includes('eyes-on'),
+  );
   rows.push({
     check: 'service labels',
     status: 'ok',
-    detail: foreignLabels.length > 0 ? foreignLabels.join(', ') : own.label || 'none installed',
+    detail: related.length > 0 ? related.map((agent) => agent.label).join(', ') : own.label || 'none installed',
   });
 
-  const collision = own.label.length > 0 && foreignLabels.filter((label) => label === own.label).length > 1;
-  if (collision) {
-    rows.push({ check: 'service collision', status: 'missing', detail: `duplicate service label ${own.label}` });
+  // A label is what the plist *declares*, not what its filename suggests: two
+  // files can name the same job, and only the declared label decides which job
+  // `launchctl bootout` tears down. Comparing filenames would compare values
+  // that are unique by construction, so the check could never fire.
+  const duplicates = duplicateLabels(agents);
+  for (const collision of duplicates) {
+    rows.push({
+      check: 'service collision',
+      status: 'missing',
+      detail: `service label ${collision.label} is declared by ${collision.files.join(' and ')}`,
+    });
+  }
+  // A single foreign file declaring the eyes-on label is not a duplicate yet,
+  // and it is the worse case: `launchctl bootout` on our label would tear down
+  // somebody else's job.
+  const ownPlist = launchdPlistPath(context.paths);
+  const impostors = agents.filter((agent) => agent.label === own.label && agent.file !== ownPlist);
+  const alreadyReported = duplicates.some((collision) => collision.label === own.label);
+  if (own.label.length > 0 && impostors.length > 0 && !alreadyReported) {
+    rows.push({
+      check: 'service collision',
+      status: 'missing',
+      detail: `${impostors.map((agent) => agent.file).join(', ')} declares the eyes-on service label ${own.label}`,
+    });
   }
 
   // Socket and database paths must be distinct files. They are, by living under
@@ -290,6 +308,43 @@ function inspectCoexistence(context: Context): Coexistence {
   }
 
   return { rows, degradations };
+}
+
+interface DeclaredAgent {
+  file: string;
+  label: string;
+}
+
+/** Every LaunchAgent in dir, keyed by the `Label` it actually declares. */
+function declaredLaunchAgents(dir: string): DeclaredAgent[] {
+  if (!existsSync(dir)) return [];
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((name) => name.endsWith('.plist'));
+  } catch {
+    return [];
+  }
+  const agents: DeclaredAgent[] = [];
+  for (const name of names) {
+    const file = join(dir, name);
+    try {
+      const label = plistLabel(readFileSync(file, 'utf8'));
+      if (label) agents.push({ file, label });
+    } catch {
+      // A plist we cannot read is not a collision we can report.
+    }
+  }
+  return agents;
+}
+
+function duplicateLabels(agents: DeclaredAgent[]): { label: string; files: string[] }[] {
+  const byLabel = new Map<string, string[]>();
+  for (const agent of agents) {
+    byLabel.set(agent.label, [...(byLabel.get(agent.label) ?? []), agent.file]);
+  }
+  return [...byLabel.entries()]
+    .filter(([, files]) => files.length > 1)
+    .map(([label, files]) => ({ label, files }));
 }
 
 function sameFile(a: string, b: string): boolean {
