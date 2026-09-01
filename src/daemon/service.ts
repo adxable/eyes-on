@@ -5,6 +5,7 @@ import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import type { Paths } from '../core/paths.js';
 import { SERVICE_LABEL_BASE } from '../core/version.js';
+import { loadConfig } from '../core/config.js';
 
 /**
  * The OS-managed service (report M14, U4, K15).
@@ -452,11 +453,23 @@ export function inspectService(paths: Paths): ServiceStatus {
   return { supported: true, label, unitPath, installed: existsSync(unitPath), ...job };
 }
 
+/**
+ * What the service manager did with this root's job when asked to start it.
+ *
+ *   - `unavailable`: no service manager holds a job here. It may be bypassed,
+ *     an unsupported platform, disabled in config, have no unit file, or simply
+ *     be unreachable - a host with no systemd user bus, or a launchd domain
+ *     this session cannot address. Nothing is held, so nothing can be orphaned
+ *     and the caller may spawn a daemon of its own.
+ *   - `started`: the job is running, or the manager accepted the start.
+ *   - `refused`: the manager holds this job and would not start it. Spawning
+ *     beside it is exactly the orphan split, so this is a failure to report,
+ *     not a case to route around.
+ */
+export type ManagedJobOutcome = 'unavailable' | 'started' | 'refused';
+
 export interface ManagedJobStart {
-  /** False when there is no managed job for this root to address at all. */
-  attempted: boolean;
-  /** True when the service manager reports it started, or already runs, the job. */
-  accepted: boolean;
+  outcome: ManagedJobOutcome;
   label: string;
   detail: string | null;
 }
@@ -471,36 +484,52 @@ export interface ManagedJobStart {
  * never restarted. `startDaemon` calls this before it considers spawning
  * anything, so `init`, `daemon start` and `daemon restart` all get the property
  * rather than only one of them.
+ *
+ * What decides between `unavailable` and `refused` is whether the manager
+ * actually holds the job, never whether a unit file happens to sit on disk:
+ * `installService` writes that file before it ever tries to load it, so on a
+ * host with no usable service manager the file exists and the job does not.
  */
 export function startManagedJob(paths: Paths): ManagedJobStart {
-  if (serviceManagerBypassed()) {
-    return { attempted: false, accepted: false, label: '', detail: 'EYES_ON_SKIP_SERVICE_MANAGER=1' };
-  }
-  const current = platform();
-  if (current === 'other') {
-    return { attempted: false, accepted: false, label: '', detail: `unsupported platform ${process.platform}` };
-  }
-  const status = inspectService(paths);
-  if (!status.installed) {
-    return { attempted: false, accepted: false, label: status.label, detail: 'no managed service is installed for this root' };
-  }
-  if (status.running) return { attempted: true, accepted: true, label: status.label, detail: null };
+  const unavailable = (detail: string, label = ''): ManagedJobStart => ({ outcome: 'unavailable', label, detail });
 
-  // `kickstart` without `-k` starts a loaded job and is a no-op on a running
-  // one, so it never kills a process that is already coming up.
-  const command =
-    current === 'darwin'
-      ? status.loaded
+  if (serviceManagerBypassed()) return unavailable('EYES_ON_SKIP_SERVICE_MANAGER=1');
+  const current = platform();
+  if (current === 'other') return unavailable(`unsupported platform ${process.platform}`);
+  if (!loadConfig(paths).daemon.managed_service) return unavailable('daemon.managed_service is disabled in config');
+
+  const status = inspectService(paths);
+  if (status.running) return { outcome: 'started', label: status.label, detail: null };
+
+  if (status.loaded) {
+    // `kickstart` without `-k` starts a loaded job and is a no-op on a running
+    // one, so it never kills a process that is already coming up.
+    const command =
+      current === 'darwin'
         ? spawnSync('launchctl', ['kickstart', `${launchctlDomain()}/${status.label}`], { encoding: 'utf8' })
-        : spawnSync('launchctl', ['bootstrap', launchctlDomain(), status.unitPath], { encoding: 'utf8' })
+        : spawnSync('systemctl', ['--user', 'start', status.label], { encoding: 'utf8' });
+    if (command.status === 0) return { outcome: 'started', label: status.label, detail: null };
+    return {
+      outcome: 'refused',
+      label: status.label,
+      detail: (command.stderr ?? '').trim() || `exited ${command.status}`,
+    };
+  }
+
+  if (!status.installed) return unavailable('no managed service is installed for this root', status.label);
+
+  // A unit file with no job behind it. Handing it to the manager is the last
+  // thing that can tell the two cases apart: if it takes it, the job is ours to
+  // wait for; if it cannot be reached, it holds nothing and a spawn is safe.
+  const loaded =
+    current === 'darwin'
+      ? spawnSync('launchctl', ['bootstrap', launchctlDomain(), status.unitPath], { encoding: 'utf8' })
       : spawnSync('systemctl', ['--user', 'start', status.label], { encoding: 'utf8' });
-  const accepted = command.status === 0;
-  return {
-    attempted: true,
-    accepted,
-    label: status.label,
-    detail: accepted ? null : (command.stderr ?? '').trim() || `exited ${command.status}`,
-  };
+  if (loaded.status === 0) return { outcome: 'started', label: status.label, detail: null };
+  return unavailable(
+    `the service manager would not load ${status.label}: ${(loaded.stderr ?? '').trim() || `exited ${loaded.status}`}`,
+    status.label,
+  );
 }
 
 export interface ServiceInstallResult {
@@ -560,22 +589,21 @@ export function inspectInstalledUnit(
   };
 }
 
-export type InstallAction = 'leave-alone' | 'kickstart' | 'reinstall';
+export type InstallAction = 'leave-alone' | 'reinstall';
 
 /**
  * What an already-installed service needs from `installService`, which owns the
  * *definition* and nothing else.
  *
- * `kickstart` names a job that is loaded with no process: the definition on
- * disk is right, so tearing it down and re-bootstrapping it would be pointless
- * churn - only the process is missing, and `startManagedJob` is what supplies
- * it. Both `leave-alone` and `kickstart` therefore leave the definition alone;
- * they differ in what the caller still has to do afterwards.
+ * A job the manager already holds keeps its definition whether or not it has a
+ * process: tearing it down and re-bootstrapping it would be pointless churn
+ * when only the process is missing, and `startManagedJob` is what supplies one.
+ * Everything else - a changed declaration, or a definition the manager is not
+ * holding at all - has to be written and loaded.
  */
-export function installAction(sameMeaning: boolean, status: { loaded: boolean; running: boolean }): InstallAction {
+export function installAction(sameMeaning: boolean, status: { loaded: boolean }): InstallAction {
   if (!sameMeaning) return 'reinstall';
-  if (status.running) return 'leave-alone';
-  return status.loaded ? 'kickstart' : 'reinstall';
+  return status.loaded ? 'leave-alone' : 'reinstall';
 }
 
 /**
@@ -604,12 +632,13 @@ export function installService(paths: Paths, executable: string, nodePath: strin
     );
     if (!existing.sameBytes) writeFileSync(unitPath, content, { mode: 0o644 });
     const action = installAction(existing.sameMeaning, inspectService(paths));
-    // A job whose declaration has not changed is left strictly alone, running
-    // or not. Reloading it would bounce a healthy daemon on every `init`, and
-    // idempotent has to mean "repairs what is broken", not "restarts what is
-    // working"; a dead one needs a process, not a new definition, and
-    // `startDaemon` supplies that through the same door every other caller uses.
-    if (action !== 'reinstall') {
+    // A held job whose declaration has not changed is left strictly alone,
+    // running or not. Reloading it would bounce a healthy daemon on every
+    // `init`, and idempotent has to mean "repairs what is broken", not
+    // "restarts what is working"; a dead one needs a process, not a new
+    // definition, and `startDaemon` supplies that through the same door every
+    // other caller uses.
+    if (action === 'leave-alone') {
       return { installed: true, label, unitPath, skipped: null, reloaded: false };
     }
     // bootout then bootstrap: launchd refuses to bootstrap an already-loaded
@@ -638,7 +667,7 @@ export function installService(paths: Paths, executable: string, nodePath: strin
   );
   if (!existing.sameBytes) writeFileSync(unitPath, content, { mode: 0o644 });
   const action = installAction(existing.sameMeaning, inspectService(paths));
-  if (action !== 'reinstall') {
+  if (action === 'leave-alone') {
     return { installed: true, label, unitPath, skipped: null, reloaded: false };
   }
   spawnSync('systemctl', ['--user', 'daemon-reload'], { encoding: 'utf8' });

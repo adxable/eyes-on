@@ -29,13 +29,13 @@ function stateRoot(prefix: string): Paths {
   return Paths.withRoot(join(tempDir(prefix), 'eyes-on'));
 }
 
-/** A managed job that exists and starts nothing, like a broken LaunchAgent. */
+/** A job the manager holds and starts, whose process never answers. */
 function deadJob(): { start: (paths: Paths) => ManagedJobStart; calls: number } {
   const record = {
     calls: 0,
     start: (): ManagedJobStart => {
       record.calls += 1;
-      return { attempted: true, accepted: true, label: 'com.example.dead', detail: null };
+      return { outcome: 'started', label: 'com.example.dead', detail: null };
     },
   };
   return record;
@@ -65,9 +65,9 @@ test('a managed job that does come up is the daemon init reports', async () => {
     void (async () => {
       spawned = await startDaemon(target, { timeoutMs: 10_000, startManagedJob: () => notManaged });
     })();
-    return { attempted: true, accepted: true, label: 'com.example.managed', detail: null };
+    return { outcome: 'started', label: 'com.example.managed', detail: null };
   };
-  const notManaged: ManagedJobStart = { attempted: false, accepted: false, label: '', detail: 'no service' };
+  const notManaged: ManagedJobStart = { outcome: 'unavailable', label: '', detail: 'no service' };
 
   try {
     const result = await startDaemon(paths, { timeoutMs: 15_000, startManagedJob });
@@ -123,4 +123,56 @@ test('with no managed service for this root, the daemon is spawned directly', as
   } finally {
     await stopDaemon(paths);
   }
+});
+
+/**
+ * The other half of the same rule. A service manager that cannot be reached
+ * holds nothing a spawned daemon could orphan, so `init` on a host without one
+ * - Linux with no systemd user bus, a launchd domain this session cannot
+ * address - must still end with a working daemon rather than no daemon at all.
+ * A unit file on disk does not change that: `installService` writes it before
+ * it ever tries to load the job.
+ */
+test('an unreachable service manager falls back to a spawn rather than failing', async () => {
+  const paths = stateRoot('lifecycle-unreachable');
+  let asked = 0;
+  const unreachable = (): ManagedJobStart => {
+    asked += 1;
+    return {
+      outcome: 'unavailable',
+      label: 'eyes-on-daemon-deadbeef.service',
+      detail: 'the service manager would not load it: Failed to connect to bus',
+    };
+  };
+
+  try {
+    const result = await startDaemon(paths, { timeoutMs: 15_000, startManagedJob: unreachable });
+    assert.equal(asked, 1, 'the service manager is still asked first');
+    assert.equal(result.via, 'spawn', 'nothing is held, so the fallback must fall back');
+    assert.equal(result.started, true);
+    assert.ok(result.pid);
+    assert.equal((await daemonState(paths)).running, true, 'the host must end up with a working daemon');
+  } finally {
+    await stopDaemon(paths);
+  }
+});
+
+/**
+ * A job the manager does hold and refuses to start is the opposite case: a
+ * spawn there is the orphan split, so it stays a reported failure.
+ */
+test('a held job the manager refuses to start is a failure, not a spawn', async () => {
+  const paths = stateRoot('lifecycle-refused');
+  const refused = (): ManagedJobStart => ({
+    outcome: 'refused',
+    label: 'com.example.refused',
+    detail: 'Load failed: 5: Input/output error',
+  });
+
+  const result = await startDaemon(paths, { timeoutMs: 400, startManagedJob: refused });
+
+  assert.equal(result.via, 'service');
+  assert.equal(result.started, false);
+  assert.match(result.detail ?? '', /Input\/output error/, 'the reason must reach the caller');
+  assert.equal(await probeSocket(paths.socket), false, 'no daemon may be spawned beside a held job');
 });

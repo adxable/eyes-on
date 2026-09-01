@@ -237,16 +237,15 @@ test('a loaded job with no process reads as not running', () => {
   assert.deepEqual(parseSystemctlShow(null), { loaded: false, running: false, pid: null });
 });
 
-test('the definition and the process are decided separately', () => {
-  // Healthy and unchanged: left alone, so a repeat init cannot bounce it.
-  assert.equal(installAction(true, { loaded: true, running: true }), 'leave-alone');
-  // Loaded with no process: the definition is right, only the process is gone,
-  // and supplying one is startDaemon's job rather than a reinstall.
-  assert.equal(installAction(true, { loaded: true, running: false }), 'kickstart');
-  // Nothing loaded, or a changed declaration: install and load it properly.
-  assert.equal(installAction(true, { loaded: false, running: false }), 'reinstall');
-  assert.equal(installAction(false, { loaded: true, running: true }), 'reinstall');
-  assert.equal(installAction(false, { loaded: true, running: false }), 'reinstall');
+test('the definition is reinstalled only when the manager is not holding a correct one', () => {
+  // Held and unchanged: left alone, so a repeat init cannot bounce a healthy
+  // daemon - and a held job with no process needs a process, not a new
+  // definition, so it is left alone too.
+  assert.equal(installAction(true, { loaded: true }), 'leave-alone');
+  // Nothing held, or a changed declaration: write it and load it properly.
+  assert.equal(installAction(true, { loaded: false }), 'reinstall');
+  assert.equal(installAction(false, { loaded: true }), 'reinstall');
+  assert.equal(installAction(false, { loaded: false }), 'reinstall');
 });
 
 /**

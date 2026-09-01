@@ -108,12 +108,15 @@ export interface StartDaemonOptions {
  * The one way to obtain a daemon.
  *
  * When a service manager holds a job for this root, that job is started and
- * waited for; a detached spawn is the fallback for the cases where no managed
- * job exists - `EYES_ON_SKIP_SERVICE_MANAGER=1`, an unsupported platform, or a
- * config that disabled the managed service. Spawning *beside* a managed job is
- * the orphan split this product has had to fix three times, so the fallback is
- * deliberately unreachable while a job exists: a managed job that will not come
- * up is reported as a failure rather than routed around.
+ * waited for, and a failure there is reported rather than routed around:
+ * spawning *beside* a held job is the orphan split this product has had to fix
+ * three times. The detached spawn is the fallback for every case where nothing
+ * is held and so nothing can be orphaned - `EYES_ON_SKIP_SERVICE_MANAGER=1`, an
+ * unsupported platform, `daemon.managed_service` disabled in config, no unit
+ * file, or a service manager that cannot be reached at all (a host with no
+ * systemd user bus, a launchd domain this session cannot address). That last
+ * case is why the fallback keys on what the manager holds rather than on a unit
+ * file existing: `installService` writes the file before it tries to load it.
  *
  * The spawn is detached and with its own stdio, so the daemon outlives the CLI
  * process that asked for it - and with cwd set to the state root, never to a
@@ -130,8 +133,8 @@ export async function startDaemon(paths: Paths, options: StartDaemonOptions = {}
   Daemon.ensureStateRoot(paths);
 
   const managed = (options.startManagedJob ?? startManagedJob)(paths);
-  if (managed.attempted) {
-    if (managed.accepted && (await waitForDaemon(paths, timeoutMs))) {
+  if (managed.outcome === 'started') {
+    if (await waitForDaemon(paths, timeoutMs)) {
       const current = await daemonState(paths);
       return { started: true, alreadyRunning: false, pid: current.pid, via: 'service', detail: null };
     }
@@ -140,7 +143,16 @@ export async function startDaemon(paths: Paths, options: StartDaemonOptions = {}
       alreadyRunning: false,
       pid: null,
       via: 'service',
-      detail: managed.detail ?? `the managed job ${managed.label} did not come up`,
+      detail: `the managed job ${managed.label} was started but did not answer`,
+    };
+  }
+  if (managed.outcome === 'refused') {
+    return {
+      started: false,
+      alreadyRunning: false,
+      pid: null,
+      via: 'service',
+      detail: managed.detail ?? `the managed job ${managed.label} would not start`,
     };
   }
 

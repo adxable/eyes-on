@@ -23,13 +23,22 @@ measured by hand and the numbers below are that measurement.
 ## What these numbers were measured against
 
 The session above ran on commit `dbc1b52`. Every review-fix commit since -
-`f01ca51`, `435e0e7`, `f363f06`, `5ed536a` and this one - changed code paths two
-of these results exercise: the service install/reload decision became a semantic
-comparison with a separate byte-write and then stopped deciding process
-lifecycle at all, starting the daemon moved behind a single path that addresses
-the managed job instead of spawning beside it, every clone read moved behind
-`gitReadClone`, and `doctor` now reads LaunchAgent labels through `plutil -lint`
-plus `-extract`.
+`f01ca51`, `435e0e7`, `f363f06`, `5ed536a`, `ef16f1a` and this one - changed
+code, and each change belongs to a different result:
+
+- **Results 1 and 6 (daemon coexistence, idempotency).** The service
+  install/reload decision became a semantic comparison with a separate
+  byte-write and then stopped deciding process lifecycle at all; starting the
+  daemon moved behind a single path that addresses the managed job instead of
+  spawning beside it, with the direct spawn kept for hosts where no service
+  manager holds anything; and `doctor` now reads LaunchAgent labels through
+  `plutil -lint` plus `-extract`.
+- **Result 3 (clone untouched).** Every clone read moved behind `gitReadClone`,
+  which now also refuses the write forms of `config`, `remote` and
+  `symbolic-ref`. This one is *strengthened* rather than made stale: its
+  automated counterpart in `test/coexistence.test.ts` runs against the current
+  code on every `npm test`, and the recorded numbers still describe what a
+  session does to a clone - nothing.
 
 So, plainly: **daemon coexistence (1) and idempotency (6) are pre-fix
 measurements, pending re-measurement against the final code.** They are stale to
@@ -41,10 +50,10 @@ different degrees, and the difference matters:
   missing on the second run" - which does run against the current code, so the
   property is covered even though the recorded launchd numbers are not.
 
-Results 2, 3, 4 and 5 are unaffected by these commits and stand as recorded;
-their automated counterparts in `test/coexistence.test.ts` run against the
-current code. The K2 clone allow-list rule in that file is not a counterpart to
-any of the six results - it is not a row in the table.
+Results 2, 3, 4 and 5 stand as recorded; their automated counterparts in
+`test/coexistence.test.ts` run against the current code. The K2 clone allow-list
+rule in that file is not a counterpart to any of the six results - it is not a
+row in the table.
 
 All six will be re-run against the final code before delivery and this document
 replaced with the refreshed numbers.
