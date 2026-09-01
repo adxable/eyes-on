@@ -18,6 +18,11 @@ import { doctorCommand } from './doctor.js';
 import { statusCommand } from './status.js';
 import { daemonCommand } from './daemon-cmd.js';
 import { axiCommand } from './axi.js';
+import { checkCommand } from './check.js';
+import { whyCommand } from './why.js';
+import { rulesCommand } from './rules-cmd.js';
+import { backtestCommand } from './backtest-cmd.js';
+import { exportPathInstructionsCommand } from './export-cmd.js';
 import { stubCommand } from './stubs.js';
 import { version, PRODUCT_NAME } from '../core/version.js';
 
@@ -51,6 +56,11 @@ const HANDLERS = new Map<string, Handler>([
   ['status', statusCommand],
   ['daemon', daemonCommand],
   ['axi', axiCommand],
+  ['check', checkCommand],
+  ['why', whyCommand],
+  ['rules', rulesCommand],
+  ['backtest', backtestCommand],
+  ['export-path-instructions', exportPathInstructionsCommand],
 ]);
 
 /** Commands whose machine payload is the primary output, so TOON is the default. */

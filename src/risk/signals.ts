@@ -156,6 +156,11 @@ export function rationale(score: Score): string[] {
 }
 
 function formatRaw(signal: SignalValue): string {
+  // `no_test` is a share, and "1 share of changed code files" is not a sentence
+  // anybody can act on. Every other signal counts whole things.
+  if (signal.name === 'no_test') {
+    return `${Math.round(signal.raw * 100)}% of changed code files had no test changed alongside them`;
+  }
   const value = Number.isInteger(signal.raw) ? String(signal.raw) : signal.raw.toFixed(2);
   return `${value} ${signal.unit}`;
 }

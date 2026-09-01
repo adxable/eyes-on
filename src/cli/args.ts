@@ -13,7 +13,22 @@ export interface ParsedArgs {
 }
 
 /** Flags that take a value; everything else is boolean. */
-const VALUE_FLAGS = new Set(['format', 'root', 'base', 'head', 'intent', 'pr', 'n', 'split', 'window', 'since']);
+const VALUE_FLAGS = new Set([
+  'format',
+  'root',
+  'base',
+  'head',
+  'intent',
+  'pr',
+  'n',
+  'split',
+  'window',
+  'since',
+  // Stage 1.
+  'default-branch',
+  'horizon',
+  'min-risk',
+]);
 
 export function parseArgs(argv: readonly string[]): ParsedArgs {
   return scan(argv, true);
