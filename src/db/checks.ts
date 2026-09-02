@@ -46,9 +46,17 @@ export interface RecordOptions {
   branch: string;
   intent: string | null;
   assessment: Assessment;
-  /** The drift grade folded into this score, or null when drift was not
-   *  measured for this run. Recorded on the row so the pull-request comment and
-   *  the stage 3 ledger read one number rather than recomputing it. */
+  /**
+   * The drift grade folded into this score, or null when drift was not measured
+   * for this run. Recorded on the row so the pull-request comment and the stage
+   * 3 ledger read one number rather than recomputing it.
+   *
+   * Null overwrites an earlier grade rather than being merged around, and that
+   * is deliberate: the score on this row was computed without S7, so a grade
+   * left over from an earlier run would sit beside a number that does not
+   * contain it. A caller that wants to keep a grade it did not measure - which
+   * is what `spotlight` does - reads the row first and passes it back.
+   */
   drift?: number | null;
 }
 
