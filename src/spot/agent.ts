@@ -136,20 +136,27 @@ export function resolveModelCommand(options: ModelOptions): { command: string[] 
       refusal: {
         state: 'unavailable',
         detail: hasPathSeparator(name)
-          ? `${name} is not an executable file relative to ${options.cwd ?? process.cwd()}, so the second stage could not run; the ranking below is stage one`
-          : `${name} is not on PATH, so the second stage could not run; the ranking below is stage one`,
+          ? `${name} is not an executable file relative to ${options.cwd ?? process.cwd()}, so no model was reached`
+          : `${name} is not on PATH, so no model was reached`,
       },
     };
   }
   return { command: argv };
 }
 
-/** The one reading of a repository asking for no model, however it said so. */
+/**
+ * The one reading of a repository asking for no model, however it said so.
+ *
+ * Like every refusal here it says why a model was not reached and stops there.
+ * Three commands print these words and only one of them has stages or a
+ * ranking, so a shared sentence naming either would describe a state two of
+ * them are never in; the consequence belongs to the caller, which knows it.
+ */
 function optedOut(): { refusal: ModelOutcome } {
   return {
     refusal: {
       state: 'skipped',
-      detail: 'the trusted .eyes-on.yml asks for no model, which is how a repository asks for stage one only',
+      detail: 'the trusted .eyes-on.yml asks for no model, so none was called',
     },
   };
 }

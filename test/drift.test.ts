@@ -1,7 +1,16 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { delimiter, join } from 'node:path';
-import { captureCli, sandboxEnv, stubAgent, stubGh, tempRepo, type StubAgent, type TempRepo } from './helpers.js';
+import {
+  captureCli,
+  pathWithGitOnly,
+  sandboxEnv,
+  stubAgent,
+  stubGh,
+  tempRepo,
+  type StubAgent,
+  type TempRepo,
+} from './helpers.js';
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/output.js';
 import { MARKER_PREFIX } from '../src/gh/comment.js';
 import { bandFor, maxScore } from '../src/risk/signals.js';
@@ -1120,4 +1129,33 @@ test('drift run before any check says there is no assessment to fold the grade i
   assert.match(doc.record_sentence, /Nothing was recorded/);
   assert.ok(!doc.help.some((line) => /folded it in/.test(line)), 'nothing claims the grade was folded into a score');
   assert.ok(doc.help.includes(doc.record_sentence));
+});
+
+test('a model that could not be reached is reported without naming output these commands do not have', async (t) => {
+  // The refusal is shared with `spotlight`, and only `spotlight` has stages and
+  // a ranking. It used to say the second stage could not run and that the
+  // ranking below was stage one, printed by two commands that have neither.
+  const agent = stubAgent('drift-missing', [describeAnswer(), compareAnswer(3)]);
+  const repo = repoWith(agent);
+  const env: Record<string, string> = {
+    ...sandboxEnv('drift-missing'),
+    PATH: pathWithGitOnly('drift-missing-path'),
+  };
+  await initRepo(t, repo, env);
+
+  const checkDoc = JSON.parse(
+    (await captureCli(['check', '--intent', INTENT, '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as { drift_detail: string; drift_sentence: string };
+  assert.equal(agent.called(), false, 'the agent this test hides from PATH was not run');
+  assert.match(checkDoc.drift_detail, /not on PATH/, 'the reason is still named');
+  assert.doesNotMatch(checkDoc.drift_detail, /stage|ranking/i);
+  // The consequence is the caller's to state, and `check` states its own.
+  assert.match(checkDoc.drift_sentence, /S7 is zero/);
+
+  const driftDoc = JSON.parse(
+    (await captureCli(['drift', '--intent', INTENT, '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as { detail: string; help: string[] };
+  assert.match(driftDoc.detail, /not on PATH/);
+  assert.doesNotMatch(driftDoc.detail, /stage|ranking/i);
+  assert.ok(driftDoc.help.some((line) => line.startsWith('No grade from this run:')));
 });

@@ -1,8 +1,16 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
-import { captureCli, sandboxEnv, stubAgent, tempDir, tempRepo, type TempRepo } from './helpers.js';
+import { chmodSync, existsSync, realpathSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  captureCli,
+  pathWithGitOnly,
+  sandboxEnv,
+  stubAgent,
+  tempDir,
+  tempRepo,
+  type TempRepo,
+} from './helpers.js';
 import { EXIT_OK } from '../src/cli/output.js';
 import { parseHunks, type Hunk } from '../src/spot/hunks.js';
 import {
@@ -279,7 +287,8 @@ test('an empty model.agent is the repository asking for stage one, not a failure
     model: { agent: '', command: null, allowAnyCommand: false },
   });
   assert.equal(result.model.state, 'skipped');
-  assert.match('detail' in result.model ? result.model.detail : '', /stage one only/);
+  assert.match('detail' in result.model ? result.model.detail : '', /asks for no model/);
+  assert.equal(result.stage, 1, 'and the ranking is still a complete answer');
 });
 
 test('an empty model.command means the same thing, whatever the machine allows', () => {
@@ -299,7 +308,7 @@ test('an empty model.command means the same thing, whatever the machine allows',
       model: { agent: null, command: [], allowAnyCommand },
     });
     assert.equal(result.model.state, 'skipped', `allow_any_command: ${String(allowAnyCommand)}`);
-    assert.match('detail' in result.model ? result.model.detail : '', /stage one only/);
+    assert.match('detail' in result.model ? result.model.detail : '', /asks for no model/);
     assert.equal(result.stage, 1, 'and the ranking is still a complete answer');
   }
 });
@@ -467,17 +476,6 @@ test('a fragment naming a file outside the change is dropped and counted, not pu
 
 /** A PATH carrying git and nothing else, so "not installed" is a fact about the
  *  test rather than about the machine it runs on. */
-function pathWithGitOnly(prefix: string): string {
-  const dir = tempDir(prefix);
-  const git = (process.env.PATH ?? '')
-    .split(delimiter)
-    .map((entry) => join(entry, 'git'))
-    .find((candidate) => existsSync(candidate));
-  assert.ok(git, 'the suite needs git on PATH');
-  symlinkSync(git, join(dir, 'git'));
-  return dir;
-}
-
 test('an agent that is named and not installed gets stage 1 and a reason, not a failure', async (t) => {
   // The agent eyes-on knows how to invoke, so the name passes and the failure
   // is the one under test: PATH does not resolve it.

@@ -120,7 +120,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'spotlight',
-    usage: 'eyes-on spotlight [--n 5] [--no-model]',
+    usage: 'eyes-on spotlight [--base <ref>] [--head <ref>] [--n 5] [--intent "..."] [--no-model]',
     summary:
       'Rank the three to five fragments a human should actually read. Two stages: arithmetic over git narrows the diff to twelve candidates, then one model call picks a few and says why. --no-model returns stage one and calls nothing.',
     stage: 2,
@@ -129,7 +129,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'drift',
-    usage: 'eyes-on drift [--intent "..."]',
+    usage: 'eyes-on drift [--base <ref>] [--head <ref>] [--intent "..."] [--no-model]',
     summary:
       'Compare the stated intent with what the diff actually does, in two passes: one model describes the diff without seeing the intent, a second compares that description with it. The grade is folded into the recorded check as signal S7, so the score, its maximum and the band move with it. This command itself is never a gate.',
     stage: 2,

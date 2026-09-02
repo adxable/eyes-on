@@ -48,8 +48,8 @@ leaves a healthy install alone. `eyes-on init --watch` additionally installs a
 | `eyes-on status` | Daemon and registered repositories |
 | `eyes-on daemon {start\|stop\|restart\|status\|run --root <dir>\|notify-commit}` | Manage the daemon |
 | `eyes-on check [--base <ref>] [--head <ref>] [--intent "..."] [--no-model] [--strict]` | Score the change, apply the hard rules, and with an intent measure the drift |
-| `eyes-on spotlight [--n 5] [--no-model]` | The three to five fragments a human should actually read |
-| `eyes-on drift [--intent "..."]` | What the diff does, against what its author said it would |
+| `eyes-on spotlight [--n 5] [--intent "..."] [--no-model]` | The three to five fragments a human should actually read |
+| `eyes-on drift [--intent "..."] [--no-model]` | What the diff does, against what its author said it would |
 | `eyes-on comment --pr <n> [--dry-run]` | One sticky comment on the pull request; never the body |
 | `eyes-on why <file>` \| `eyes-on why --top <n>` | Where one file's risk came from, or where risk lives in the repository |
 | `eyes-on rules --check` | The hard rules alone, read from the default branch |

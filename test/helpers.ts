@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -159,6 +168,24 @@ export function sandboxEnv(prefix: string): Record<string, string> {
     EYES_ON_SKIP_SERVICE_MANAGER: '1',
     NM_HOME: tempDir(`${prefix}-nm-home`),
   };
+}
+
+/**
+ * A PATH holding git and nothing else.
+ *
+ * The suite needs git to build its fixtures, so "the agent is not installed"
+ * cannot be tested by emptying PATH. The symlink keeps git reachable and every
+ * other program out.
+ */
+export function pathWithGitOnly(prefix: string): string {
+  const dir = tempDir(prefix);
+  const git = (process.env.PATH ?? '')
+    .split(delimiter)
+    .map((entry) => join(entry, 'git'))
+    .find((candidate) => existsSync(candidate));
+  if (!git) throw new Error('the suite needs git on PATH');
+  symlinkSync(git, join(dir, 'git'));
+  return dir;
 }
 
 export interface StubAgent {
