@@ -133,12 +133,21 @@ test('acceptance: a hard-rule hit sets the band to pelna and still exits 0', asy
   await initRepo(t, repo, env);
 
   const lenient = await cli(['check', '--format', 'json'], { cwd: repo.path, env });
-  const doc = JSON.parse(lenient.out) as { band: string; band_from: string; score: number; exit_code: number };
+  const doc = JSON.parse(lenient.out) as {
+    band: string;
+    band_from: string;
+    score: number;
+    exit_code: number;
+    hard_rules: { glob: string; matched: number }[];
+    hard_rule_matches: { glob: string; file: string }[];
+  };
   assert.equal(doc.band, 'pelna');
   assert.equal(doc.band_from, 'hard rule');
   assert.ok(doc.score < 65, 'the score alone would not have reached the top band');
   assert.equal(lenient.code, EXIT_OK, 'eyes-on never blocks without --strict');
   assert.equal(doc.exit_code, 0);
+  assert.equal(doc.hard_rules[0]?.matched, 1);
+  assert.deepEqual(doc.hard_rule_matches, [{ glob: 'deploy/**', file: 'deploy/values.yaml' }]);
 
   const strict = await cli(['check', '--strict', '--format', 'json'], { cwd: repo.path, env });
   assert.equal(strict.code, EXIT_ERROR, '--strict is the only door out of exit 0');
@@ -315,12 +324,15 @@ test('an unusable --min-risk is refused rather than silently replaced', async (t
   // `--min-risk=-5` rather than `--min-risk -5`: the argument scanner refuses a
   // value beginning with a dash before the command ever sees it, and the point
   // here is what the command itself does with a value it can read.
-  for (const argument of ['--min-risk abc', '--min-risk=-5']) {
+  for (const argument of ['--min-risk abc', '--min-risk=-5', '--min-risk 150']) {
     const argv = ['export-path-instructions', ...argument.split(' '), '--format', 'json'];
     const result = await cli(argv, { cwd: repo.path, env });
     assert.equal(result.code, EXIT_ERROR, `${argument} must be refused`);
     const doc = JSON.parse(result.out) as { error: string; help: string[] };
-    assert.match(doc.error, /^--min-risk (abc|-5) is not a risk score/);
+    // The guard enforces the range its own message names: a risk score is 0 to
+    // 100 by construction, and 150 would empty the history half of the export
+    // while reporting itself as a usable threshold.
+    assert.match(doc.error, /^--min-risk (abc|-5|150) is not a risk score between 0 and 100/);
     assert.ok(doc.help.length > 0, 'a refusal says what to pass instead');
   }
 

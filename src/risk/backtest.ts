@@ -66,10 +66,18 @@ export interface SplitResult {
 export interface GroupResult {
   /** Files the pre-split signal flagged. */
   flagged: number;
-  /** Post-split fix touches per flagged file. */
-  rate: number;
-  /** rate / base_rate. */
-  lift: number;
+  /** Post-split fix touches per flagged file, or null when nothing was
+   *  flagged: an average over an empty set is not zero, it is undefined. */
+  rate: number | null;
+  /**
+   * `rate / base_rate`, or null when the ratio has no value.
+   *
+   * Two ways it has none: nothing was flagged, so the numerator averages over
+   * an empty set; or the base rate is zero, so the denominator is. Reporting
+   * either as `0` would say the signal was measured and failed, which is a
+   * claim about a measurement nobody took.
+   */
+  lift: number | null;
   /** The flagged files with the most post-split fixes, as evidence. */
   examples: { path: string; before: number; after: number }[];
 }
@@ -207,13 +215,17 @@ function runSplit(split: string, options: BacktestOptions): SplitResult {
     return {
       flagged: paths.length,
       rate,
-      lift: baseRate === 0 ? 0 : rate / baseRate,
+      lift: baseRate === 0 ? null : rate / baseRate,
       examples: paths
         .map((path) => ({ path, before: before_(path), after: outcome(path) }))
         .sort((a, b) => b.after - a.after || b.before - a.before)
         .slice(0, 5),
     };
   };
+
+  const fixHistory = group(flaggedByFixes, (path) => fixCounts.get(path) ?? 0);
+  const fixTouch = group(flaggedByTouch, (path) => fixTouches.get(path)?.commits ?? 0);
+  const churnDecile = group(topDecile, (path) => before.files.get(path)?.commits ?? 0);
 
   return {
     split,
@@ -225,19 +237,25 @@ function runSplit(split: string, options: BacktestOptions): SplitResult {
     after_commits: afterCommits.length,
     after_fix_commits: afterFixes.length,
     base_rate: baseRate,
-    fix_history: group(flaggedByFixes, (path) => fixCounts.get(path) ?? 0),
-    fix_touch: group(flaggedByTouch, (path) => fixTouches.get(path)?.commits ?? 0),
-    churn_top_decile: group(topDecile, (path) => before.files.get(path)?.commits ?? 0),
+    fix_history: fixHistory,
+    fix_touch: fixTouch,
+    churn_top_decile: churnDecile,
     elapsed_ms: elapsed(started),
+    // A split none of the three signals could measure was not evaluated, and
+    // says so rather than reporting a lift of zero. Flagging nothing is not the
+    // same as flagging the wrong files: the first is an absent measurement, the
+    // second is a failed one, and only the second is evidence against a signal.
     note:
       baseRate === 0
         ? 'no fix commit after the split touched any file that existed at it: there is nothing to discriminate'
-        : null,
+        : [fixHistory, fixTouch, churnDecile].some((result) => result.lift !== null)
+          ? null
+          : 'no signal flagged a file before the split: there is nothing to compare against the population',
   };
 }
 
 function emptyGroup(): GroupResult {
-  return { flagged: 0, rate: 0, lift: 0, examples: [] };
+  return { flagged: 0, rate: null, lift: null, examples: [] };
 }
 
 function elapsed(started: bigint): number {

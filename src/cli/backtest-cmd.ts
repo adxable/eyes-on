@@ -76,6 +76,22 @@ export async function backtestCommand(context: Context): Promise<number> {
   });
 
   const evaluated = results.filter((result) => result.note === null);
+  // A verdict is a claim about the splits that measured *that* signal. A split
+  // where nothing was flagged, or where nothing was fixed afterwards, carries a
+  // null lift and is left out of its own signal's verdict rather than counted
+  // as a failure - and the count it rests on is reported beside it, so nobody
+  // has to guess how much evidence a `pass` stands on.
+  const verdict = (
+    pick: (result: SplitResult) => number | null,
+    target: number,
+  ): { measured: number; pass: boolean } => {
+    const lifts = results.map(pick).filter((lift): lift is number => lift !== null);
+    return { measured: lifts.length, pass: lifts.length > 0 && lifts.every((lift) => lift >= target) };
+  };
+  const fixHistory = verdict((result) => result.fix_history.lift, FIX_HISTORY_LIFT_TARGET);
+  const fixTouch = verdict((result) => result.fix_touch.lift, FIX_HISTORY_LIFT_TARGET);
+  const churnDecile = verdict((result) => result.churn_top_decile.lift, CHURN_DECILE_LIFT_TARGET);
+
   const doc: ToonObject = {
     splits: results.length,
     evaluated: evaluated.length,
@@ -84,9 +100,12 @@ export async function backtestCommand(context: Context): Promise<number> {
     horizon_days: horizonDays ?? null,
     fix_history_target: FIX_HISTORY_LIFT_TARGET,
     churn_decile_target: CHURN_DECILE_LIFT_TARGET,
-    fix_history_pass: evaluated.length > 0 && evaluated.every((r) => r.fix_history.lift >= FIX_HISTORY_LIFT_TARGET),
-    fix_touch_pass: evaluated.length > 0 && evaluated.every((r) => r.fix_touch.lift >= FIX_HISTORY_LIFT_TARGET),
-    churn_decile_pass: evaluated.length > 0 && evaluated.every((r) => r.churn_top_decile.lift >= CHURN_DECILE_LIFT_TARGET),
+    fix_history_measured: fixHistory.measured,
+    fix_history_pass: fixHistory.pass,
+    fix_touch_measured: fixTouch.measured,
+    fix_touch_pass: fixTouch.pass,
+    churn_decile_measured: churnDecile.measured,
+    churn_decile_pass: churnDecile.pass,
     results: results.map((result) => ({
       split: result.split,
       commit: result.split_commit ? result.split_commit.slice(0, 12) : null,
@@ -119,8 +138,10 @@ export async function backtestCommand(context: Context): Promise<number> {
   return EXIT_OK;
 }
 
-function round(value: number): number {
-  return Math.round(value * 100) / 100;
+function round(value: number): number;
+function round(value: number | null): number | null;
+function round(value: number | null): number | null {
+  return value === null ? null : Math.round(value * 100) / 100;
 }
 
 function renderMarkdown(doc: ToonObject, results: readonly SplitResult[]): string {
@@ -132,21 +153,17 @@ function renderMarkdown(doc: ToonObject, results: readonly SplitResult[]): strin
     '| split | files | blamed by a fix | lift | touched by a fix | lift | churn decile | lift |',
     '|---|---|---|---|---|---|---|---|',
   ];
-  // A split that carries a note was not measured, whatever its counts say. Its
-  // lifts are zero because nothing was measured, not because the signal failed,
-  // and a row of `0x` reads as the second - so the lift cells say so and the
-  // reason is printed under the table rather than only in the machine payload.
+  // Every cell is keyed off whether the step behind it actually ran. A group
+  // with a null lift flagged nothing, or had nothing to compare against - so
+  // its flagged count is a placeholder zero, not a measurement, and printing it
+  // would state a number nobody took.
+  const cell = (group: { flagged: number; lift: number | null }): string =>
+    group.lift === null ? '- | not measured' : `${group.flagged} | ${round(group.lift)}x`;
   const notMeasured = results.filter((result) => result.note !== null);
   for (const result of results) {
-    if (result.note !== null) {
-      const count = (value: number): string => (result.population === 0 ? '-' : String(value));
-      lines.push(
-        `| ${result.split} | ${count(result.population)} | ${count(result.fix_history.flagged)} | not measured | ${count(result.fix_touch.flagged)} | not measured | ${count(result.churn_top_decile.flagged)} | not measured |`,
-      );
-      continue;
-    }
+    const population = result.split_commit === null ? '-' : String(result.population);
     lines.push(
-      `| ${result.split} | ${result.population} | ${result.fix_history.flagged} | **${round(result.fix_history.lift)}x** | ${result.fix_touch.flagged} | ${round(result.fix_touch.lift)}x | ${result.churn_top_decile.flagged} | **${round(result.churn_top_decile.lift)}x** |`,
+      `| ${result.split} | ${population} | ${cell(result.fix_history)} | ${cell(result.fix_touch)} | ${cell(result.churn_top_decile)} |`,
     );
   }
 
@@ -157,17 +174,34 @@ function renderMarkdown(doc: ToonObject, results: readonly SplitResult[]): strin
     }
   }
 
+  // A verdict over no measured split is neither pass nor fail: `fail` would
+  // claim a measurement that was never taken, which is the reading this table
+  // exists to remove.
+  const target = (
+    label: string,
+    measured: ToonValue | undefined,
+    pass: ToonValue | undefined,
+    value: ToonValue | undefined,
+  ): string =>
+    `${label} target ${String(value)}x over ${String(measured)} of ${results.length} splits: **${
+      measured === 0 ? 'not measured' : pass ? 'pass' : 'fail'
+    }**`;
   lines.push(
     '',
-    `Fix-history lift target ${String(doc.fix_history_target)}x on every split: **${doc.fix_history_pass ? 'pass' : 'fail'}**` +
-      ` (same target on the blame-free variant: ${doc.fix_touch_pass ? 'pass' : 'fail'}).` +
-      ` Churn top-decile target ${String(doc.churn_decile_target)}x: **${doc.churn_decile_pass ? 'pass' : 'fail'}**.`,
+    `${target('Fix-history lift', doc.fix_history_measured, doc.fix_history_pass, doc.fix_history_target)}` +
+      ` (blame-free variant over ${String(doc.fix_touch_measured)}: ${
+        doc.fix_touch_measured === 0 ? 'not measured' : doc.fix_touch_pass ? 'pass' : 'fail'
+      }).` +
+      ` ${target('Churn top-decile', doc.churn_decile_measured, doc.churn_decile_pass, doc.churn_decile_target)}.`,
   );
 
   for (const result of results) {
-    if (result.fix_history.examples.length === 0) continue;
+    // "Went on to be fixed" has to be true of every line beneath the heading,
+    // so a file with no post-split fix is not evidence for it.
+    const fixed = result.fix_history.examples.filter((example) => example.after > 0);
+    if (result.fix_history.lift === null || fixed.length === 0) continue;
     lines.push('', `## ${result.split} - flagged files that went on to be fixed`, '');
-    for (const example of result.fix_history.examples) {
+    for (const example of fixed) {
       lines.push(`- \`${example.path}\` - ${example.before} fixes before the split, ${example.after} after`);
     }
   }

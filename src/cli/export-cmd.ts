@@ -68,7 +68,7 @@ export async function exportPathInstructionsCommand(context: Context): Promise<n
 
   const minRiskRaw = flagString(context.args, 'min-risk');
   const minRisk = minRiskRaw === null ? null : Number.parseInt(minRiskRaw, 10);
-  if (minRisk !== null && (!Number.isFinite(minRisk) || minRisk < 0)) {
+  if (minRisk !== null && (!Number.isFinite(minRisk) || minRisk < 0 || minRisk > 100)) {
     throw new UserFacingError(`--min-risk ${minRiskRaw} is not a risk score between 0 and 100`, [
       'For example: eyes-on export-path-instructions --min-risk 50',
       `Leave --min-risk out to use this repository's own threshold, ${config.thresholds.read_fragments}`,
@@ -102,7 +102,9 @@ export async function exportPathInstructionsCommand(context: Context): Promise<n
     max_bytes: MAX_BYTES,
     within_caps: fitted.entries.length <= MAX_ENTRIES && fitted.bytes <= MAX_BYTES,
     dropped: fitted.dropped.length,
-    dropped_paths: fitted.dropped.map((entry) => entry.path).join(' '),
+    // A real list, not a joined string: git does not quote a space, so a path
+    // containing one cannot be read back out of a whitespace-joined field.
+    dropped_paths: fitted.dropped.map((entry) => entry.path) as ToonValue,
     cap_reason: fitted.reason,
     // Counted off the emitted block, never inferred from position: the byte cap
     // skips one candidate and keeps the next, so the surviving entries are not
@@ -180,7 +182,8 @@ function renderMarkdown(doc: ToonObject, block: string): string {
       : `${String(doc.from_hard_rules)} from hard rules on \`${String(doc.config_branch)}\`, the rest from ${String(doc.window_days)} days of history.`,
   ];
   if (Number(doc.dropped) > 0) {
-    lines.push('', `Dropped to stay inside the caps (${String(doc.cap_reason)}): \`${String(doc.dropped_paths)}\`.`);
+    const dropped = (doc.dropped_paths as string[]).map((path) => `\`${path}\``).join(', ');
+    lines.push('', `Dropped to stay inside the caps (${String(doc.cap_reason)}): ${dropped}.`);
   }
   lines.push('', '```yaml', block.trimEnd(), '```', '', `_${(doc.help as string[])[0] ?? ''}._`);
   return lines.join('\n');

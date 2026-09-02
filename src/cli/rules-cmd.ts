@@ -48,8 +48,11 @@ export async function rulesCommand(context: Context): Promise<number> {
       glob: hit.glob,
       why: hit.why,
       matched: hit.matched_files.length,
-      matched_files: hit.matched_files.join(' '),
     })) as ToonValue,
+    // One row per matched file. A whitespace-joined cell cannot be read back
+    // for a path containing a space, and git does not quote one; this list
+    // encoding supersedes the space-joined sketch in Appendix C.4.
+    hard_rule_matches: hits.flatMap((hit) => hit.matched_files.map((file) => ({ glob: hit.glob, file }))) as ToonValue,
     exit_code: exitCode,
     help: [
       `Rules are read from ${risk.trusted.branch} at a pinned commit, never from the branch being assessed: a branch that deletes a rule still gets it`,

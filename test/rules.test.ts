@@ -85,7 +85,8 @@ test('acceptance: a branch that deletes the rule still gets the rule', async () 
     rules_hit: number;
     band: string;
     config_state: string;
-    hard_rules: { glob: string; matched_files: string }[];
+    hard_rules: { glob: string; matched: number }[];
+    hard_rule_matches: { glob: string; file: string }[];
   };
 
   assert.equal(doc.config_state, 'trusted', 'the rule was read from the default branch, not from the branch');
@@ -93,7 +94,7 @@ test('acceptance: a branch that deletes the rule still gets the rule', async () 
   assert.equal(doc.rules_hit, 1);
   assert.equal(doc.band, 'pelna');
   assert.equal(doc.hard_rules[0]?.glob, 'deploy/**');
-  assert.match(doc.hard_rules[0]?.matched_files ?? '', /deploy\/values\.yaml/);
+  assert.deepEqual(doc.hard_rule_matches, [{ glob: 'deploy/**', file: 'deploy/values.yaml' }]);
   assert.equal(result.code, EXIT_OK);
 });
 
@@ -206,9 +207,44 @@ test('a hard-rule hit on a diacritic path sets the band and still exits 0', asyn
   const env = sandbox();
 
   const result = await cli(['rules', '--check', '--format', 'json'], { cwd: repo.path, env });
-  const doc = JSON.parse(result.out) as { band: string; rules_hit: number; hard_rules: { matched_files: string }[] };
+  const doc = JSON.parse(result.out) as {
+    band: string;
+    rules_hit: number;
+    hard_rule_matches: { glob: string; file: string }[];
+  };
   assert.equal(doc.rules_hit, 1);
   assert.equal(doc.band, 'pelna');
-  assert.equal(doc.hard_rules[0]?.matched_files, 'deploy/wartości.yaml');
+  assert.deepEqual(doc.hard_rule_matches, [{ glob: 'deploy/**', file: 'deploy/wartości.yaml' }]);
   assert.equal(result.code, EXIT_OK);
+});
+
+test('a path containing a space reads back out of the payload as one path, not two', async () => {
+  // Git C-quotes a non-ASCII byte but not a space, so `deploy/my values.yaml`
+  // reaches the payload verbatim. Joined into one field it would read as two
+  // paths that do not exist - in the field naming what fired the hard rule.
+  const repo = repoWithRule('spaced');
+  repo.git(['checkout', '-q', '-b', 'spaces']);
+  repo.commitFiles('chore: touch two files, one of them awkwardly named', {
+    'deploy/my values.yaml': 'replicas: 4\n',
+    'deploy/plain.yaml': 'replicas: 5\n',
+  });
+  const env = sandbox();
+
+  const rules = await cli(['rules', '--check', '--format', 'json'], { cwd: repo.path, env });
+  const rulesDoc = JSON.parse(rules.out) as {
+    hard_rules: { glob: string; matched: number }[];
+    hard_rule_matches: { glob: string; file: string }[];
+  };
+  assert.equal(rulesDoc.hard_rules[0]?.matched, 2);
+  assert.deepEqual(rulesDoc.hard_rule_matches, [
+    { glob: 'deploy/**', file: 'deploy/my values.yaml' },
+    { glob: 'deploy/**', file: 'deploy/plain.yaml' },
+  ]);
+
+  const toon = await cli(['rules', '--check', '--format', 'toon'], { cwd: repo.path, env });
+  const row = toon.out.split('\n').find((line) => line.includes('my values.yaml'));
+  assert.ok(row, 'the TOON payload must carry the path');
+  // One path per cell: the only comma on the row separates the glob from the
+  // file, so a consumer never has to guess where a path ends.
+  assert.equal(row.trim(), 'deploy/**,deploy/my values.yaml');
 });

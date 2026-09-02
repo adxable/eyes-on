@@ -86,6 +86,14 @@ first) · `npm run genskill`.
   and come from scope report section 5. Changing one is a decision argued from
   `backtest` over real history - and, from stage 3, `calibrate` - never from
   taste. `test/signals.test.ts` asserts the numbers.
+- **A list of paths in a machine payload is a list, never a joined string.**
+  `hard_rule_matches` (`check`, `rules --check`) is one row per matched file and
+  `dropped_paths` (`export-path-instructions`) is a real array. Git does not
+  quote a space, so `deploy/my values.yaml` read back out of a space-joined cell
+  becomes two paths that do not exist. This supersedes the space-joined sketch
+  in the scope report's Appendix C.4, which is outside this repository; the
+  divergence is deliberate. `test/rules.test.ts` proves it with a path that
+  contains a space.
 - **S1 and S2 count code files only, and hard rules count all files.** The first
   is measured (without it `AGENTS.md` ranks first on adx-worker); the second is
   the point of a hard rule, which must fire for a `deploy/values.yaml` no code

@@ -81,13 +81,15 @@ test('the signal separates the files that went on to be fixed from the ones that
   assert.equal(result.note, null);
   assert.equal(result.population, 21, 'every code file that existed at the split is in the denominator');
   assert.equal(result.fix_history.flagged, 3, 'the three files a fix had already blamed into');
+  assert.notEqual(result.fix_history.lift, null, 'the fix-history signal was measured on this split');
   assert.ok(
-    result.fix_history.lift >= FIX_HISTORY_LIFT_TARGET,
-    `fix-history lift ${result.fix_history.lift} is below the ${FIX_HISTORY_LIFT_TARGET}x the report asks for`,
+    (result.fix_history.lift ?? 0) >= FIX_HISTORY_LIFT_TARGET,
+    `fix-history lift ${String(result.fix_history.lift)} is below the ${FIX_HISTORY_LIFT_TARGET}x the report asks for`,
   );
+  assert.notEqual(result.churn_top_decile.lift, null, 'the churn signal was measured on this split');
   assert.ok(
-    result.churn_top_decile.lift >= CHURN_DECILE_LIFT_TARGET,
-    `churn top-decile lift ${result.churn_top_decile.lift} is below ${CHURN_DECILE_LIFT_TARGET}x`,
+    (result.churn_top_decile.lift ?? 0) >= CHURN_DECILE_LIFT_TARGET,
+    `churn top-decile lift ${String(result.churn_top_decile.lift)} is below ${CHURN_DECILE_LIFT_TARGET}x`,
   );
   assert.deepEqual(
     result.fix_history.examples.map((example) => example.path).sort(),
@@ -242,14 +244,111 @@ test('a split that could not be measured says so in Markdown instead of reading 
   assert.ok((notes.get('2026-06-01')?.population ?? 0) > 0);
 
   // The Markdown a human reads must carry the same two sentences, and must not
-  // present either split as a signal that scored zero.
+  // present either split as a signal that scored zero - in any cell.
   assert.doesNotMatch(result.out, /\*\*0x\*\*/, 'a lift of 0x reads as a failed signal, not as "not measured"');
   for (const split of ['2026-03-01', '2026-06-01']) {
     const row = result.out.split('\n').find((line) => line.startsWith(`| ${split} `));
     assert.ok(row, `${split} must still have a row`);
-    assert.match(row, /not measured/, `${split} must say its lifts were not measured`);
+    // Every cell after the population is a measurement that was never taken:
+    // three flagged counts and three lifts. None of them may be a number.
+    const cells = row.split('|').slice(1, -1).map((entry) => entry.trim());
+    assert.deepEqual(
+      cells.slice(2),
+      ['-', 'not measured', '-', 'not measured', '-', 'not measured'],
+      `${split} must report nothing it did not measure`,
+    );
   }
   assert.match(result.out, /2 of 2 splits were not measured/);
   assert.match(result.out, /nothing to discriminate/);
   assert.match(result.out, /no outcome to measure/);
+});
+
+/**
+ * A repository with no fix commit before the split and one after it that
+ * touches a file which existed at the split.
+ *
+ * The fix-history and fix-touch signals flag nothing, so their lift divides
+ * over an empty set; the churn signal has a top decile and measures normally.
+ * The split is not a failure of the signal - it is a split the signal had
+ * nothing to say about.
+ */
+function repoWithNothingFlagged(): TempRepo {
+  const repo = tempRepo('bt-unflagged');
+  const files: Record<string, string> = {};
+  for (let index = 0; index < 12; index += 1) {
+    files[`src/f${index}.ts`] = `export const f${index} = 0;\n`;
+  }
+  repo.commitFiles('feat: everything, once, before the split', files, '2026-01-10T12:00:00Z');
+  repo.commitFiles(
+    'fix: correct one of them after the split',
+    { 'src/f0.ts': 'export const f0 = 1;\n' },
+    '2026-04-10T12:00:00Z',
+  );
+  return repo;
+}
+
+test('a signal that flagged nothing is not measured, and does not count as a failed split', () => {
+  const repo = repoWithNothingFlagged();
+  const [result] = backtest({
+    reader: readerFor(repo),
+    db: null,
+    config: config(),
+    anchorSHA: repo.git(['rev-parse', 'HEAD']).trim(),
+    splits: [SPLIT],
+  });
+  assert.ok(result);
+
+  assert.ok(result.population > 0, 'files existed at the split');
+  assert.ok(result.base_rate > 0, 'a fix after the split did touch one of them');
+  assert.equal(result.fix_history.flagged, 0);
+  assert.equal(
+    result.fix_history.lift,
+    null,
+    'a lift over an empty flagged set is undefined, not zero: nothing was measured',
+  );
+  assert.equal(result.fix_history.rate, null);
+  assert.equal(result.fix_touch.lift, null);
+  // The churn signal did have something to flag, so this split is not one of
+  // the wholly unmeasurable ones.
+  assert.notEqual(result.churn_top_decile.lift, null);
+  assert.equal(result.note, null);
+});
+
+test('a split every signal flagged nothing on carries a note and is not evaluated', async () => {
+  const repo = tempRepo('bt-nothing-at-all');
+  // One file, created before the split and never touched in the pre-split
+  // window that the 60-day config reaches - so even the churn decile is empty.
+  repo.commitFiles('feat: seed', { 'src/a.ts': 'export const a = 0;\n' }, '2025-09-01T12:00:00Z');
+  repo.commitFiles('fix: correct it after the split', { 'src/a.ts': 'export const a = 1;\n' }, '2026-04-10T12:00:00Z');
+  const env = {
+    EYES_HOME: stateRoot(),
+    EYES_ON_SKILL_ROOT: tempDir('bt-unflagged-skills'),
+    EYES_ON_SKIP_SERVICE_MANAGER: '1',
+    NM_HOME: tempDir('bt-unflagged-nm'),
+  };
+
+  const json = await cli(['backtest', '--split', SPLIT, '--format', 'json'], { cwd: repo.path, env });
+  const doc = JSON.parse(json.out) as {
+    evaluated: number;
+    fix_history_measured: number;
+    fix_history_pass: boolean;
+    churn_decile_measured: number;
+    churn_decile_pass: boolean;
+    results: { note: string | null; fix_history_lift: number | null }[];
+  };
+
+  assert.equal(doc.results[0]?.fix_history_lift, null, 'an unmeasured lift is null, never 0');
+  assert.match(String(doc.results[0]?.note), /nothing to compare against the population/);
+  assert.equal(doc.evaluated, 0, 'a split nothing was measured on is not evaluated');
+  assert.equal(doc.fix_history_measured, 0);
+  assert.equal(doc.churn_decile_measured, 0);
+  assert.equal(doc.fix_history_pass, false, 'a verdict over no measurement is not a pass');
+  assert.equal(doc.churn_decile_pass, false);
+
+  const md = await cli(['backtest', '--split', SPLIT, '--format', 'md'], { cwd: repo.path, env });
+  assert.doesNotMatch(md.out, /\*\*0x\*\*/);
+  // The verdict line must not read as a failure either: nothing was measured.
+  assert.match(md.out, /over 0 of 1 splits: \*\*not measured\*\*/);
+  assert.doesNotMatch(md.out, /splits: \*\*fail\*\*/);
+  assert.doesNotMatch(md.out, /went on to be fixed/, 'no file went on to be fixed here');
 });

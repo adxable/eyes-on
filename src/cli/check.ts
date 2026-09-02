@@ -121,9 +121,17 @@ export function renderDoc(assessment: Assessment, options: RenderOptions): ToonO
     hard_rules: assessment.hard_rules.map((hit) => ({
       glob: hit.glob,
       why: hit.why,
-      matched_files: hit.matched_files.join(' '),
       matched: hit.matched_files.length,
     })) as ToonValue,
+    // One row per matched file rather than a whitespace-joined cell. Git does
+    // not quote a space, so `deploy/my values.yaml` read back out of a joined
+    // field becomes two paths that do not exist - in the field that names what
+    // fired the strongest guarantee in the product. This list encoding
+    // supersedes the space-joined sketch in the scope report's Appendix C.4:
+    // one path per cell needs no separator at all.
+    hard_rule_matches: assessment.hard_rules.flatMap((hit) =>
+      hit.matched_files.map((file) => ({ glob: hit.glob, file })),
+    ) as ToonValue,
     top_files: topFiles.map((file) => ({
       path: file.path,
       risk: file.risk,
