@@ -249,13 +249,23 @@ measurement: `eyes-on init` under one state root registered the repository into
 a **different** root's database and mirror, while reporting the root it had been
 given. A unix socket address is a fixed-size kernel field - 104 bytes on macOS -
 and an address past it is truncated rather than refused, so two deep scratch
-roots sharing their first 104 bytes bound and connected to one address. Fixed in
-this branch: a root whose `<root>/socket` would not fit gets a short address
-derived from a hash of the canonical root, in a per-user directory created 0700
-rather than loose in the shared temporary directory, and `doctor` reports the
-relocation.
-The default root is nowhere near the limit, so no ordinary installation was
-affected.
+roots sharing their first 104 bytes bound and connected to one address.
+
+Resolved in this branch by **refusing such a root rather than relocating its
+socket**. `Paths.socket` is unconditionally `<root>/socket`; a root whose socket
+address would exceed 100 bytes is refused where the root is resolved, in the
+same shape as the existing refusal of a root inside `~/.no-mistakes`, and the
+message gives both the limit and the length actually measured. Relocating the
+address was tried first and dropped: an address derived from anywhere but the
+state root is one more thing the daemon and its clients can disagree about, and
+every directory it could live in brought a failure of its own. The default root
+is nowhere near the limit, so no ordinary installation was affected; the scratch
+roots that hit it now say so instead of colliding.
+
+The suite's own state roots moved off `os.tmpdir()` at the same time and for the
+same reason: a host with a deep `TMPDIR` would otherwise fail every test that
+runs `init`, which would trade a silent defect for a suite that breaks on
+somebody else's machine.
 
 ## Not measured
 

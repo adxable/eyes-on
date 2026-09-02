@@ -1,18 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
-import { userInfo } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import {
   ForeignStateRootError,
   MAX_SOCKET_PATH_BYTES,
   Paths,
-  SocketDirectoryError,
-  assertPrivateSocketDir,
+  SocketPathTooLongError,
   isInsideStateRoot,
-  privateSocketDirName,
 } from '../src/core/paths.js';
-import { tempDir } from './helpers.js';
 
 /**
  * The layout is Appendix C.2 and it is asserted literally, because every later
@@ -93,54 +88,56 @@ test('the refusal says how to choose a different root', () => {
   }
 });
 
-test('a state root too deep for a unix socket gets a short, root-specific address', () => {
-  // A unix socket address is truncated rather than refused past the kernel's
-  // field size, so two deep roots sharing a long prefix would otherwise bind
-  // and connect to the same address - and `init` under one would register into
-  // the other. Measured on a scratch root 147 bytes deep.
+test('a state root too deep for its own socket is refused, with both numbers', () => {
+  // A unix socket address is a fixed-size kernel field and an address past it
+  // is truncated rather than refused, so two deep roots sharing a long prefix
+  // would bind and connect to one address - and `init` under one would register
+  // into the other. Measured on a scratch root 147 bytes deep. eyes-on refuses
+  // such a root rather than moving the socket somewhere the daemon and its
+  // clients have to agree about separately.
   const deep = `/private/tmp/claude-501/-Users-adix--treehouse-eyes-on-0a25-1-eyes-on/${'f'.repeat(36)}/scratchpad`;
-  const a = Paths.withRoot(join(deep, 'acceptance', 'eyes-home'), { NM_HOME: '/nm' } as NodeJS.ProcessEnv);
-  const b = Paths.withRoot(join(deep, 'probe', 'B'), { NM_HOME: '/nm' } as NodeJS.ProcessEnv);
+  const root = join(deep, 'acceptance', 'eyes-home');
+  const socketLength = Buffer.byteLength(join(root, 'socket'), 'utf8');
+  assert.ok(socketLength > MAX_SOCKET_PATH_BYTES, 'the fixture really is too deep');
 
-  assert.ok(Buffer.byteLength(join(a.root, 'socket')) > MAX_SOCKET_PATH_BYTES, 'the direct address would not fit');
-  assert.equal(a.socketIsOutsideRoot, true);
-  assert.equal(b.socketIsOutsideRoot, true);
-  assert.ok(Buffer.byteLength(a.socket) <= MAX_SOCKET_PATH_BYTES);
-  assert.ok(Buffer.byteLength(b.socket) <= MAX_SOCKET_PATH_BYTES);
-  assert.notEqual(a.socket, b.socket, 'two roots never share one daemon');
-  assert.equal(a.socket, Paths.withRoot(a.root, { NM_HOME: '/nm' } as NodeJS.ProcessEnv).socket, 'and it is stable');
-  // The relocated address is derivable by anyone who knows the state root, so
-  // it may not sit loose in a shared temporary directory where another user
-  // could bind it first and answer every client's call.
-  assert.equal(dirname(a.socket).split('/').pop(), privateSocketDirName());
-  assert.equal(dirname(a.socket), dirname(b.socket), 'one private directory per user, not per root');
-});
-
-test('a socket directory another user could write into is refused, not used', () => {
-  const parent = tempDir('socket-dir');
-
-  const hostile = join(parent, 'world-writable');
-  mkdirSync(hostile, { recursive: true });
-  chmodSync(hostile, 0o777);
-  assert.throws(() => assertPrivateSocketDir(hostile), SocketDirectoryError);
-
-  const notADirectory = join(parent, 'a-file');
-  writeFileSync(notADirectory, '');
-  assert.throws(() => assertPrivateSocketDir(notADirectory), SocketDirectoryError);
-
-  const ours = join(parent, 'private');
-  mkdirSync(ours, { recursive: true });
-  chmodSync(ours, 0o700);
-  assert.doesNotThrow(() => assertPrivateSocketDir(ours));
-
-  // Absent is not a fault: there is simply no daemon yet, and the server
-  // creates the directory 0700 before it binds.
-  assert.doesNotThrow(() => assertPrivateSocketDir(join(parent, 'absent')));
-  assert.equal(privateSocketDirName().endsWith(`-${userInfo().uid}`), true);
+  try {
+    Paths.withRoot(root, { NM_HOME: '/nm' } as NodeJS.ProcessEnv);
+    assert.fail('a root that cannot hold its own socket must be refused');
+  } catch (error) {
+    assert.ok(error instanceof SocketPathTooLongError);
+    assert.ok(error.message.includes(root), 'the message names the root it refused');
+    assert.ok(error.message.includes(String(socketLength)), 'and how long the address actually is');
+    assert.ok(error.message.includes(String(MAX_SOCKET_PATH_BYTES)), 'and what the limit is');
+    assert.ok(error.help.some((line) => line.includes('EYES_HOME')), 'the help must name the variable to change');
+  }
 });
 
 test('an ordinary state root keeps its socket inside itself', () => {
   const paths = Paths.withRoot('/tmp/eyes-on-short', { NM_HOME: '/nm' } as NodeJS.ProcessEnv);
   assert.equal(paths.socket, '/tmp/eyes-on-short/socket');
-  assert.equal(paths.socketIsOutsideRoot, false);
+});
+
+test('a root exactly at the limit is accepted and one byte past it is not', () => {
+  const prefix = '/tmp/eyes-on-';
+  const fill = MAX_SOCKET_PATH_BYTES - prefix.length - '/socket'.length;
+  const atLimit = `${prefix}${'a'.repeat(fill)}`;
+  assert.equal(Buffer.byteLength(join(atLimit, 'socket'), 'utf8'), MAX_SOCKET_PATH_BYTES);
+  assert.equal(Paths.withRoot(atLimit, { NM_HOME: '/nm' } as NodeJS.ProcessEnv).root, atLimit);
+  assert.throws(
+    () => Paths.withRoot(`${atLimit}a`, { NM_HOME: '/nm' } as NodeJS.ProcessEnv),
+    SocketPathTooLongError,
+  );
+});
+
+test('the limit counts bytes, not characters', () => {
+  // A path of accented characters is twice as long in bytes as in JavaScript
+  // string length, and the kernel field is measured in bytes.
+  const prefix = '/tmp/eyes-on-';
+  const accented = 'ą'.repeat(MAX_SOCKET_PATH_BYTES);
+  const root = `${prefix}${accented}`;
+  assert.ok(root.length < MAX_SOCKET_PATH_BYTES * 2);
+  assert.throws(
+    () => Paths.withRoot(root, { NM_HOME: '/nm' } as NodeJS.ProcessEnv),
+    SocketPathTooLongError,
+  );
 });

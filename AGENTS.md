@@ -95,12 +95,21 @@ first) · `npm run genskill`.
   commits as history lets it raise its own churn signal by committing more often.
 - **Every git read goes through `RepoReader`** (`src/git/reader.ts`): refs are
   resolved against the clone, everything else is read by SHA through the mirror,
-  which borrows the clone's objects. Do not add a second path into git.
-- **A state root deeper than ~100 bytes cannot hold its own socket.** A unix
-  socket address is truncated rather than refused past the kernel's field size,
-  so `Paths.socket` moves out of the root for a deep one and `doctor` says so.
-  This is why two scratch roots once shared one daemon; see
+  which borrows the clone's objects. Do not add a second path into git. Every
+  path git reports is passed through `unquoteGitPath` there: git C-quotes any
+  path with a non-ASCII byte, and a quoted path matches no glob and blames
+  nothing, so a hard rule would silently miss the file it was written for.
+- **A state root deeper than `MAX_SOCKET_PATH_BYTES` is refused, not relocated.**
+  A unix socket address is truncated rather than refused past the kernel's field
+  size, which is why two scratch roots once shared one daemon and `init` under
+  one registered into the other. `Paths` refuses such a root where the root is
+  resolved, so `Paths.socket` is unconditionally `<root>/socket` and there is
+  exactly one address every client derives the same way; see
   `test/paths.test.ts`.
+- **A test's state root comes from `stateRoot()` in `test/helpers.ts`, never
+  from `os.tmpdir()`.** A deep ambient `TMPDIR` would push every temporary root
+  past that limit and fail the suite for a reason unrelated to the code under
+  test. `test/cli.test.ts` proves the suite survives a deep `TMPDIR`.
 - **A test that runs `init` must stop the daemon it started.** The temporary
   state root goes away with the test process; the daemon does not.
 - **Tests may never touch a real state root.** `Paths.fromEnv()` refuses the

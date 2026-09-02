@@ -23,7 +23,7 @@ import {
 import { runDaemon } from '../src/daemon/daemon.js';
 import { LockHeldError, SingletonLock } from '../src/daemon/lock.js';
 import { probeSocket } from '../src/ipc/server.js';
-import { tempDir } from './helpers.js';
+import { stateRoot as shortStateRoot } from './helpers.js';
 
 /**
  * There is one way to obtain a daemon, and it knows the service manager exists.
@@ -37,7 +37,7 @@ import { tempDir } from './helpers.js';
  */
 
 function stateRoot(prefix: string): Paths {
-  return Paths.withRoot(join(tempDir(prefix), 'eyes-on'));
+  return Paths.withRoot(shortStateRoot(prefix));
 }
 
 /** A job the manager holds and starts, whose process never answers. */

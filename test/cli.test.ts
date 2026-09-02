@@ -1,12 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { userInfo } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { run as runCli } from '../src/cli/run.js';
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, type Writers } from '../src/cli/output.js';
 import { COMMANDS } from '../src/cli/commands.js';
-import { tempDir, tempRepo } from './helpers.js';
+import { shortDir, stateRoot, tempDir, tempRepo } from './helpers.js';
+import { MAX_SOCKET_PATH_BYTES } from '../src/core/paths.js';
 
 interface Captured {
   code: number;
@@ -50,7 +51,7 @@ async function cli(argv: string[], options: { cwd?: string; env?: Record<string,
  *  test, which point NM_HOME at a directory that does contain the cwd. */
 function sandbox(): Record<string, string> {
   return {
-    EYES_HOME: join(tempDir('cli-home'), 'eyes-on'),
+    EYES_HOME: stateRoot(),
     EYES_ON_SKILL_ROOT: tempDir('cli-skills'),
     EYES_ON_SKIP_SERVICE_MANAGER: '1',
     NM_HOME: tempDir('cli-nm-home'),
@@ -294,61 +295,49 @@ test('a daemon.lock that is not a usable lock file names the step that clears it
 });
 
 
-/**
- * A state root too deep for its own socket, with the per-user directory the
- * socket would relocate into already taken by something eyes-on may not use.
- *
- * TMPDIR is short and private so the relocation lands inside it rather than in
- * the shared `/tmp` fallback, and so the fixture never touches the directory a
- * real daemon on this machine would use.
- */
-function refusedSocketDirectory(): { env: Record<string, string>; cleanup: () => void } {
-  const shortTmp = mkdtempSync('/tmp/eo-');
-  // A plain file where the directory belongs: the cheapest hostile state this
-  // user can actually create, and the one `assertPrivateSocketDir` reports as
-  // "is not a directory".
-  writeFileSync(join(shortTmp, `eyes-on-${userInfo().uid}`), '');
-  const deepRoot = join(tempDir('deep-root'), 'a'.repeat(48), 'eyes-home');
-  return {
-    env: { ...sandbox(), EYES_HOME: deepRoot, TMPDIR: shortTmp },
-    cleanup: () => rmSync(shortTmp, { recursive: true, force: true }),
-  };
-}
-
-test('a socket directory eyes-on may not use is reported as itself, with remedies that work', async () => {
-  const fixture = refusedSocketDirectory();
-  try {
-    const result = await cli(['status'], { env: fixture.env });
-    assert.equal(result.code, EXIT_ERROR);
-    assert.match(result.err, /^error: the directory eyes-on would put its daemon socket in, .* is not a directory$/m);
-    // The remedies the refusal carries are the only ones that work from this
-    // state, so they must survive to the surface.
-    assert.match(result.err, /^help: .*chmod 700/m);
-    assert.match(result.err, /EYES_HOME/);
-    // Neither half of the generic sentence is true here: it is not a bug, and
-    // `doctor` reads the same address.
-    assert.doesNotMatch(result.err, /This is an eyes-on bug/);
-  } finally {
-    fixture.cleanup();
-  }
+test('a state root too deep for its own socket is refused as a usage error, not a crash', async () => {
+  // The kernel truncates such an address rather than refusing it, so two deep
+  // roots would silently share one daemon. eyes-on refuses the root instead,
+  // where the root is resolved, so no command gets as far as binding.
+  const deepRoot = join(shortDir(), 'd'.repeat(120), 'eyes-on');
+  const result = await cli(['status'], { env: { ...sandbox(), EYES_HOME: deepRoot } });
+  assert.equal(result.code, EXIT_USAGE);
+  assert.match(result.err, /^error: .*is too deep to hold a daemon socket/m);
+  assert.match(result.err, new RegExp(String(MAX_SOCKET_PATH_BYTES)));
+  assert.match(result.err, /^help: Set EYES_HOME/m);
+  assert.doesNotMatch(result.err, /This is an eyes-on bug/);
 });
 
-test('doctor reports a refused socket directory instead of failing on it', async () => {
-  const fixture = refusedSocketDirectory();
+/**
+ * The suite's own state roots must not be derived from the ambient TMPDIR.
+ *
+ * A state root has to hold its own socket address, and a host whose TMPDIR is
+ * deep would push every temporary root past the limit - failing the whole
+ * suite for a reason that has nothing to do with the code under test. TMPDIR is
+ * made artificially deep *before* the sandbox is built, which is exactly when a
+ * root derived from it would become too long.
+ */
+test('an artificially deep TMPDIR does not reach the suite\'s state roots', async (t) => {
+  const deep = join(tempDir('deep-tmpdir'), 'd'.repeat(60), 'e'.repeat(60));
+  mkdirSync(deep, { recursive: true });
+  const previous = process.env.TMPDIR;
+  let env: Record<string, string>;
   try {
-    const result = await cli(['doctor', '--format', 'json'], { env: fixture.env });
-    const doc = JSON.parse(result.out) as { ok: boolean; checks: { check: string; status: string; detail: string }[] };
-    const socket = doc.checks.find((row) => row.check === 'daemon socket');
-    assert.ok(socket, 'doctor completed its report rather than aborting on the socket');
-    assert.equal(socket.status, 'missing');
-    assert.match(socket.detail, /chmod 700|EYES_HOME/);
-    assert.equal(doc.checks.find((row) => row.check === 'daemon')?.status, 'missing');
-    // The rest of the report still ran: the fault is one row, not the end of it.
-    assert.ok(doc.checks.some((row) => row.check === 'git'));
-    assert.ok(doc.checks.some((row) => row.check === 'state isolation'));
-    assert.equal(doc.ok, false);
-    assert.equal(result.code, EXIT_ERROR);
+    process.env.TMPDIR = deep;
+    assert.ok(
+      Buffer.byteLength(join(tmpdir(), 'eyes-on', 'socket'), 'utf8') > MAX_SOCKET_PATH_BYTES,
+      'the fixture TMPDIR really is too deep to hold a state root',
+    );
+    env = sandbox();
   } finally {
-    fixture.cleanup();
+    if (previous === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = previous;
   }
+
+  const repo = tempRepo('deep-tmpdir-repo');
+  const result = await cli(['init', '--format', 'json'], { cwd: repo.path, env });
+  t.after(async () => {
+    await cli(['daemon', 'stop'], { cwd: repo.path, env });
+  });
+  assert.equal(result.code, EXIT_OK, result.err);
 });

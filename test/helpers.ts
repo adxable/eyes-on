@@ -10,6 +10,38 @@ export function tempDir(prefix: string): string {
   return dir;
 }
 
+/**
+ * Base for temporary state roots. Deliberately NOT `os.tmpdir()`.
+ *
+ * A state root has to be short enough to hold its own unix socket address
+ * (`MAX_SOCKET_PATH_BYTES`), and `os.tmpdir()` is not: a macOS per-user
+ * temporary directory is already about fifty bytes, and a host with a deeper
+ * TMPDIR would push every test root past the limit and fail the whole suite for
+ * a reason that has nothing to do with the code under test. `/tmp` is mandated
+ * by POSIX and is a fixed four bytes, so a root under it is short on every
+ * machine. `EYES_ON_TEST_ROOT_BASE` exists for a host where `/tmp` is not
+ * usable.
+ */
+const STATE_ROOT_BASE = process.env.EYES_ON_TEST_ROOT_BASE ?? '/tmp';
+
+/** A short, private directory under `STATE_ROOT_BASE`, removed on exit. */
+export function shortDir(): string {
+  mkdirSync(STATE_ROOT_BASE, { recursive: true });
+  const dir = mkdtempSync(join(STATE_ROOT_BASE, 'eo-'));
+  cleanups.push(dir);
+  return dir;
+}
+
+/**
+ * A state root for a test, short on any machine and removed on exit.
+ *
+ * The root itself is not created - `init` and the daemon create it - but its
+ * parent is, so the path is stable before anything writes there.
+ */
+export function stateRoot(leaf = 'eyes-on'): string {
+  return join(shortDir(), leaf);
+}
+
 const cleanups: string[] = [];
 process.on('exit', () => {
   for (const dir of cleanups) rmSync(dir, { recursive: true, force: true });

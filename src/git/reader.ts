@@ -226,10 +226,73 @@ export class RepoReader {
     if (out.status !== 0) return [];
     return out.stdout
       .split('\n')
-      .map((line) => normalizePath(line.trim()))
+      .map((line) => normalizePath(unquoteGitPath(line.trim())))
       .filter((line) => line.length > 0);
   }
 }
+
+/**
+ * Undoes git's C-style path quoting.
+ *
+ * Unless `core.quotePath` is off, git wraps any path containing a byte outside
+ * printable ASCII - or a `"`, a backslash or a control character - in double
+ * quotes and escapes those bytes: `deploy/wartości.yaml` is reported as
+ * `"deploy/warto\305\233ci.yaml"`. Left as written, that path matches no hard
+ * rule and no include pattern, and `git blame` on it fails, so exactly the
+ * files whose names carry diacritics fall silently out of the product.
+ *
+ * The escapes are *bytes*, not code points, so they are collected into a byte
+ * buffer and decoded as UTF-8 at the end: a single accented character is two
+ * or three separate `\nnn` escapes and decoding them one at a time would
+ * produce mojibake rather than the name.
+ *
+ * A path that is not quoted is returned untouched, which is every ASCII path.
+ */
+export function unquoteGitPath(raw: string): string {
+  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) return raw;
+  const body = raw.slice(1, -1);
+  const bytes: number[] = [];
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index] as string;
+    if (char !== '\\') {
+      for (const byte of Buffer.from(char, 'utf8')) bytes.push(byte);
+      continue;
+    }
+    const next = body[index + 1];
+    if (next === undefined) break;
+    const octal = /^[0-7]{3}/.exec(body.slice(index + 1));
+    if (octal) {
+      bytes.push(Number.parseInt(octal[0], 8));
+      index += 3;
+      continue;
+    }
+    const simple = C_ESCAPES[next];
+    if (simple !== undefined) {
+      bytes.push(simple);
+      index += 1;
+      continue;
+    }
+    // An escape git does not produce: keep the character it protected rather
+    // than dropping it, so an unknown sequence cannot silently shorten a path.
+    for (const byte of Buffer.from(next, 'utf8')) bytes.push(byte);
+    index += 1;
+  }
+  return Buffer.from(bytes).toString('utf8');
+}
+
+/** The single-character escapes `quote_c_style` emits, by the character that
+ *  follows the backslash. */
+const C_ESCAPES: Record<string, number> = {
+  a: 0x07,
+  b: 0x08,
+  t: 0x09,
+  n: 0x0a,
+  v: 0x0b,
+  f: 0x0c,
+  r: 0x0d,
+  '"': 0x22,
+  '\\': 0x5c,
+};
 
 /** ASCII record separator: it cannot appear in a commit subject, so a subject
  *  containing a newline still splits into exactly one record. */
@@ -255,7 +318,7 @@ function parseNumstatLine(line: string): ChangedFile | null {
   // git prints "-" for a file it will not count lines in.
   const binary = addedRaw === '-' || deletedRaw === '-';
   return {
-    path: normalizePath(path),
+    path: normalizePath(unquoteGitPath(path)),
     previousPath: null,
     added: binary ? 0 : Number.parseInt(addedRaw ?? '0', 10) || 0,
     deleted: binary ? 0 : Number.parseInt(deletedRaw ?? '0', 10) || 0,
@@ -316,7 +379,9 @@ export function parseRemovedRanges(patch: string): RemovedRange[] {
   let path: string | null = null;
   for (const line of patch.split('\n')) {
     if (line.startsWith('--- ')) {
-      const value = line.slice(4).trim();
+      // Unquoted first: git quotes the whole `a/<path>` token, so the `a/`
+      // prefix is inside the quotes and cannot be stripped before it.
+      const value = unquoteGitPath(line.slice(4).trim());
       // `/dev/null` is a created file: nothing of it existed in the parent.
       path = value === '/dev/null' ? null : normalizePath(value.replace(/^a\//, ''));
       continue;

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { run as runCli } from '../src/cli/run.js';
 import { EXIT_ERROR, EXIT_OK, type Writers } from '../src/cli/output.js';
-import { tempDir, tempRepo, type TempRepo } from './helpers.js';
+import { stateRoot, tempDir, tempRepo, type TempRepo } from './helpers.js';
 
 /**
  * `check`, `why` and `export-path-instructions` end to end, and the two stage 1
@@ -40,7 +40,7 @@ async function cli(argv: string[], options: { cwd: string; env: Record<string, s
 
 function sandbox(): Record<string, string> {
   return {
-    EYES_HOME: join(tempDir('check-home'), 'eyes-on'),
+    EYES_HOME: stateRoot(),
     EYES_ON_SKILL_ROOT: tempDir('check-skills'),
     EYES_ON_SKIP_SERVICE_MANAGER: '1',
     NM_HOME: tempDir('check-nm-home'),
@@ -145,6 +145,17 @@ test('acceptance: a hard-rule hit sets the band to pelna and still exits 0', asy
   // The payload says what actually happened: an agent reading `exit_code` must
   // never be told 0 while the shell sees 1.
   assert.equal((JSON.parse(strict.out) as { exit_code: number }).exit_code, EXIT_ERROR);
+
+  // Markdown is what a human reads, and it must not close by promising an exit
+  // code the process is not about to use.
+  const lenientMarkdown = await cli(['check', '--format', 'md'], { cwd: repo.path, env });
+  assert.equal(lenientMarkdown.code, EXIT_OK);
+  assert.match(lenientMarkdown.out, /eyes-on never blocks: this command exits 0/);
+
+  const strictMarkdown = await cli(['check', '--strict', '--format', 'md'], { cwd: repo.path, env });
+  assert.equal(strictMarkdown.code, EXIT_ERROR);
+  assert.match(strictMarkdown.out, /exits 1 because `--strict` was passed/);
+  assert.doesNotMatch(strictMarkdown.out, /exits 0 whatever the band is/);
 });
 
 test('the score, the band, the rationale and the report file agree with each other', async (t) => {
@@ -261,4 +272,59 @@ test('export-path-instructions emits a block inside both caps, hard rules first'
   assert.match(doc.block, /path: "deploy\/\*\*"/);
   assert.match(doc.block, /review:\n {2}path_instructions:/);
   assert.equal(result.code, EXIT_OK);
+});
+
+test('the export counts the hard rules that reached the block, not the ones that exist', async (t) => {
+  // With more hard rules than the entry cap, the caps drop the tail. Reporting
+  // the total here would contradict `entries` and `dropped` in the same
+  // document - the one that is meant to be pasted verbatim.
+  const rules = Array.from(
+    { length: 40 },
+    (_unused, index) => `  - glob: "deploy/svc${index}/**"\n    why: "costs a machine"`,
+  ).join('\n');
+  const repo = tempRepo('export-cap');
+  repo.commitFiles('chore: configure', { '.eyes-on.yml': `schema: eyes-on/v1\nhard_rules:\n${rules}\n` });
+
+  const env = sandbox();
+  await initRepo(t, repo, env);
+  const result = await cli(['export-path-instructions', '--format', 'json'], { cwd: repo.path, env });
+  const doc = JSON.parse(result.out) as {
+    entries: number;
+    from_hard_rules: number;
+    hard_rules_available: number;
+    from_history: number;
+    dropped: number;
+  };
+
+  assert.equal(doc.hard_rules_available, 40);
+  assert.equal(doc.from_hard_rules, doc.entries, 'every entry that fitted came from a hard rule');
+  assert.ok(doc.from_hard_rules < doc.hard_rules_available, 'the caps really did bite');
+  assert.equal(doc.from_hard_rules + doc.from_history, doc.entries, 'the two sources add up to the block');
+  assert.equal(doc.dropped, doc.hard_rules_available - doc.from_hard_rules);
+
+  const markdown = await cli(['export-path-instructions', '--format', 'md'], { cwd: repo.path, env });
+  assert.match(markdown.out, new RegExp(`${doc.from_hard_rules} of ${doc.hard_rules_available} hard rules`));
+});
+
+test('an unusable --min-risk is refused rather than silently replaced', async (t) => {
+  const repo = tempRepo('export-minrisk');
+  repo.commitFiles('chore: configure', { '.eyes-on.yml': 'schema: eyes-on/v1\n' });
+  const env = sandbox();
+  await initRepo(t, repo, env);
+
+  // `--min-risk=-5` rather than `--min-risk -5`: the argument scanner refuses a
+  // value beginning with a dash before the command ever sees it, and the point
+  // here is what the command itself does with a value it can read.
+  for (const argument of ['--min-risk abc', '--min-risk=-5']) {
+    const argv = ['export-path-instructions', ...argument.split(' '), '--format', 'json'];
+    const result = await cli(argv, { cwd: repo.path, env });
+    assert.equal(result.code, EXIT_ERROR, `${argument} must be refused`);
+    const doc = JSON.parse(result.out) as { error: string; help: string[] };
+    assert.match(doc.error, /^--min-risk (abc|-5) is not a risk score/);
+    assert.ok(doc.help.length > 0, 'a refusal says what to pass instead');
+  }
+
+  const ok = await cli(['export-path-instructions', '--min-risk', '40', '--format', 'json'], { cwd: repo.path, env });
+  assert.equal(ok.code, EXIT_OK);
+  assert.equal((JSON.parse(ok.out) as { risk_threshold: number }).risk_threshold, 40);
 });

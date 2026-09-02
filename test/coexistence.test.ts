@@ -16,7 +16,7 @@ import {
   toplevel,
 } from '../src/git/git.js';
 import { ensureMirror } from '../src/git/mirror.js';
-import { tempDir, tempRepo, run } from './helpers.js';
+import { stateRoot, tempDir, tempRepo, run } from './helpers.js';
 
 /**
  * The stage 0 acceptance conditions from report section 4 and section 8, as
@@ -89,7 +89,7 @@ test('acceptance: a full session leaves a foreign state root untouched', async (
   writeFileSync(join(nmHome, 'repos', 'abc.git', 'hooks', 'pre-receive'), '#!/bin/sh\nexit 0\n');
 
   const env = {
-    EYES_HOME: join(tempDir('coex-eyes-home'), 'eyes-on'),
+    EYES_HOME: stateRoot(),
     EYES_ON_SKILL_ROOT: tempDir('coex-skills'),
     EYES_ON_SKIP_SERVICE_MANAGER: '1',
     NM_HOME: nmHome,
@@ -181,7 +181,7 @@ test('acceptance: a state root inside the no-mistakes home is refused before any
 test('acceptance: the working clone is byte-identical before and after', async () => {
   const repo = tempRepo('coex-clone');
   const env = {
-    EYES_HOME: join(tempDir('coex-clone-home'), 'eyes-on'),
+    EYES_HOME: stateRoot(),
     EYES_ON_SKILL_ROOT: tempDir('coex-clone-skills'),
     EYES_ON_SKIP_SERVICE_MANAGER: '1',
     // Private, so the guard does not read a suite running from under the real
@@ -215,7 +215,7 @@ test('acceptance: creating and refreshing the mirror stays inside the cost budge
     repo.commit(`commit ${index}`, `file-${index}.txt`, 'x'.repeat(2048));
   }
   const env = {
-    EYES_HOME: join(tempDir('coex-cost-home'), 'eyes-on'),
+    EYES_HOME: stateRoot(),
     EYES_ON_SKILL_ROOT: tempDir('coex-cost-skills'),
     EYES_ON_SKIP_SERVICE_MANAGER: '1',
     // Private, so the guard does not read a suite running from under the real
@@ -242,7 +242,7 @@ test('acceptance: creating and refreshing the mirror stays inside the cost budge
 test('acceptance: inside a no-mistakes run, mutation is refused and reads still work', async () => {
   const repo = tempRepo('coex-recursion');
   const env = {
-    EYES_HOME: join(tempDir('coex-rec-home'), 'eyes-on'),
+    EYES_HOME: stateRoot(),
     EYES_ON_SKILL_ROOT: tempDir('coex-rec-skills'),
     EYES_ON_SKIP_SERVICE_MANAGER: '1',
     NO_MISTAKES_GATE: '1',

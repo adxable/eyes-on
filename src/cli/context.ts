@@ -1,4 +1,4 @@
-import { ForeignStateRootError, Paths } from '../core/paths.js';
+import { ForeignStateRootError, Paths, SocketPathTooLongError } from '../core/paths.js';
 import { refusalHelp, type GuardVerdict } from '../core/guard.js';
 import { EXIT_USAGE, UserFacingError, type Format, type Writers } from './output.js';
 import { toplevel } from '../git/git.js';
@@ -17,8 +17,8 @@ export interface Context {
 }
 
 /**
- * Resolves the state root for a command, turning the two refusals `Paths` can
- * raise into the `error:` plus `help:` shape every other failure leaves through.
+ * Resolves the state root for a command, turning the refusals `Paths` can raise
+ * into the `error:` plus `help:` shape every other failure leaves through.
  * Every entry point that builds a `Paths` from user input goes through here, so
  * a refused root is reported the same way whichever command asked for it.
  */
@@ -26,7 +26,7 @@ export function pathsAt(root: string | null, env: NodeJS.ProcessEnv = process.en
   try {
     return root ? Paths.withRoot(root, env) : Paths.fromEnv(env);
   } catch (error) {
-    if (error instanceof ForeignStateRootError) {
+    if (error instanceof ForeignStateRootError || error instanceof SocketPathTooLongError) {
       throw new UserFacingError(error.message, error.help, EXIT_USAGE);
     }
     throw error;

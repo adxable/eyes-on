@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { cpSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { tempDir } from './helpers.js';
+import { stateRoot, tempDir } from './helpers.js';
 
 /**
  * Deliverable 1 is a package whose `eyes-on` binary runs. What decides that is
@@ -63,7 +63,7 @@ test('the packed binary runs from a checkout that was never built', () => {
   const ran = spawnSync(process.execPath, [bin, '--version'], {
     cwd: dir,
     encoding: 'utf8',
-    env: { ...process.env, EYES_HOME: join(tempDir('pack-home'), 'eyes-on') },
+    env: { ...process.env, EYES_HOME: stateRoot() },
     timeout: 60_000,
   });
 
@@ -75,7 +75,7 @@ test('the packed binary runs from a checkout that was never built', () => {
   const help = spawnSync(process.execPath, [bin, 'help'], {
     cwd: dir,
     encoding: 'utf8',
-    env: { ...process.env, EYES_HOME: join(tempDir('pack-home-help'), 'eyes-on') },
+    env: { ...process.env, EYES_HOME: stateRoot() },
     timeout: 60_000,
   });
   assert.equal(help.status, 0, `the packed binary could not print help: ${help.stderr}`);

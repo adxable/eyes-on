@@ -57,8 +57,15 @@ export async function exportPathInstructionsCommand(context: Context): Promise<n
   const fixCounts = fixCountsByFile(szz.attributions);
   const ranked = rankFiles(window, fixCounts, filter, config, nowSeconds);
 
-  const minRisk = Number.parseInt(flagString(context.args, 'min-risk') ?? '', 10);
-  const threshold = Number.isFinite(minRisk) ? minRisk : config.thresholds.read_fragments;
+  const minRiskRaw = flagString(context.args, 'min-risk');
+  const minRisk = minRiskRaw === null ? null : Number.parseInt(minRiskRaw, 10);
+  if (minRisk !== null && (!Number.isFinite(minRisk) || minRisk < 0)) {
+    throw new UserFacingError(`--min-risk ${minRiskRaw} is not a risk score between 0 and 100`, [
+      'For example: eyes-on export-path-instructions --min-risk 50',
+      `Leave --min-risk out to use this repository's own threshold, ${config.thresholds.read_fragments}`,
+    ]);
+  }
+  const threshold = minRisk ?? config.thresholds.read_fragments;
 
   const candidates: PathInstruction[] = [
     ...config.hard_rules.map((rule) => ({
@@ -76,6 +83,7 @@ export async function exportPathInstructionsCommand(context: Context): Promise<n
 
   const fitted = fitWithinCaps(candidates);
   const block = renderPathInstructions(fitted.entries);
+  const hardRulesKept = Math.min(config.hard_rules.length, fitted.entries.length);
 
   const doc: ToonObject = {
     entries: fitted.entries.length,
@@ -86,8 +94,13 @@ export async function exportPathInstructionsCommand(context: Context): Promise<n
     dropped: fitted.dropped.length,
     dropped_paths: fitted.dropped.map((entry) => entry.path).join(' '),
     cap_reason: fitted.reason,
-    from_hard_rules: config.hard_rules.length,
-    from_history: fitted.entries.length - Math.min(config.hard_rules.length, fitted.entries.length),
+    // Hard rules occupy the head of the candidate list, so the ones that
+    // survived the caps are exactly the first `hard_rules.length` entries -
+    // fewer when the caps bit. Reporting the total here instead would
+    // contradict `entries` and `dropped` in the same document.
+    from_hard_rules: hardRulesKept,
+    hard_rules_available: config.hard_rules.length,
+    from_history: fitted.entries.length - hardRulesKept,
     risk_threshold: threshold,
     config_state: risk.trusted.state,
     config_branch: risk.trusted.branch,
@@ -152,7 +165,9 @@ function renderMarkdown(doc: ToonObject, block: string): string {
     '# eyes-on -> .no-mistakes.yaml',
     '',
     `${String(doc.entries)}/${String(doc.max_entries)} entries, ${String(doc.bytes)}/${String(doc.max_bytes)} bytes.`,
-    `${String(doc.from_hard_rules)} from hard rules on \`${String(doc.config_branch)}\`, the rest from ${String(doc.window_days)} days of history.`,
+    Number(doc.hard_rules_available) > Number(doc.from_hard_rules)
+      ? `${String(doc.from_hard_rules)} of ${String(doc.hard_rules_available)} hard rules on \`${String(doc.config_branch)}\` fitted, the rest from ${String(doc.window_days)} days of history.`
+      : `${String(doc.from_hard_rules)} from hard rules on \`${String(doc.config_branch)}\`, the rest from ${String(doc.window_days)} days of history.`,
   ];
   if (Number(doc.dropped) > 0) {
     lines.push('', `Dropped to stay inside the caps (${String(doc.cap_reason)}): \`${String(doc.dropped_paths)}\`.`);

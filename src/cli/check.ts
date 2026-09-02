@@ -209,7 +209,9 @@ export function renderMarkdown(assessment: Assessment, doc: ToonObject): string 
     '',
     '---',
     '',
-    'eyes-on never blocks: this command exits 0 whatever the band is. Run `eyes-on why <file>` for one file\'s history.',
+    Number(doc.exit_code ?? EXIT_OK) === EXIT_OK
+      ? 'eyes-on never blocks: this command exits 0 whatever the band is. Run `eyes-on why <file>` for one file\'s history.'
+      : 'This run exits 1 because `--strict` was passed and the band is `pelna`; without `--strict` the same result exits 0. Run `eyes-on why <file>` for one file\'s history.',
   );
   return lines.join('\n');
 }

@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { run as runCli } from '../src/cli/run.js';
 import { EXIT_ERROR, EXIT_OK, type Writers } from '../src/cli/output.js';
-import { tempDir, tempRepo, type TempRepo } from './helpers.js';
+import { stateRoot, tempDir, tempRepo, type TempRepo } from './helpers.js';
 import { evaluateHardRules } from '../src/rules/hard.js';
 import { readTrustedConfig } from '../src/rules/trusted.js';
-import { RepoReader } from '../src/git/reader.js';
+import { RepoReader, parseRemovedRanges } from '../src/git/reader.js';
 
 /**
  * The trust property, which is the acceptance condition for stage 1's rules:
@@ -45,7 +45,7 @@ async function cli(argv: string[], options: { cwd: string; env: Record<string, s
 
 function sandbox(): Record<string, string> {
   return {
-    EYES_HOME: join(tempDir('rules-home'), 'eyes-on'),
+    EYES_HOME: stateRoot(),
     EYES_ON_SKILL_ROOT: tempDir('rules-skills'),
     EYES_ON_SKIP_SERVICE_MANAGER: '1',
     NM_HOME: tempDir('rules-nm-home'),
@@ -171,4 +171,48 @@ test('acceptance: a hard-rule hit exits 0, and only --strict changes that', asyn
   // The document reports the exit code the process used, not the one the
   // common case has.
   assert.equal(JSON.parse(strict.out).exit_code, EXIT_ERROR);
+});
+
+test('a hard rule fires on a path whose name git C-quotes', () => {
+  // Git wraps any path with a non-ASCII byte in double quotes and escapes the
+  // bytes in octal, so `deploy/wartości.yaml` is reported as
+  // `"deploy/warto\\305\\233ci.yaml"`. Unquoted, that string matches no glob:
+  // the rule written for exactly this path would silently not fire.
+  const repo = repoWithRule('quoted');
+  repo.git(['checkout', '-q', '-b', 'diacritics']);
+  repo.commitFiles('chore: bump replicas', { 'deploy/wartości.yaml': 'replicas: 4\n' });
+
+  const reader = readerFor(repo);
+  const base = repo.git(['rev-parse', 'main']).trim();
+  const head = repo.git(['rev-parse', 'HEAD']).trim();
+
+  const changed = reader.changedFiles(base, head).map((file) => file.path);
+  assert.deepEqual(changed, ['deploy/wartości.yaml'], 'the path git quoted must reach the rule as itself');
+
+  const trusted = readTrustedConfig(repo.path, reader);
+  const hits = evaluateHardRules(trusted.config.hard_rules, changed);
+  assert.equal(hits.length, 1, 'the deploy/** rule must fire on it');
+  assert.deepEqual(hits[0]?.matched_files, ['deploy/wartości.yaml']);
+
+  // The same quoting appears in the tree listing and in the patch header the
+  // SZZ walk reads, so both are checked against the same file.
+  assert.ok(reader.filesAt(head).includes('deploy/wartości.yaml'));
+  assert.ok(
+    parseRemovedRanges(reader.commitPatch(head)).every((range) => !range.path.startsWith('"')),
+    'a patch header must never leave a quoted path behind',
+  );
+});
+
+test('a hard-rule hit on a diacritic path sets the band and still exits 0', async () => {
+  const repo = repoWithRule('quoted-band');
+  repo.git(['checkout', '-q', '-b', 'diacritics']);
+  repo.commitFiles('chore: bump replicas', { 'deploy/wartości.yaml': 'replicas: 4\n' });
+  const env = sandbox();
+
+  const result = await cli(['rules', '--check', '--format', 'json'], { cwd: repo.path, env });
+  const doc = JSON.parse(result.out) as { band: string; rules_hit: number; hard_rules: { matched_files: string }[] };
+  assert.equal(doc.rules_hit, 1);
+  assert.equal(doc.band, 'pelna');
+  assert.equal(doc.hard_rules[0]?.matched_files, 'deploy/wartości.yaml');
+  assert.equal(result.code, EXIT_OK);
 });
