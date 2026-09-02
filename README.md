@@ -47,15 +47,15 @@ leaves a healthy install alone. `eyes-on init --watch` additionally installs a
 | `eyes-on doctor` | Readiness, degradations, and collisions with no-mistakes |
 | `eyes-on status` | Daemon and registered repositories |
 | `eyes-on daemon {start\|stop\|restart\|status\|run --root <dir>\|notify-commit}` | Manage the daemon |
-| `eyes-on check [--base <ref>] [--head <ref>] [--default-branch <ref>] [--intent "..."] [--no-model] [--strict]` | Score the change, apply the hard rules, and with an intent measure the drift |
+| `eyes-on check [--base <ref>] [--head <ref>] [--default-branch <ref>] [--intent "..."] [--no-model] [--strict] [--format toon\|md\|json]` | Score the change, apply the hard rules, and with an intent measure the drift |
 | `eyes-on spotlight [--base <ref>] [--head <ref>] [--default-branch <ref>] [--n 5] [--intent "..."] [--no-model]` | The three to five fragments a human should actually read |
 | `eyes-on drift [--base <ref>] [--head <ref>] [--default-branch <ref>] [--intent "..."] [--no-model]` | What the diff does, against what its author said it would |
 | `eyes-on comment --pr <n> [--check-id <id>] [--base <ref>] [--head <ref>] [--default-branch <ref>] [--dry-run]` | One sticky comment on the pull request; never the body |
 | `eyes-on why <file>` \| `eyes-on why --top <n> [--default-branch <ref>]` | Where one file's risk came from, or where risk lives in the repository |
-| `eyes-on rules --check [--base <ref>] [--head <ref>] [--default-branch <ref>]` | The hard rules alone, read from the default branch |
+| `eyes-on rules --check [--strict] [--base <ref>] [--head <ref>] [--default-branch <ref>]` | The hard rules alone, read from the default branch |
 | `eyes-on export-path-instructions [--min-risk <0-100>] [--default-branch <ref>]` | A `review.path_instructions` block for `.no-mistakes.yaml` |
 | `eyes-on backtest --split <date>[,<date>...] [--horizon <days>] [--default-branch <ref>]` | Whether the signal knew anything, on this repository's own history |
-| `eyes-on axi {status\|check\|logs [--lines <n>]\|respond [--check-id <id>] [--by <name>]} [--base <ref>] [--head <ref>] [--default-branch <ref>]` | The agent surface, including the `must_read` gate |
+| `eyes-on axi {status\|check\|logs [--lines <n>]\|respond --action read\|waive --reason "..." [--check-id <id>] [--by <name>]} [--base <ref>] [--head <ref>] [--default-branch <ref>]` | The agent surface, including the `must_read` gate |
 
 `label`, `leaks` and `calibrate` arrive in stage 3. `eyes-on help` prints the
 full surface with the stage that owns each one.
@@ -190,9 +190,11 @@ reported `unverified`, carrying the parse error, because a rule that cannot be
 read is not the same as a rule nobody wrote.
 
 `model.agent` is the one field that reaches process execution, so a repository
-chooses only the **name**: one of `claude`, `codex`, `copilot`, `cursor-agent`,
-`opencode`, `pi`, `rovodev`, resolved through PATH. eyes-on holds the whole
-argument vector that name maps to. Narrowing this one dimension at a time did
+chooses only the **name**, resolved through PATH, and eyes-on holds the whole
+argument vector that name maps to. The name it will run is `claude`, and only
+that one: `codex`, `copilot`, `cursor-agent`, `opencode`, `pi` and `rovodev` are
+names eyes-on recognises and **refuses to run**, because it holds no invocation
+for them that anybody has verified - see below. Narrowing this one dimension at a time did
 not hold - first the program's path, then its name, then its flags - and the
 prompt those flags govern is built from the same repository's diff, so
 `claude -p --dangerously-skip-permissions` would be a cloned repository handing
@@ -206,9 +208,9 @@ It stops reading them: the prompt arrives on stdin and carries the whole input,
 so the fragments and the drift grade are computed from the text eyes-on supplies
 and from nothing the repository can add.
 
-Only `claude` has an argument vector eyes-on will run, because `claude -p` is
-the only invocation exercised here; a repository naming one of the others is
-told that rather than given a guessed flag. `model.command` - the whole argv -
+`claude` is the only name with an argument vector, because `claude -p` is the
+only invocation exercised here; a repository naming one of the others is told
+that, and pointed at the escape below, rather than given a guessed flag. `model.command` - the whole argv -
 is honoured only when `model: { allow_any_command: true }` is set in
 `~/.eyes-on/config.yaml`, the machine's own file, which no branch can write.
 Without it a repository carrying `model.command` is refused by name and the

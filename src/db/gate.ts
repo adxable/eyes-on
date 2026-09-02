@@ -51,15 +51,16 @@ export interface GateHit {
  * The identity of a set of hard-rule hits.
  *
  * A decision answers the hits a person was actually shown, so it is recorded
- * against them rather than against the check alone. Order does not matter and
- * duplicates do not, which is why the pairs are sorted and the digest is taken
- * of a structured encoding rather than of a joined string: a glob or a path may
- * contain any separator.
+ * against them rather than against the check alone. It is the set that matters:
+ * the pairs are deduplicated and sorted, so neither the order they arrive in nor
+ * a repeated pair can make one reading of the same rules disagree with another.
+ * The digest is taken of a structured encoding rather than of a joined string,
+ * because a glob or a path may contain any separator.
  */
 export function hitsFingerprint(hits: readonly GateHit[]): string {
-  const pairs = hits
-    .map((hit) => [hit.glob, hit.file] as const)
-    .sort((a, b) => (a[0] === b[0] ? compare(a[1], b[1]) : compare(a[0], b[0])));
+  const seen = new Map<string, readonly [string, string]>();
+  for (const hit of hits) seen.set(JSON.stringify([hit.glob, hit.file]), [hit.glob, hit.file]);
+  const pairs = [...seen.values()].sort((a, b) => (a[0] === b[0] ? compare(a[1], b[1]) : compare(a[0], b[0])));
   return createHash('sha256').update(JSON.stringify(pairs)).digest('hex').slice(0, 16);
 }
 
@@ -70,14 +71,6 @@ function compare(a: string, b: string): number {
 /** The hard-rule hits recorded for a check, one row per matched file. */
 export function recordedHits(db: Database, checkId: string): GateHit[] {
   return db.all<GateHit>('SELECT glob, file FROM hits WHERE check_id = ? ORDER BY glob, file', checkId);
-}
-
-/** Every decision recorded for a check, newest first, whatever it answered. */
-export function latestDecision(db: Database, checkId: string): DecisionRow | undefined {
-  return db.get<DecisionRow>(
-    'SELECT * FROM decisions WHERE check_id = ? ORDER BY decided_at DESC, rowid DESC LIMIT 1',
-    checkId,
-  );
 }
 
 /**

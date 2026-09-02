@@ -127,8 +127,12 @@ consulted.
   `doctor` detects that and `init --force` rebuilds it.
 - **The CLI surface lives in one table**, `src/cli/commands.ts`. Dispatch, `help`
   and the `/eyes-on` skill are all generated from it, and `test/skill.test.ts`
-  fails when the checked-in `skills/eyes-on/SKILL.md` drifts. After changing a
-  command, run `npm run genskill`.
+  fails when the checked-in `skills/eyes-on/SKILL.md` drifts. README's table is
+  written by hand, because its right-hand column is prose rather than the
+  registry's summaries, so the same test parses it and fails when its
+  invocations stop matching `implementedCommands()` - four review rounds found a
+  flag in the registry and not in README. After changing a command, run
+  `npm run genskill` and update that table.
 - **Unimplemented commands must stay honest.** A stage 2+ command exits 1 naming
   its stage. Never make one return an empty-but-plausible result: an agent would
   report "no risk found" for a change nobody assessed.

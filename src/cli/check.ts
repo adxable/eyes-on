@@ -308,9 +308,7 @@ export function renderDoc(assessment: Assessment, options: RenderOptions): ToonO
     // fired the strongest guarantee in the product. This list encoding
     // supersedes the space-joined sketch in the scope report's Appendix C.4:
     // one path per cell needs no separator at all.
-    hard_rule_matches: assessment.hard_rules.flatMap((hit) =>
-      hit.matched_files.map((file) => ({ glob: hit.glob, file })),
-    ) as ToonValue,
+    hard_rule_matches: hitsOf(assessment) as unknown as ToonValue,
     top_files: topFiles.map((file) => ({
       path: file.path,
       risk: file.risk,

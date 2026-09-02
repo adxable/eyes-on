@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { captureCli, sandboxEnv, tempRepo, type TempRepo } from './helpers.js';
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/output.js';
 import { Database } from '../src/db/db.js';
+import { hitsFingerprint } from '../src/db/gate.js';
 
 /**
  * The `must_read` gate.
@@ -64,6 +65,19 @@ interface RespondDoc {
 function openDb(env: Record<string, string>): Database {
   return Database.open(join(env.EYES_HOME as string, 'state.sqlite'));
 }
+
+test('the hits a decision answers are a set: order and repetition do not name a different one', () => {
+  // Both sides of the comparison derive from one assessment today, so this is
+  // the property the fingerprint is documented to have rather than a sequence
+  // anything currently produces - and a reader who adds a second source of hits
+  // should find it already true.
+  const one = { glob: 'deploy/**', file: 'deploy/my values.yaml' };
+  const two = { glob: 'infra/**', file: 'infra/main.tf' };
+  assert.equal(hitsFingerprint([one, two]), hitsFingerprint([two, one]));
+  assert.equal(hitsFingerprint([one, two, one]), hitsFingerprint([one, two]));
+  assert.notEqual(hitsFingerprint([one]), hitsFingerprint([one, two]));
+  assert.notEqual(hitsFingerprint([]), hitsFingerprint([one]));
+});
 
 test('acceptance: a hard-rule hit parks the run, and parking changes no exit code', async (t) => {
   const repo = parkedRepo('gate-park');

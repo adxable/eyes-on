@@ -94,7 +94,7 @@ export async function respondCommand(context: Context): Promise<number> {
     gate: 'none',
     // What this answer was given against, so a later run can tell whether it
     // answers the rules in front of it. One row per matched file.
-    answered_hits: hits.map((hit) => ({ glob: hit.glob, file: hit.file })) as ToonValue,
+    answered_hits: hits as unknown as ToonValue,
     answered_config_sha: check.trusted_config_sha,
     status: after?.status ?? 'done',
     unverified: (after ?? check).status === 'unverified',

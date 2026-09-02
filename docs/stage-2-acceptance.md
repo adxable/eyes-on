@@ -15,7 +15,7 @@ below, are the standing evidence for them:
 |---|---|
 | Emergency mode | `acceptance: --no-model returns stage 1 and does not call a model once`, in `test/spotlight.test.ts` |
 | Disjointness in the pull request | `acceptance: publishing leaves the pull-request body byte for byte, and leaves exactly one comment`, in `test/comment.test.ts`, and `acceptance: no gh invocation can edit a pull request, merge one, or review one` in `test/coexistence.test.ts` |
-| The gate | `acceptance: a hard-rule hit parks the run, and parking changes no exit code`, `acceptance: a waiver records the decision, the reason and who gave it` and `acceptance: an unanswered gate blocks nothing but the eyes-on run`, in `test/gate.test.ts` |
+| The gate | `acceptance: a hard-rule hit parks the run, and parking changes no exit code`, `acceptance: a waiver records the decision, the reason and who gave it`, `acceptance: an unanswered gate blocks nothing but the eyes-on run` and `a decision answers the rules it was shown, so a rule that appears later parks the change again`, in `test/gate.test.ts` |
 | Drift does not gate | `acceptance: drift is shown and changes no exit code, at any grade` and `acceptance: the drift grade gates only through the band, and only when --strict asks it to`, in `test/drift.test.ts` |
 
 **The fifth - locality - has no automated counterpart**, because it is a
@@ -325,10 +325,15 @@ $ eyes-on axi respond --action waive --reason "agreed in the deploy review"
 check_id: ...
 gate_was: must_read
 gate: none
+answered_hits[1]{glob,file}:
+  deploy/**,deploy/values.yaml
+answered_config_sha: 4f2c1ab9e0d7
 status: done
 action: waive
 reason: agreed in the deploy review
-decided_by: crewmate                                                # exit 0
+decided_by: crewmate
+decisions[1]{action,reason,decided_by,decided_at,answers_these_hits}:
+  waive,agreed in the deploy review,crewmate,1756800000,true         # exit 0
 ```
 
 Three things about it are asserted rather than described:
@@ -342,7 +347,15 @@ Three things about it are asserted rather than described:
 - **decisions accumulate.** A second answer is appended, because "waived on
   Monday, read in full on Tuesday" is a true sentence about a change and the
   record has to be able to say it. Re-running `check` after an answer does not
-  reopen a gate somebody already closed.
+  reopen the gate that answer closed.
+- **an answer covers the rules it was shown, and no others.** The decision
+  records the hard-rule hits it was given against (`hits_fingerprint`) and the
+  configuration they came from (`config_sha`), and `decisionCovering` asks
+  whether *these* hits were answered rather than whether the check was. So
+  answering a change no rule matched, and then adding a rule on the default
+  branch that reaches it, parks the change again rather than leaving it
+  pre-waived - which is what `a decision answers the rules it was shown, so a
+  rule that appears later parks the change again` asserts in `test/gate.test.ts`.
 
 Who answered comes from `EYES_ON_ACTOR` when it is set, else the account name.
 An agent driving the command is not the account it happens to run under, and the
@@ -542,9 +555,15 @@ that database go through `?mode=ro`.
 - **The second stage's cost in tokens.** The measurement records wall-clock time
   per pull request, not the model's own accounting.
 - **Model agents other than `claude`.** `codex`, `copilot`, `cursor-agent`,
-  `opencode`, `pi` and `rovodev` are accepted by name and none was run: each reads
-  a prompt differently, and defaulting to a flag nobody here has exercised would
-  be a diagnostic promising a remedy that does not work. Only `claude` is
-  defaulted to, and only when it is actually on PATH.
+  `opencode`, `pi` and `rovodev` are recognised names that eyes-on **refuses to
+  run**: it holds an argument vector only for `claude`, because `claude -p` is
+  the only invocation exercised here, and each of the others reads a prompt
+  differently. Naming a flag nobody has tried would be a diagnostic promising a
+  remedy that does not work, so a repository naming one of them is told exactly
+  that and pointed at `model.allow_any_command` in the machine's own config plus
+  its own `model.command`. This is a stated narrowing of the approved scope,
+  which names `claude` or `codex`; `codex` is not installed on this machine, so
+  no invocation for it could be verified. `claude` is also the only default, and
+  only when it is actually on PATH.
 - **Repositories other than adx-worker and the suite's own fixtures.**
 - **Windows and Linux.** As in stages 0 and 1, the session was macOS only.
