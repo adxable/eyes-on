@@ -153,6 +153,7 @@ function helpLines(dryRun: boolean, stale: boolean, fragments: number, check: Ch
     lines.push('The gate is still parked: answer with `eyes-on axi respond --action read` or `--action waive --reason "..."` and publish again');
   }
   lines.push('eyes-on writes exactly one comment per pull request, found by its marker, and never touches the body');
+  lines.push('By default this publishes the check for the current base..head; pass --check-id <id> to publish another one');
   return lines;
 }
 

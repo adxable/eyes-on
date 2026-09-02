@@ -108,6 +108,7 @@ function helpLines(check: CheckRow, wasAnswered: boolean): string[] {
     lines.push('This change had already been answered; the new decision is appended and the earlier one is kept');
   }
   lines.push('Answering releases the eyes-on run and nothing else: no exit code, push or pull request was ever held by it');
+  lines.push('By default this answers the check for the current base..head; pass --check-id <id> to answer another one, and --by <name> to record who did');
   lines.push('Run `eyes-on spotlight` for the fragments to read, or `eyes-on comment --pr <n>` to publish the result');
   return lines;
 }
