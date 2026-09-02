@@ -55,14 +55,23 @@ export interface RepoConfig {
   thresholds: { read_fragments: number; full_review: number };
   hard_rules: HardRule[];
   /**
-   * The local agent the second stage of the fragment ranking and the drift
-   * comparison call. `null` means the field was absent and the built-in default
-   * applies; an explicitly empty list means this repository has opted out of
-   * the model, which is the meaning Appendix C.3 gives it. The two must stay
-   * distinguishable: they produce the same ranking and completely different
-   * explanations of why.
+   * Which local agent the second stage of the fragment ranking and the drift
+   * comparison call, and how many candidates the second stage is given.
+   *
+   * `agent` names one of `KNOWN_AGENTS`; eyes-on holds the argument vector that
+   * name maps to, because this field is the one piece of repository content
+   * that reaches process execution. `null` means the field was absent and the
+   * built-in default applies; an explicitly empty string means this repository
+   * has opted out of the model, which is the meaning Appendix C.3 gives an
+   * empty value. The two must stay distinguishable: they produce the same
+   * ranking and completely different explanations of why.
+   *
+   * `command` is the whole argv, and it is parsed but honoured only when the
+   * machine's own `~/.eyes-on/config.yaml` sets `model.allow_any_command`. It
+   * is kept rather than dropped so a repository that supplies one is told it
+   * was refused instead of silently getting something else.
    */
-  model: { command: string[] | null; max_hunks: number };
+  model: { agent: string | null; command: string[] | null; max_hunks: number };
 }
 
 /**
@@ -164,7 +173,7 @@ export function defaultRepoConfig(): RepoConfig {
     saturation: { ...DEFAULT_SATURATION },
     thresholds: { ...DEFAULT_THRESHOLDS },
     hard_rules: [],
-    model: { command: null, max_hunks: 12 },
+    model: { agent: null, command: null, max_hunks: 12 },
   };
 }
 
@@ -287,6 +296,10 @@ export function normalizeRepoConfig(parsed: unknown): RepoConfig {
         return entry;
       })
     : base.model.command;
+  if (modelMap.agent !== undefined && modelMap.agent !== null && typeof modelMap.agent !== 'string') {
+    throw new RepoConfigError('model.agent must be the name of one agent, as a string');
+  }
+  const agent = typeof modelMap.agent === 'string' ? modelMap.agent : base.model.agent;
 
   return {
     schema: REPO_CONFIG_SCHEMA,
@@ -298,7 +311,7 @@ export function normalizeRepoConfig(parsed: unknown): RepoConfig {
     saturation: asNumbers(map.saturation, base.saturation, 'saturation'),
     thresholds: { read_fragments: read, full_review: full },
     hard_rules: asHardRules(map.hard_rules),
-    model: { command, max_hunks: asPositiveInt(modelMap.max_hunks, base.model.max_hunks, 'model.max_hunks') },
+    model: { agent, command, max_hunks: asPositiveInt(modelMap.max_hunks, base.model.max_hunks, 'model.max_hunks') },
   };
 }
 

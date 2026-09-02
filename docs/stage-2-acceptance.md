@@ -343,10 +343,21 @@ anywhere that reaches `askModel` with the flag set. The test asserts it against 
 fake agent that records every invocation, so "it did not call the model" is the
 absence of a file the suite would otherwise have written.
 
-The same path carries three other cases, each with its own sentence rather than
-one shared shrug: a repository whose `model.command` is explicitly empty
-(`skipped`), an agent that is not installed (`unavailable`), and a command naming
-an executable eyes-on does not know (`refused`).
+The same path carries four other cases, each with its own sentence rather than
+one shared shrug: a repository whose `model.agent` is explicitly empty
+(`skipped`), an agent that is not installed (`unavailable`), a name eyes-on does
+not know (`refused`), and a name it knows but has never invoked, so it holds no
+argument vector for it and refuses rather than guessing one (`refused`).
+
+**A repository chooses the agent's name and nothing else.** `model.command` -
+an argument vector supplied by the repository being assessed - is honoured only
+under `allow_any_command` in the machine's own `~/.eyes-on/config.yaml`, and is
+otherwise refused by name. This diverges from Appendix C.3, which specifies
+`model.command: ["claude", "-p"]`: flags reach `spawnSync` and the prompt they
+govern is built from the same repository's diff, so a vector from that
+repository is repository-controlled input to process execution.
+`test/spotlight.test.ts` asserts the argv the agent was actually invoked with,
+and that a planted `tools/claude` is never executed.
 
 ## 7. Drift does not gate
 

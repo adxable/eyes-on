@@ -13,17 +13,26 @@ import { delimiter, isAbsolute, join, resolve } from 'node:path';
  * than an argument vector should be, and passing it as an argument would put
  * the change's source into the process table.
  *
- * **The command must be a bare name this product knows, resolved through
- * PATH.** `model.command` is read from the default branch of the repository
- * being assessed (`rules/trusted.ts`), which makes it repository content - and
- * this is the one config field eyes-on *executes*. Trusting the default branch
- * is right for deciding which paths need a reviewer; it is not by itself a
- * reason to run an arbitrary program from a repository somebody cloned. A
- * name carrying a path separator is refused outright, whatever its basename
- * says: `tools/claude` would otherwise be a program the repository ships and
- * eyes-on runs. What is left is a name PATH resolves, which the machine owns.
- * Only the machine's own configuration - `~/.eyes-on/config.yaml`, which no
- * branch can write - can lift either rule.
+ * **The repository picks an agent by name; eyes-on owns the argument vector.**
+ * `.eyes-on.yml` is read from the default branch of the repository being
+ * assessed (`rules/trusted.ts`), which makes it repository content, and this
+ * is the one place that content reaches process execution. Trusting the
+ * default branch to decide which paths need a reviewer is not by itself a
+ * reason to let it choose what eyes-on runs, and narrowing that choice one
+ * dimension at a time did not hold: first the program's path, then its name,
+ * then its flags - and the prompt those flags govern is built from the same
+ * repository's diff, so `claude -p --dangerously-skip-permissions` would be
+ * that repository handing itself an agent with broad permissions and
+ * attacker-controlled input.
+ *
+ * So the choice is closed rather than filtered. `model.agent` names one entry
+ * of `AGENT_ARGV` and eyes-on holds the whole argv that name maps to. There is
+ * nothing left for a repository to choose: not the path, not the name outside
+ * the set, not the flags, and not a dimension nobody has thought of yet.
+ * `model.command` is honoured only under `model.allow_any_command` in
+ * `~/.eyes-on/config.yaml`, which no branch can write; a repository that
+ * carries `model.command` without it is refused and the caller falls back to
+ * stage one rather than silently running something else.
  *
  * **Nothing here throws.** Every failure is a value the caller reports: a
  * model that is missing, refused, slow or incoherent leaves stage one standing
@@ -31,7 +40,7 @@ import { delimiter, isAbsolute, join, resolve } from 'node:path';
  * worse than one that says "the model was not reached" over a real ranking.
  */
 
-/** Agents whose name may appear in a repository's `model.command`. */
+/** Agent names `model.agent` may carry. */
 export const KNOWN_AGENTS: readonly string[] = [
   'claude',
   'codex',
@@ -43,14 +52,23 @@ export const KNOWN_AGENTS: readonly string[] = [
 ];
 
 /**
- * The default when `.eyes-on.yml` says nothing about a model.
+ * How eyes-on invokes each agent it can invoke: the complete argument vector,
+ * held here rather than taken from configuration.
  *
- * Only `claude` is defaulted to, and only when it is actually on PATH. Other
- * agents are accepted from configuration but not guessed at: each reads a
- * prompt differently, and a default that names a flag nobody here has run would
- * be a diagnostic promising a remedy that does not work.
+ * Only `claude` is in it, because `claude -p` is the only invocation exercised
+ * against a real agent here. The others are names eyes-on recognises and has
+ * never run: each reads a prompt differently, and an argv naming a flag nobody
+ * has tried would be a diagnostic promising a remedy that does not work. A
+ * repository naming one of them is told exactly that, and pointed at the
+ * machine-owned escape rather than left with a guess.
  */
-export const DEFAULT_MODEL_COMMAND: readonly string[] = ['claude', '-p'];
+export const AGENT_ARGV: Readonly<Record<string, readonly string[]>> = {
+  claude: ['claude', '-p'],
+};
+
+/** The agent assumed when `.eyes-on.yml` says nothing, and only when it is
+ *  actually on PATH. */
+export const DEFAULT_AGENT = 'claude';
 
 export const DEFAULT_TIMEOUT_MS = 180_000;
 
@@ -62,11 +80,15 @@ export type ModelOutcome =
   | { state: 'failed'; detail: string; command: string[]; elapsed_ms: number };
 
 export interface ModelOptions {
-  /** `model.command` from the trusted `.eyes-on.yml`, or null when the field
-   *  was absent and the default applies. An empty array is not the same as an
+  /** `model.agent` from the trusted `.eyes-on.yml`, or null when the field was
+   *  absent and the default applies. An empty string is not the same as an
    *  absent field: it is the repository saying "no model here". */
+  agent: string | null;
+  /** `model.command` from the trusted `.eyes-on.yml`. Honoured only under
+   *  `allowAnyCommand`, and otherwise refused rather than ignored: a repository
+   *  that asked for a command must be told eyes-on did not run it. */
   command: readonly string[] | null;
-  /** Whether the machine's own config lifts the name allow-list. */
+  /** Whether the machine's own config lets a repository name an argv at all. */
   allowAnyCommand: boolean;
   timeoutMs?: number;
   cwd?: string;
@@ -79,40 +101,34 @@ export interface ModelOptions {
  * configured" read differently in the output.
  */
 export function resolveModelCommand(options: ModelOptions): { command: string[] } | { refusal: ModelOutcome } {
-  const configured = options.command;
-  if (configured !== null && configured.length === 0) {
+  if (options.command !== null && !options.allowAnyCommand) {
+    return {
+      refusal: {
+        state: 'refused',
+        detail:
+          'model.command in the trusted .eyes-on.yml names an argument vector, and that vector comes from the ' +
+          'repository being assessed, so eyes-on will not run it. Use model.agent with one of ' +
+          `${KNOWN_AGENTS.join(', ')} and eyes-on supplies the arguments, or set model.allow_any_command: true in ` +
+          '~/.eyes-on/config.yaml - the machine\'s own file, which no branch can write - to run the vector as given',
+      },
+    };
+  }
+  const resolved = options.allowAnyCommand && options.command !== null
+    ? { argv: [...options.command] }
+    : argvForAgent(options.agent);
+  if ('refusal' in resolved) return resolved;
+  const argv = resolved.argv;
+  if (argv.length === 0) {
     return {
       refusal: {
         state: 'skipped',
-        detail: 'model.command in the trusted .eyes-on.yml is empty, which is how a repository asks for stage one only',
+        detail:
+          'the trusted .eyes-on.yml asks for no model, which is how a repository asks for stage one only',
       },
     };
   }
-  const command = configured !== null && configured.length > 0 ? [...configured] : [...DEFAULT_MODEL_COMMAND];
-  const name = command[0] as string;
 
-  if (!options.allowAnyCommand && hasPathSeparator(name)) {
-    return {
-      refusal: {
-        state: 'refused',
-        detail:
-          `model.command names the path ${name} rather than a bare command name; it comes from the repository, and a ` +
-          'path lets the repository choose the program as well as the name, so eyes-on will not execute it. Name one ' +
-          `of the agents eyes-on knows (${KNOWN_AGENTS.join(', ')}) and let PATH resolve it, or set ` +
-          'model.allow_any_command: true in ~/.eyes-on/config.yaml to lift this',
-      },
-    };
-  }
-  if (!options.allowAnyCommand && !KNOWN_AGENTS.includes(name)) {
-    return {
-      refusal: {
-        state: 'refused',
-        detail:
-          `model.command names ${name}, which is not one of the agents eyes-on knows (${KNOWN_AGENTS.join(', ')}); ` +
-          'it comes from the repository, so eyes-on will not execute it. Set model.allow_any_command: true in ~/.eyes-on/config.yaml to lift this',
-      },
-    };
-  }
+  const name = argv[0] as string;
   if (!isExecutable(name, options.env ?? process.env, options.cwd)) {
     return {
       refusal: {
@@ -123,7 +139,43 @@ export function resolveModelCommand(options: ModelOptions): { command: string[] 
       },
     };
   }
-  return { command };
+  return { command: argv };
+}
+
+/**
+ * The argv for a repository's `model.agent`, or the refusal that names why
+ * there is not one. An empty name is the repository opting out and comes back
+ * as an empty vector, which the caller reports as `skipped` rather than as a
+ * failure - opting out is a choice, not a fault.
+ */
+function argvForAgent(agent: string | null): { argv: string[] } | { refusal: ModelOutcome } {
+  if (agent !== null && agent.trim().length === 0) return { argv: [] };
+  const name = agent === null ? DEFAULT_AGENT : agent.trim();
+  if (!KNOWN_AGENTS.includes(name)) {
+    return {
+      refusal: {
+        state: 'refused',
+        detail:
+          `model.agent names ${name}, which is not one of the agents eyes-on knows ` +
+          `(${KNOWN_AGENTS.join(', ')}); it comes from the repository, so eyes-on will not execute it. Set ` +
+          'model.allow_any_command: true in ~/.eyes-on/config.yaml and use model.command to run it anyway',
+      },
+    };
+  }
+  const argv = AGENT_ARGV[name];
+  if (!argv) {
+    return {
+      refusal: {
+        state: 'refused',
+        detail:
+          `model.agent names ${name}, which eyes-on recognises but has never invoked, so it holds no argument ` +
+          `vector for it and will not guess one (only ${Object.keys(AGENT_ARGV).join(', ')} has been exercised ` +
+          'here). Set model.allow_any_command: true in ~/.eyes-on/config.yaml and use model.command to supply the ' +
+          'arguments yourself',
+      },
+    };
+  }
+  return { argv: [...argv] };
 }
 
 /** Runs the agent once with `prompt` on stdin. */

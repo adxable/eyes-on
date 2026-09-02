@@ -112,17 +112,20 @@ first) · `npm run genskill`.
   prompt. Adding a second read of the flag would turn a structural guarantee
   into three `if`s that have to stay in agreement. `test/spotlight.test.ts`
   asserts it against a fake agent that records every invocation.
-- **`model.command` is the one config field eyes-on executes.** It comes from
-  the default branch like every other trusted field, which is the right trust
-  level for deciding which paths need a reviewer and not by itself a reason to
-  run an arbitrary program a cloned repository names. It must be a **bare name
-  in `KNOWN_AGENTS`, resolved through PATH**: a name carrying a path separator
-  is refused whatever its basename says, because `tools/claude` would otherwise
-  be a program the repository ships and eyes-on runs. Only
-  `~/.eyes-on/config.yaml`, which no branch can write, can lift either rule.
-  `resolveModelCommand` and `isExecutable` (`src/spot/agent.ts`) resolve a name
-  the same way, against the directory `askModel` spawns in, so the check and the
-  spawn cannot look at two different files.
+- **A repository picks an agent by name; eyes-on owns the argv.** `.eyes-on.yml`
+  comes from the default branch like every other trusted field, which is the
+  right trust level for deciding which paths need a reviewer and not a reason to
+  let it choose what runs. Narrowing that one dimension at a time failed twice -
+  the program's path, then its name, then its flags - so the choice is closed
+  rather than filtered: `model.agent` names one entry of `AGENT_ARGV`
+  (`src/spot/agent.ts`) and eyes-on holds the whole vector. `AGENT_ARGV` carries
+  only `claude`, because only `claude -p` has been exercised; a recognised name
+  without a vector is refused rather than given a guessed flag. `model.command`
+  runs as given only under `allow_any_command` in `~/.eyes-on/config.yaml`,
+  which no branch can write, and is otherwise refused by name rather than
+  ignored. `isExecutable` resolves against the directory `askModel` spawns in,
+  so the check and the spawn cannot look at two different files.
+  `test/spotlight.test.ts` asserts the argv the stub was actually invoked with.
 - **A prompt the model cannot see the edge of produces a wrong answer, not a
   missing one.** The drift description's diff is cut at a size limit and git
   orders its output by path, so an unmarked cut described a three-thousand-line

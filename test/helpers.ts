@@ -162,15 +162,18 @@ export function sandboxEnv(prefix: string): Record<string, string> {
 }
 
 export interface StubAgent {
-  /** `model.command` naming this stub, for a `.eyes-on.yml`. A bare name, so
-   *  only a PATH carrying `dir` reaches it. */
-  command: string[];
+  /** The name `model.agent` carries to reach this stub. A bare name, so only a
+   *  PATH carrying `dir` reaches it. */
+  agent: string;
   /** The directory holding the stub, to put in front of a PATH. */
   dir: string;
   /** PATH with the stub in front of it. */
   path: string;
   /** Every prompt the stub was given, in order. */
   prompts(): string[];
+  /** Every argument vector the stub was invoked with, as it was executed. This
+   *  is how a test asserts what eyes-on ran rather than what it said it ran. */
+  argv(): string[][];
   /** Whether the stub was invoked at all. The `--no-model` acceptance condition
    *  is exactly this being false. */
   called(): boolean;
@@ -179,12 +182,11 @@ export interface StubAgent {
 /**
  * A fake local agent on disk.
  *
- * Named `claude` and reached **only through PATH**, both on purpose.
- * `model.command` is repository content, so eyes-on refuses a name that is not
- * one it knows and refuses any name carrying a path separator - a repository
- * that could name `tools/claude` could ship the program as well as the name. A
- * stub handed over as an absolute path would be testing around that guard
- * rather than through it, so the stub goes on PATH the way a real agent does.
+ * Named `claude` and reached **only through PATH**, both on purpose. A
+ * repository picks an agent by name and eyes-on owns the argv, so a stub handed
+ * over as a path - or as an argument vector - would be testing around the guard
+ * rather than through it. The stub goes on PATH the way a real agent does, and
+ * records the argv it was actually invoked with so a test can assert what ran.
  */
 export function stubAgent(prefix: string, responses: readonly string[]): StubAgent {
   const dir = tempDir(`${prefix}-agent`);
@@ -200,15 +202,26 @@ const log = path.join(dir, 'prompts.jsonl');
 const prompt = fs.readFileSync(0, 'utf8');
 const before = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\\n').filter(Boolean).length : 0;
 fs.appendFileSync(log, JSON.stringify(prompt) + '\\n');
+fs.appendFileSync(path.join(dir, 'argv.jsonl'), JSON.stringify(process.argv.slice(1)) + '\\n');
 const responses = JSON.parse(fs.readFileSync(path.join(dir, 'responses.json'), 'utf8'));
 process.stdout.write(String(responses[Math.min(before, responses.length - 1)] ?? ''));
 `,
     { mode: 0o755 },
   );
   return {
-    command: ['claude'],
+    agent: 'claude',
     dir,
     path: `${dir}${delimiter}${process.env.PATH ?? ''}`,
+    argv(): string[][] {
+      try {
+        return readFileSync(join(dir, 'argv.jsonl'), 'utf8')
+          .split('\n')
+          .filter((line) => line.length > 0)
+          .map((line) => JSON.parse(line) as string[]);
+      } catch {
+        return [];
+      }
+    },
     prompts(): string[] {
       try {
         return readFileSync(join(dir, 'prompts.jsonl'), 'utf8')

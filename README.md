@@ -171,7 +171,7 @@ weights: { fix_history: 0.30 }       # argued from `backtest`, never from taste
 saturation: { fix_history: 5 }
 thresholds: { read_fragments: 35, full_review: 65 }
 model:
-  command: ["claude", "-p"]          # [] opts this repository out of the model
+  agent: claude                      # "" opts this repository out of the model
   max_hunks: 12                      # candidates the second stage is given
 ```
 
@@ -180,16 +180,23 @@ exists and cannot be parsed is not treated as an empty one: the check is
 reported `unverified`, carrying the parse error, because a rule that cannot be
 read is not the same as a rule nobody wrote.
 
-`model.command` is the one field eyes-on **executes**, so it is treated more
-narrowly than the rest: it must be a bare command name that is an agent eyes-on
-knows (`claude`, `codex`, `copilot`, `cursor-agent`, `opencode`, `pi`,
-`rovodev`), resolved through PATH. A name containing a path separator is refused
-however it ends, because `tools/claude` names a program the repository itself
-ships. Reading a repository's configuration to decide which paths need a
-reviewer is not by itself a reason to run an arbitrary program a cloned
-repository names.
-Set `model: { allow_any_command: true }` in `~/.eyes-on/config.yaml` - the
-machine's own file, which no branch can write - to lift that.
+`model.agent` is the one field that reaches process execution, so a repository
+chooses only the **name**: one of `claude`, `codex`, `copilot`, `cursor-agent`,
+`opencode`, `pi`, `rovodev`, resolved through PATH. eyes-on holds the whole
+argument vector that name maps to. Narrowing this one dimension at a time did
+not hold - first the program's path, then its name, then its flags - and the
+prompt those flags govern is built from the same repository's diff, so
+`claude -p --dangerously-skip-permissions` would be a cloned repository handing
+itself an agent with broad permissions and attacker-controlled input. There is
+now nothing left for it to choose.
+
+Only `claude` has an argument vector eyes-on will run, because `claude -p` is
+the only invocation exercised here; a repository naming one of the others is
+told that rather than given a guessed flag. `model.command` - the whole argv -
+is honoured only when `model: { allow_any_command: true }` is set in
+`~/.eyes-on/config.yaml`, the machine's own file, which no branch can write.
+Without it a repository carrying `model.command` is refused by name and the
+command falls back to stage one.
 
 ## Output contract
 

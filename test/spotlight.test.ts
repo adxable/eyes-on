@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, symlinkSync } from 'node:fs';
+import { chmodSync, existsSync, symlinkSync, writeFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { captureCli, sandboxEnv, stubAgent, tempDir, tempRepo, type TempRepo } from './helpers.js';
 import { EXIT_OK } from '../src/cli/output.js';
@@ -237,7 +237,7 @@ test('a model answer wrapped in prose still parses, and one that is not JSON lea
     intent: null,
     score: 10,
     band: 'auto',
-    model: { command: ['definitely-not-an-agent'], allowAnyCommand: false },
+    model: { agent: 'definitely-not-an-agent', command: null, allowAnyCommand: false },
   });
   assert.equal(nonsense.stage, 1);
   assert.equal(nonsense.model.state, 'refused');
@@ -268,7 +268,7 @@ test('prose quoting code before the answer does not cost the run its second stag
   assert.equal(validate('I could not do it: { nope }', candidates, 5).spots.length, 0);
 });
 
-test('an empty model.command is the repository asking for stage one, not a failure', () => {
+test('an empty model.agent is the repository asking for stage one, not a failure', () => {
   const candidates = rank([hunk({ path: 'src/a.ts', anchor: 1, added: 4 })]);
   const result = selectSpotlight({
     candidates,
@@ -276,23 +276,25 @@ test('an empty model.command is the repository asking for stage one, not a failu
     intent: null,
     score: 10,
     band: 'auto',
-    model: { command: [], allowAnyCommand: false },
+    model: { agent: '', command: null, allowAnyCommand: false },
   });
   assert.equal(result.model.state, 'skipped');
-  assert.match('detail' in result.model ? result.model.detail : '', /empty/);
+  assert.match('detail' in result.model ? result.model.detail : '', /stage one only/);
 });
 
 // --- end to end, through the CLI -------------------------------------------
 
-/** A repository with a hot file, a quiet one, and a config naming the stub. */
-function repoWithModel(agent: { command: readonly string[] } | null): TempRepo {
+/** A repository with a hot file, a quiet one, and the `model:` block a test
+ *  wants under it, as raw indented lines so a test can write a field the
+ *  product refuses. */
+function repoWithModel(model: readonly string[] | null): TempRepo {
   const repo = tempRepo('spotlight');
   const config = [
     'schema: eyes-on/v1',
     'hard_rules:',
     '  - glob: "deploy/**"',
     '    why: "deployment configuration - a mistake costs a machine, not a test"',
-    ...(agent ? ['model:', `  command: ["${agent.command[0] as string}"]`] : []),
+    ...(model ? ['model:', ...model] : []),
     '',
   ].join('\n');
 
@@ -328,11 +330,12 @@ interface SpotlightDoc {
   gate: string;
   exit_code: number;
   rejected_fragments: number;
+  model_command: string[] | null;
 }
 
 test('acceptance: --no-model returns stage 1 and does not call a model once', async (t) => {
   const agent = stubAgent('spot-nomodel', ['{"spotlight":[]}']);
-  const repo = repoWithModel(agent);
+  const repo = repoWithModel([`  agent: ${agent.agent}`]);
   const env: Record<string, string> = { ...sandboxEnv('spot-nomodel'), PATH: agent.path };
   await initRepo(t, repo, env);
 
@@ -363,7 +366,7 @@ test('stage 2 picks fragments from stage 1 and each one carries a category and a
     ],
   });
   const agent = stubAgent('spot-stage2', [answer]);
-  const repo = repoWithModel(agent);
+  const repo = repoWithModel([`  agent: ${agent.agent}`]);
   const env: Record<string, string> = { ...sandboxEnv('spot-stage2'), PATH: agent.path };
   await initRepo(t, repo, env);
 
@@ -399,7 +402,7 @@ test('stage 2 picks fragments from stage 1 and each one carries a category and a
 
 test('a model that answers with nonsense leaves stage 1 standing and still exits 0', async (t) => {
   const agent = stubAgent('spot-garbage', ['I am afraid I cannot help with that.']);
-  const repo = repoWithModel(agent);
+  const repo = repoWithModel([`  agent: ${agent.agent}`]);
   const env: Record<string, string> = { ...sandboxEnv('spot-garbage'), PATH: agent.path };
   await initRepo(t, repo, env);
 
@@ -423,7 +426,7 @@ test('a fragment naming a file outside the change is dropped and counted, not pu
       ],
     }),
   ]);
-  const repo = repoWithModel(agent);
+  const repo = repoWithModel([`  agent: ${agent.agent}`]);
   const env: Record<string, string> = { ...sandboxEnv('spot-invented'), PATH: agent.path };
   await initRepo(t, repo, env);
 
@@ -454,9 +457,9 @@ function pathWithGitOnly(prefix: string): string {
 }
 
 test('an agent that is named and not installed gets stage 1 and a reason, not a failure', async (t) => {
-  // A known agent, so the name allow-list passes and the failure is the one
-  // under test: PATH does not resolve it.
-  const repo = repoWithModel({ command: ['codex'] });
+  // The agent eyes-on knows how to invoke, so the name passes and the failure
+  // is the one under test: PATH does not resolve it.
+  const repo = repoWithModel(['  agent: claude']);
   const env: Record<string, string> = { ...sandboxEnv('spot-missing'), PATH: pathWithGitOnly('spot-missing-path') };
   await initRepo(t, repo, env);
 
@@ -470,11 +473,11 @@ test('an agent that is named and not installed gets stage 1 and a reason, not a 
   assert.ok(doc.spotlight.length >= 3, 'the ranking is still a complete answer');
 });
 
-test('a model.command the repository chose but eyes-on does not know is refused, not executed', async (t) => {
+test('a model.agent the repository chose but eyes-on does not know is refused, not executed', async (t) => {
   // `.eyes-on.yml` comes from the default branch, which is the right trust
   // level for deciding which paths need a reviewer and not by itself a reason
   // to execute an arbitrary program a cloned repository names.
-  const repo = repoWithModel({ command: ['sh'] });
+  const repo = repoWithModel(['  agent: sh']);
   const env = sandboxEnv('spot-refused');
   await initRepo(t, repo, env);
 
@@ -488,13 +491,32 @@ test('a model.command the repository chose but eyes-on does not know is refused,
   assert.match(doc.model_detail, /allow_any_command/);
 });
 
+test('an agent eyes-on recognises but has never invoked is refused rather than guessed at', async (t) => {
+  // eyes-on owns the argument vector now, and it holds one only for the agent
+  // it has actually run. Inventing a flag for the rest would be a diagnostic
+  // promising a remedy nobody here has tried, so the refusal says exactly that
+  // and names the machine-owned way to supply an argv.
+  const repo = repoWithModel(['  agent: codex']);
+  const env = sandboxEnv('spot-unexercised');
+  await initRepo(t, repo, env);
+
+  const doc = JSON.parse(
+    (await captureCli(['spotlight', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as SpotlightDoc;
+
+  assert.equal(doc.stage, 1, 'the ranking is still a complete answer');
+  assert.equal(doc.model_state, 'refused');
+  assert.match(doc.model_detail, /recognises but has never invoked/);
+  assert.match(doc.model_detail, /allow_any_command/);
+});
+
 test('a program the repository ships under a known name is refused, not executed', async (t) => {
-  // The allow-list used to match the basename alone, so a repository could put
-  // an executable at `tools/claude`, name it in the `.eyes-on.yml` on its own
-  // default branch, and have eyes-on run it. `model.command` is the one config
-  // field this product executes, so a name that carries a path is refused
-  // however it ends: what is left is a name the machine's PATH resolves.
-  const repo = repoWithModel({ command: ['tools/claude'] });
+  // A repository could put an executable at `tools/claude` and name it in the
+  // `.eyes-on.yml` on its own default branch. `model.command` is an argument
+  // vector supplied by the repository being assessed, so without the machine's
+  // own `allow_any_command` it is refused whatever it names - and the caller
+  // falls back to stage one rather than running something else.
+  const repo = repoWithModel(['  command: ["tools/claude"]']);
   const marker = join(tempDir('spot-planted'), 'it-ran');
   repo.commitFiles('chore: ship a tool', {
     'tools/claude': `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran');\nprocess.stdout.write('{"spotlight":[]}');\n`,
@@ -513,4 +535,61 @@ test('a program the repository ships under a known name is refused, not executed
   // Not "the log did not mention it": the planted program writes a file when it
   // runs, and that file is not there.
   assert.equal(existsSync(marker), false, 'the program the repository shipped was never executed');
+});
+
+test('a repository cannot choose the flags eyes-on runs an agent with', async (t) => {
+  // The vector, not just the program, is the vector. A repository naming
+  // `claude -p --dangerously-skip-permissions` would be handing itself an agent
+  // with broad permissions and a prompt built from its own diff, so eyes-on
+  // holds the whole argv and the repository picks only the name. The assertion
+  // is on the argv the stub was actually invoked with, not on a message.
+  const agent = stubAgent('spot-argv', ['{"spotlight":[]}']);
+  const repo = repoWithModel([`  agent: ${agent.agent}`]);
+  const env: Record<string, string> = { ...sandboxEnv('spot-argv'), PATH: agent.path };
+  await initRepo(t, repo, env);
+
+  await captureCli(['spotlight', '--format', 'json'], { cwd: repo.path, env });
+  const invocations = agent.argv();
+  assert.equal(invocations.length, 1, 'stage 2 is one call');
+  const argv = invocations[0] ?? [];
+  assert.match(argv[0] ?? '', /[/\\]claude$/, 'the program came from PATH under the name the repository chose');
+  assert.deepEqual(argv.slice(1), ['-p'], 'the arguments are the ones eyes-on holds');
+
+  // The same repository, now trying to impose its own flags on the same agent.
+  const forceful = stubAgent('spot-argv-forced', ['{"spotlight":[]}']);
+  const loud = repoWithModel([`  command: ["${forceful.agent}", "-p", "--dangerously-skip-permissions"]`]);
+  const loudEnv: Record<string, string> = { ...sandboxEnv('spot-argv-forced'), PATH: forceful.path };
+  await initRepo(t, loud, loudEnv);
+
+  const doc = JSON.parse(
+    (await captureCli(['spotlight', '--format', 'json'], { cwd: loud.path, env: loudEnv })).out,
+  ) as SpotlightDoc;
+
+  assert.equal(doc.model_state, 'refused');
+  assert.match(doc.model_detail, /allow_any_command/);
+  assert.equal(forceful.called(), false, 'the flags the repository asked for reached no process');
+  assert.deepEqual(forceful.argv(), [], 'and nothing was executed under that name at all');
+});
+
+test('the machine may still hand eyes-on an argument vector of its own', async (t) => {
+  // `allow_any_command` lives in `~/.eyes-on/config.yaml`, which no branch can
+  // write, so it is the machine saying so rather than the repository. With it
+  // set, `model.command` runs as given - flags included.
+  const agent = stubAgent('spot-allowed', ['{"spotlight":[]}']);
+  const repo = repoWithModel([`  command: ["${agent.agent}", "-p", "--verbose"]`]);
+  const env: Record<string, string> = { ...sandboxEnv('spot-allowed'), PATH: agent.path };
+  await initRepo(t, repo, env);
+  writeFileSync(join(env.EYES_HOME as string, 'config.yaml'), 'schema: eyes-on/v1\nmodel:\n  allow_any_command: true\n');
+
+  const doc = JSON.parse(
+    (await captureCli(['spotlight', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as SpotlightDoc;
+
+  assert.equal(agent.called(), true, 'the vector the machine allowed did reach a process');
+  assert.deepEqual((agent.argv()[0] ?? []).slice(1), ['-p', '--verbose']);
+  assert.deepEqual(
+    doc.model_command,
+    ['claude', '-p', '--verbose'],
+    'the payload reports the argv as a list of words rather than a joined string',
+  );
 });

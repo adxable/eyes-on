@@ -199,7 +199,7 @@ function repoWith(agent: StubAgent): TempRepo {
       '  - glob: "deploy/**"',
       '    why: "deployment configuration - a mistake costs a machine, not a test"',
       'model:',
-      `  command: ["${agent.command[0] as string}"]`,
+      `  agent: ${agent.agent}`,
       '',
     ].join('\n'),
     'src/a.ts': 'export const a = 1;\n',

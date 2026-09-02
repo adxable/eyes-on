@@ -34,13 +34,14 @@ export interface GlobalConfig {
   };
   model: {
     /**
-     * Whether a repository's `model.command` may name any executable.
+     * Whether a repository's `model.command` argument vector is run as given.
      *
      * `.eyes-on.yml` is read from the default branch, which is the right trust
      * level for deciding which paths need a reviewer - and not by itself a
-     * reason to execute an arbitrary program named by a repository somebody
-     * cloned. By default eyes-on only runs an agent it knows by name
-     * (`KNOWN_AGENTS`). This field lives here, in the machine's own
+     * reason to execute a program, or a set of flags, named by a repository
+     * somebody cloned. By default a repository picks only an agent name
+     * (`model.agent`, one of `KNOWN_AGENTS`) and eyes-on holds the whole argv
+     * that name maps to. This field lives here, in the machine's own
      * configuration, precisely because no branch can write it.
      */
     allow_any_command: boolean;

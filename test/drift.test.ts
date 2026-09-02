@@ -102,7 +102,7 @@ test('the two passes are two calls, and the second is given the first one\'s ans
   const result = measureDrift({
     diff: '@@ -1 +1 @@\n-const retries = Infinity;\n+const retries = 5;',
     intent: INTENT,
-    model: { command: agent.command, allowAnyCommand: false, env: { ...process.env, PATH: agent.path } },
+    model: { agent: agent.agent, command: null, allowAnyCommand: false, env: { ...process.env, PATH: agent.path } },
   });
 
   assert.equal(result.grade, 3);
@@ -122,7 +122,7 @@ test('a first pass that answers with nothing readable stops before the second ca
   const result = measureDrift({
     diff: '@@ -1 +1 @@\n-a\n+b',
     intent: INTENT,
-    model: { command: agent.command, allowAnyCommand: false, env: { ...process.env, PATH: agent.path } },
+    model: { agent: agent.agent, command: null, allowAnyCommand: false, env: { ...process.env, PATH: agent.path } },
   });
   assert.equal(result.grade, null);
   assert.deepEqual(result.passes, { describe: 'failed', compare: 'skipped' });
@@ -160,7 +160,7 @@ test('S7 charges drift above an aligned change, and nothing for an unmeasured on
 function repoWith(agent: StubAgent): TempRepo {
   const repo = tempRepo('drift');
   repo.commitFiles('chore: configure eyes-on', {
-    '.eyes-on.yml': ['schema: eyes-on/v1', 'model:', `  command: ["${agent.command[0] as string}"]`, ''].join('\n'),
+    '.eyes-on.yml': ['schema: eyes-on/v1', 'model:', `  agent: ${agent.agent}`, ''].join('\n'),
     'src/poller.ts': 'export const retries = Infinity;\n',
   });
   repo.git(['checkout', '-q', '-b', 'work']);
@@ -263,7 +263,7 @@ test('acceptance: the drift grade gates only through the band, and only when --s
     '.eyes-on.yml': [
       'schema: eyes-on/v1',
       'model:',
-      `  command: ["${agent.command[0] as string}"]`,
+      `  agent: ${agent.agent}`,
       `thresholds: { read_fragments: ${full - 1}, full_review: ${full} }`,
       '',
     ].join('\n'),
@@ -519,6 +519,74 @@ test('a check recorded before the maximum was stored says so rather than assumin
   const markdown = (await captureCli(['status', '--format', 'md'], { cwd: repo.path, env })).out;
   assert.doesNotMatch(markdown, /\/100/, 'a denominator nobody recorded is not invented');
   assert.match(markdown, /before eyes-on stored the maximum/);
+});
+
+test('acceptance: a drift run that measures nothing moves nothing it found recorded', async (t) => {
+  // Not measuring is not changing. Rescoring with a null grade would write a
+  // score computed with S7 at zero over one that contains a grade taken of this
+  // very base..head and delete that grade's items with it, so the risk
+  // published on the pull request would drop because a later run - a rate
+  // limit, or --no-model, which this command documents as supported - measured
+  // nothing.
+  const agent = stubAgent('drift-keeps', [describeAnswer(), compareAnswer(5)]);
+  const repo = repoWith(agent);
+  const env: Record<string, string> = { ...sandboxEnv('drift-keeps'), PATH: agent.path };
+  await initRepo(t, repo, env);
+
+  const measured = JSON.parse(
+    (await captureCli(['check', '--intent', INTENT, '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as { check_id: string; drift: number };
+  assert.equal(measured.drift, 5);
+
+  const dbPath = join(env.EYES_HOME as string, 'state.sqlite');
+  interface Recorded {
+    row: { score: number; score_max: number; band: string; drift: number };
+    signals: Record<string, unknown>[];
+    items: Record<string, unknown>[];
+  }
+  // Rows come back with a null prototype, so each is spread into a plain object
+  // before it is compared with another reading or with a literal.
+  const readRow = (): Recorded => {
+    const db = Database.open(dbPath);
+    const row = db.get<Recorded['row']>('SELECT score, score_max, band, drift FROM checks WHERE id = ?', measured.check_id);
+    const signals = db.all('SELECT name, raw, normalized FROM signals WHERE check_id = ? ORDER BY name', measured.check_id);
+    const items = db.all('SELECT kind, position, item FROM drift_items WHERE check_id = ? ORDER BY kind, position', measured.check_id);
+    db.close();
+    return {
+      row: { ...(row as Recorded['row']) },
+      signals: signals.map((entry) => ({ ...entry })),
+      items: items.map((entry) => ({ ...entry })),
+    };
+  };
+
+  const before = readRow();
+  assert.equal(before.row.score_max, 120);
+  assert.equal(before.row.drift, 5);
+  assert.equal(before.items.length, 1, 'the measurement left an item behind');
+  assert.equal(before.signals.length, SIGNAL_NAMES.length);
+
+  const doc = JSON.parse(
+    (await captureCli(['drift', '--intent', INTENT, '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as { drift: number | null; state: string; score: number; score_max: number; band: string; recorded_drift: number; rescored: boolean };
+
+  assert.equal(doc.drift, null, 'this run measured no grade');
+  assert.equal(doc.rescored, false);
+  assert.deepEqual(readRow(), before, 'the score, its maximum, the band, the grade, the signals and the items are as they were');
+
+  // And the payload says which is which rather than reporting the run's own
+  // null as the record's grade.
+  assert.equal(doc.recorded_drift, 5);
+  assert.equal(doc.score, before.row.score);
+  assert.equal(doc.score_max, before.row.score_max);
+  assert.equal(doc.band, before.row.band);
+
+  // The Markdown says the same thing, rather than describing a rescore that did
+  // not happen above a heading that says nothing was measured.
+  const markdown = (await captureCli(['drift', '--intent', INTENT, '--no-model', '--format', 'md'], { cwd: repo.path, env })).out;
+  assert.match(markdown, /\*\*Not measured\.\*\*/);
+  assert.match(markdown, /The recorded assessment is untouched/);
+  assert.doesNotMatch(markdown, /the check was rescored/);
+  assert.deepEqual(readRow(), before);
 });
 
 test('check --no-model with an intent measures no drift and calls no model', async (t) => {

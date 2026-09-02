@@ -23,7 +23,7 @@ hard_rules:
   - glob: "packages/channels/src/mailbox/**"
     why:  "the only path code takes out of the company"
 model:
-  command: ["claude", "-p"]
+  agent: claude
   max_hunks: 12
 `;
 
@@ -38,7 +38,7 @@ test('the Appendix C.3 document parses into exactly what it says', () => {
   assert.deepEqual(config.thresholds, { read_fragments: 35, full_review: 65 });
   assert.equal(config.hard_rules.length, 2);
   assert.equal(config.hard_rules[0]?.glob, 'packages/provisioning/**');
-  assert.deepEqual(config.model.command, ['claude', '-p']);
+  assert.equal(config.model.agent, 'claude');
   assert.equal(config.model.max_hunks, 12);
 });
 

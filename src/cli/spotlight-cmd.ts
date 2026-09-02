@@ -186,7 +186,9 @@ export function renderDoc(score: number, scoreMax: number, band: string, options
     candidates_considered: options.candidates.length,
     model_state: result.model.state,
     model_detail: detailOf(result.model),
-    model_command: 'command' in result.model ? (result.model.command.join(' ') as ToonValue) : null,
+    // The argv as it was executed, one row per word. A joined string would be
+    // unreadable the moment an argument contained a space.
+    model_command: 'command' in result.model ? (result.model.command as ToonValue) : null,
     model_elapsed_ms: 'elapsed_ms' in result.model ? result.model.elapsed_ms : null,
     rejected_fragments: result.rejected,
     rejected_reasons: result.rejected_reasons as ToonValue,

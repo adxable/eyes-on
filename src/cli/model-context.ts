@@ -26,6 +26,7 @@ export function modelOptionsFor(
 ): ModelOptions | null {
   if (flagBool(context.args, 'no-model')) return null;
   return {
+    agent: config.model.agent,
     command: config.model.command,
     allowAnyCommand: loadConfig(context.paths).model.allow_any_command,
     cwd: clonePath,
