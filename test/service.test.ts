@@ -22,7 +22,7 @@ import {
   systemdUnit,
   systemdUnitName,
 } from '../src/daemon/service.js';
-import { tempDir } from './helpers.js';
+import { stateRoot, tempDir } from './helpers.js';
 
 /** Reading a property list goes through macOS' own plutil, so does this. */
 const darwinOnly = { skip: process.platform === 'darwin' ? false : 'property lists are read with macOS plutil' };
@@ -34,15 +34,15 @@ const darwinOnly = { skip: process.platform === 'darwin' ? false : 'property lis
  * the sort of claim that has to be asserted rather than believed.
  */
 test('the service label is scoped by the state root', () => {
-  const a = Paths.withRoot(tempDir('svc-a'));
-  const b = Paths.withRoot(tempDir('svc-b'));
+  const a = Paths.withRoot(stateRoot('svc-a'));
+  const b = Paths.withRoot(stateRoot('svc-b'));
   assert.match(instanceSuffix(a), /^[0-9a-f]{8}$/);
   assert.notEqual(instanceSuffix(a), instanceSuffix(b));
   assert.equal(instanceSuffix(a), instanceSuffix(Paths.withRoot(a.root)));
 });
 
 test('the label can never collide with the no-mistakes one', () => {
-  const label = launchdLabel(Paths.withRoot(tempDir('svc-prefix')));
+  const label = launchdLabel(Paths.withRoot(stateRoot('svc-prefix')));
   assert.match(label, /^com\.adxable\.eyes-on\.daemon\.[0-9a-f]{8}$/);
   assert.ok(!label.includes('no-mistakes'));
   // The live no-mistakes label on the reference machine, for contrast.
@@ -50,7 +50,7 @@ test('the label can never collide with the no-mistakes one', () => {
 });
 
 test('the unit passes --root explicitly, because the service exports only HOME and PATH', darwinOnly, () => {
-  const paths = Paths.withRoot(tempDir('svc-root'));
+  const paths = Paths.withRoot(stateRoot('svc-root'));
   const plist = parseLaunchdPlist(launchdPlist(paths, '/opt/eyes-on/main.js', '/usr/bin/node'));
   assert.ok(plist, 'the generated plist must be readable as a property list');
   assert.equal(plist.label, launchdLabel(paths));
@@ -87,7 +87,7 @@ test('the unit passes --root explicitly, because the service exports only HOME a
  * healthy daemon.
  */
 test('a unit that differs only in the installing shell environment is not a change', darwinOnly, () => {
-  const paths = Paths.withRoot(tempDir('svc-idempotent'));
+  const paths = Paths.withRoot(stateRoot('svc-idempotent'));
   const previousPath = process.env.PATH;
   let fromOneShell: string;
   let fromAnotherShell: string;
@@ -115,7 +115,7 @@ test('a unit that differs only in the installing shell environment is not a chan
 });
 
 test('a LaunchAgent label is read from what the plist declares, not from its filename', darwinOnly, () => {
-  const paths = Paths.withRoot(tempDir('svc-label'));
+  const paths = Paths.withRoot(stateRoot('svc-label'));
   const own = readPlist(launchdPlist(paths, '/opt/eyes-on/main.js', '/usr/bin/node'));
   assert.ok(own.ok);
   assert.equal(plistLabel(own.value), launchdLabel(paths));
@@ -254,7 +254,7 @@ test('the definition is reinstalled only when the manager is not holding a corre
  * changed and restarts a healthy daemon.
  */
 test('a state root containing a space round-trips through the systemd unit', () => {
-  const paths = Paths.withRoot(join(tempDir('svc space'), 'a b', 'state root'));
+  const paths = Paths.withRoot(stateRoot(join('a b', 'state root')));
   const executable = '/opt/eyes on/main.js';
   const desired = systemdDefinition(paths, executable, '/usr/bin/node');
   const parsed = parseSystemdUnit(systemdUnit(paths, executable, '/usr/bin/node'), systemdUnitName(paths));
@@ -270,7 +270,7 @@ test('a state root containing a space round-trips through the systemd unit', () 
  * still not counting as a reason to reload.
  */
 test('a template change outside the definition is written but does not mean a reload', darwinOnly, () => {
-  const paths = Paths.withRoot(tempDir('svc-refresh'));
+  const paths = Paths.withRoot(stateRoot('svc-refresh'));
   const desired = launchdDefinition(paths, '/opt/eyes-on/main.js', '/usr/bin/node');
   const current = launchdPlist(paths, '/opt/eyes-on/main.js', '/usr/bin/node');
   const stale = current.replace(

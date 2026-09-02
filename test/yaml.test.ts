@@ -58,3 +58,82 @@ test('what stringify writes, parse reads back', () => {
   };
   assert.deepEqual(parseYaml(stringifyYaml(value)), value);
 });
+
+test('literal block scalars parse, in both chomping modes the subset accepts', () => {
+  const parsed = parseYaml(`
+review:
+  path_instructions:
+    - path: "deploy/**"
+      instructions: |
+        Read this in full.
+        A # here is text, not a comment.
+    - path: "src/**"
+      instructions: |-
+        One line, no trailing newline.
+`) as { review: { path_instructions: { path: string; instructions: string }[] } };
+  const entries = parsed.review.path_instructions;
+  assert.equal(entries[0]?.instructions, 'Read this in full.\nA # here is text, not a comment.\n');
+  assert.equal(entries[1]?.instructions, 'One line, no trailing newline.');
+});
+
+test('a block scalar style outside the subset is refused rather than half-read', () => {
+  assert.throws(() => parseYaml('why: >\n  folded text\n'), YamlError);
+  assert.throws(() => parseYaml('why: |+\n  kept text\n'), YamlError);
+});
+
+test('a sequence item keeps its own nesting rather than flattening it', () => {
+  const parsed = parseYaml(`
+rules:
+  - glob: "a/**"
+    model:
+      command: ["claude", "-p"]
+      max_hunks: 12
+  - glob: "b/**"
+`) as { rules: { glob: string; model?: { command: string[]; max_hunks: number } }[] };
+  assert.deepEqual(parsed.rules[0]?.model, { command: ['claude', '-p'], max_hunks: 12 });
+  assert.equal(parsed.rules[1]?.glob, 'b/**');
+});
+
+test('a block scalar keeps a body line that begins with #, because there it is content', () => {
+  // A comment-only line used to be dropped by the scanner before the block
+  // scalar could read it, so the value silently lost a line. A document that
+  // parses to the wrong thing is worse than one that fails.
+  const parsed = parseYaml(`
+hard_rules:
+  - glob: "deploy/**"
+    why: |
+      first
+      # second
+      third
+instructions: |-
+  # a leading hash
+  and a second line
+`) as { hard_rules: { why: string }[]; instructions: string };
+  assert.equal(parsed.hard_rules[0]?.why, 'first\n# second\nthird\n');
+  assert.equal(parsed.instructions, '# a leading hash\nand a second line');
+});
+
+test('a comment between structural lines is still invisible, wherever it sits', () => {
+  const parsed = parseYaml(`
+  # an indented comment before anything
+schema: eyes-on/v1
+logs:
+# a comment less indented than the mapping it interrupts
+  max_bytes: 8388608
+  # and one more indented
+  backups: 2
+rules:
+  - glob: "a/**"
+  # between two sequence items
+  - glob: "b/**"
+`) as Record<string, unknown>;
+  assert.deepEqual(parsed, {
+    schema: 'eyes-on/v1',
+    logs: { max_bytes: 8388608, backups: 2 },
+    rules: [{ glob: 'a/**' }, { glob: 'b/**' }],
+  });
+});
+
+test('a document of nothing but comments is empty rather than a parse error', () => {
+  assert.deepEqual(parseYaml('# only\n# comments\n'), {});
+});

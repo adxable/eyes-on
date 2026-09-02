@@ -1,5 +1,6 @@
 import type { Context } from './context.js';
 import { statusCommand } from './status.js';
+import { checkCommand } from './check.js';
 import { EXIT_USAGE, UserFacingError } from './output.js';
 import { findCommand } from './commands.js';
 import { stubCommand } from './stubs.js';
@@ -18,6 +19,9 @@ export async function axiCommand(context: Context): Promise<number> {
     case 'status':
       return statusCommand(context);
     case 'check':
+      // The same assessment the human command runs; only the default output
+      // format differs, and the dispatcher has already resolved that.
+      return checkCommand(context);
     case 'respond':
     case 'logs':
     case 'abort': {

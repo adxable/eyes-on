@@ -126,7 +126,7 @@ export async function initCommand(context: Context): Promise<number> {
     hook_path: hook?.path ?? '',
     preserved_foreign_hook: hook?.preservedPath ?? '',
     help: [
-      'Assess a change before pushing it: `eyes-on check` (arrives in stage 1)',
+      'Assess a change before pushing it: `eyes-on check`',
       'Check readiness and collisions: `eyes-on doctor`',
       watch
         ? 'The post-commit hook notifies the daemon in the background and never fails a commit'
@@ -165,7 +165,7 @@ function renderMarkdown(
     `  skill        /eyes-on installed for this user`,
     `  post-commit  ${hookManaged ? 'installed' : String(doc.hook)}`,
     '',
-    'Assess a change before it is merged: `eyes-on check` (stage 1).',
+    'Assess a change before it is merged: `eyes-on check`.',
     'See what is available and what is degraded: `eyes-on doctor`.',
   ];
   return lines.join('\n');

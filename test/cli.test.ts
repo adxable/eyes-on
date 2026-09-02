@@ -2,10 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { run as runCli } from '../src/cli/run.js';
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, type Writers } from '../src/cli/output.js';
 import { COMMANDS } from '../src/cli/commands.js';
-import { tempDir, tempRepo } from './helpers.js';
+import { shortDir, stateRoot, tempDir, tempRepo } from './helpers.js';
+import { MAX_SOCKET_PATH_BYTES } from '../src/core/paths.js';
 
 interface Captured {
   code: number;
@@ -49,7 +51,7 @@ async function cli(argv: string[], options: { cwd?: string; env?: Record<string,
  *  test, which point NM_HOME at a directory that does contain the cwd. */
 function sandbox(): Record<string, string> {
   return {
-    EYES_HOME: join(tempDir('cli-home'), 'eyes-on'),
+    EYES_HOME: stateRoot(),
     EYES_ON_SKILL_ROOT: tempDir('cli-skills'),
     EYES_ON_SKIP_SERVICE_MANAGER: '1',
     NM_HOME: tempDir('cli-nm-home'),
@@ -290,4 +292,52 @@ test('a daemon.lock that is not a usable lock file names the step that clears it
     !doc.help.some((line) => line === 'Start it with `eyes-on daemon start`'),
     'starting is not a remedy while the file is unreadable',
   );
+});
+
+
+test('a state root too deep for its own socket is refused as a usage error, not a crash', async () => {
+  // The kernel truncates such an address rather than refusing it, so two deep
+  // roots would silently share one daemon. eyes-on refuses the root instead,
+  // where the root is resolved, so no command gets as far as binding.
+  const deepRoot = join(shortDir(), 'd'.repeat(120), 'eyes-on');
+  const result = await cli(['status'], { env: { ...sandbox(), EYES_HOME: deepRoot } });
+  assert.equal(result.code, EXIT_USAGE);
+  assert.match(result.err, /^error: .*is too deep to hold a daemon socket/m);
+  assert.match(result.err, new RegExp(String(MAX_SOCKET_PATH_BYTES)));
+  assert.match(result.err, /^help: Set EYES_HOME/m);
+  assert.doesNotMatch(result.err, /This is an eyes-on bug/);
+});
+
+/**
+ * The suite's own state roots must not be derived from the ambient TMPDIR.
+ *
+ * A state root has to hold its own socket address, and a host whose TMPDIR is
+ * deep would push every temporary root past the limit - failing the whole
+ * suite for a reason that has nothing to do with the code under test. TMPDIR is
+ * made artificially deep *before* the sandbox is built, which is exactly when a
+ * root derived from it would become too long.
+ */
+test('an artificially deep TMPDIR does not reach the suite\'s state roots', async (t) => {
+  const deep = join(tempDir('deep-tmpdir'), 'd'.repeat(60), 'e'.repeat(60));
+  mkdirSync(deep, { recursive: true });
+  const previous = process.env.TMPDIR;
+  let env: Record<string, string>;
+  try {
+    process.env.TMPDIR = deep;
+    assert.ok(
+      Buffer.byteLength(join(tmpdir(), 'eyes-on', 'socket'), 'utf8') > MAX_SOCKET_PATH_BYTES,
+      'the fixture TMPDIR really is too deep to hold a state root',
+    );
+    env = sandbox();
+  } finally {
+    if (previous === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = previous;
+  }
+
+  const repo = tempRepo('deep-tmpdir-repo');
+  const result = await cli(['init', '--format', 'json'], { cwd: repo.path, env });
+  t.after(async () => {
+    await cli(['daemon', 'stop'], { cwd: repo.path, env });
+  });
+  assert.equal(result.code, EXIT_OK, result.err);
 });

@@ -4,10 +4,10 @@ import { join } from 'node:path';
 import { RpcServer, SocketInUseError, probeSocket } from '../src/ipc/server.js';
 import { call, DaemonUnreachableError, RpcError } from '../src/ipc/client.js';
 import { ERROR_CODES } from '../src/ipc/protocol.js';
-import { tempDir } from './helpers.js';
+import { shortDir } from './helpers.js';
 
 test('a request round-trips over the socket', async () => {
-  const endpoint = join(tempDir('ipc'), 'socket');
+  const endpoint = join(shortDir(), 'socket');
   const server = new RpcServer();
   server.handle('echo', (params) => ({ got: params }));
   await server.listen(endpoint);
@@ -25,7 +25,7 @@ test('a request round-trips over the socket', async () => {
  * internal/ipc/transport_unix.go:12-30.
  */
 test('binding refuses to steal a live listener', async () => {
-  const endpoint = join(tempDir('ipc-steal'), 'socket');
+  const endpoint = join(shortDir(), 'socket');
   const first = new RpcServer();
   first.handle('health', () => ({ ok: true }));
   await first.listen(endpoint);
@@ -40,7 +40,7 @@ test('binding refuses to steal a live listener', async () => {
 });
 
 test('a socket file that nothing answers is stale and may be rebound', async () => {
-  const endpoint = join(tempDir('ipc-stale'), 'socket');
+  const endpoint = join(shortDir(), 'socket');
   const first = new RpcServer();
   first.handle('health', () => ({ ok: 1 }));
   await first.listen(endpoint);
@@ -58,7 +58,7 @@ test('a socket file that nothing answers is stale and may be rebound', async () 
 });
 
 test('protocol errors reach the caller as typed failures', async () => {
-  const endpoint = join(tempDir('ipc-errors'), 'socket');
+  const endpoint = join(shortDir(), 'socket');
   const server = new RpcServer();
   server.handle('boom', () => {
     throw new Error('handler exploded');
@@ -79,6 +79,6 @@ test('protocol errors reach the caller as typed failures', async () => {
 });
 
 test('a missing daemon is reported as unreachable, not as a crash', async () => {
-  const endpoint = join(tempDir('ipc-absent'), 'socket');
+  const endpoint = join(shortDir(), 'socket');
   await assert.rejects(() => call(endpoint, 'health', {}, 1000), DaemonUnreachableError);
 });

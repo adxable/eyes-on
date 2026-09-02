@@ -7,9 +7,9 @@ import { DEFAULT_LOG_POLICY, type LogPolicy } from './logstore.js';
 /**
  * Global configuration at `<root>/config.yaml`.
  *
- * Deliberately small at stage 0: the fields that decide anything about risk
- * live in the repository's `.eyes-on.yml` and are read from the default branch
- * at a pinned SHA (report D4), which is stage 1. What lives here is machine
+ * Deliberately small: the fields that decide anything about risk live in the
+ * repository's `.eyes-on.yml` and are read from the default branch at a pinned
+ * SHA (report D4, enforced in `rules/trusted.ts`). What lives here is machine
  * policy - whether the daemon is managed by the OS service manager, how much
  * history to keep - none of which a pushed branch may influence.
  *

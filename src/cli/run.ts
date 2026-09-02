@@ -18,6 +18,11 @@ import { doctorCommand } from './doctor.js';
 import { statusCommand } from './status.js';
 import { daemonCommand } from './daemon-cmd.js';
 import { axiCommand } from './axi.js';
+import { checkCommand } from './check.js';
+import { whyCommand } from './why.js';
+import { rulesCommand } from './rules-cmd.js';
+import { backtestCommand } from './backtest-cmd.js';
+import { exportPathInstructionsCommand } from './export-cmd.js';
 import { stubCommand } from './stubs.js';
 import { version, PRODUCT_NAME } from '../core/version.js';
 
@@ -35,8 +40,8 @@ import { version, PRODUCT_NAME } from '../core/version.js';
  *     command cannot accidentally mutate state from inside a no-mistakes run.
  *
  * With no subcommand, eyes-on prints the current state of this repository
- * rather than a usage screen (report M17). At stage 0 there is no assessment to
- * show yet and it says so.
+ * rather than a usage screen (report M17): the daemon, the registration and the
+ * last recorded assessment of this branch, or that there is none yet.
  */
 
 type Handler = (context: Context) => Promise<number> | number;
@@ -51,6 +56,11 @@ const HANDLERS = new Map<string, Handler>([
   ['status', statusCommand],
   ['daemon', daemonCommand],
   ['axi', axiCommand],
+  ['check', checkCommand],
+  ['why', whyCommand],
+  ['rules', rulesCommand],
+  ['backtest', backtestCommand],
+  ['export-path-instructions', exportPathInstructionsCommand],
 ]);
 
 /** Commands whose machine payload is the primary output, so TOON is the default. */

@@ -10,7 +10,7 @@ import {
   removePostCommitHook,
   PRESERVED_HOOK,
 } from '../src/git/hook.js';
-import { tempDir, tempRepo, run } from './helpers.js';
+import { stateRoot, tempDir, tempRepo, run } from './helpers.js';
 
 test('the hook installs into the clone and is recognised as ours', () => {
   const repo = tempRepo('hook');
@@ -136,7 +136,7 @@ test('the hook talks to the state root it was installed for, not the committing 
  */
 test('the --watch hook installed by init reaches the daemon on a real commit', async () => {
   const repo = tempRepo('hk');
-  const home = join(tempDir('hk'), 'e');
+  const home = stateRoot('e');
   // The published bin shim, not dist/src/cli/main.js: the hook only invokes a
   // binary it can execute, and the shim is the executable one.
   const binary = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'eyes-on.js');

@@ -29,6 +29,7 @@ export const CLONE_READ_ONLY_SUBCOMMANDS: readonly string[] = [
   'cat-file',
   'config',
   'diff',
+  'diff-tree',
   'for-each-ref',
   'log',
   'ls-files',

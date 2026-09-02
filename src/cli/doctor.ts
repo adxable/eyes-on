@@ -72,7 +72,7 @@ export async function doctorCommand(context: Context): Promise<number> {
   // A missing gh is a degradation, never a failure: the product is specified to
   // work without no-mistakes, without gh and without a model, and only stages
   // 2-3 lose anything. Reporting `missing` here would make `doctor` exit 1 on a
-  // perfectly healthy stage 0 install.
+  // perfectly healthy install.
   rows.push({
     check: 'gh',
     status: gh && ghAuth ? 'ok' : 'warn',
@@ -202,7 +202,7 @@ export async function doctorCommand(context: Context): Promise<number> {
     degradations,
     help:
       failures === 0
-        ? ['Everything eyes-on needs at stage 0 is present']
+        ? ['Everything eyes-on needs is present']
         : ['Fix the checks marked `missing` above, then run `eyes-on doctor` again'],
   };
   emitDoc(context.writers, context.format, doc, renderMarkdown(rows, degradations));

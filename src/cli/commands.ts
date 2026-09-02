@@ -8,8 +8,9 @@
  * instruction that is maintained by hand disagrees with the CLI within a week.
  *
  * `stage` records which delivery stage owns the command, and `implemented`
- * whether it does anything yet. A stage-1 command that is listed but not built
- * says so plainly and exits non-zero; it never pretends to have an answer.
+ * whether it does anything yet. Stages 0 and 1 are built; a stage-2 or stage-3
+ * command that is listed but not built says so plainly and exits non-zero; it
+ * never pretends to have an answer.
  */
 
 export type Stage = 0 | 1 | 2 | 3;
@@ -72,43 +73,49 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'check',
-    usage: 'eyes-on check [--base <ref>] [--head <ref>] [--intent "..."] [--no-model] [--format toon|md|json]',
-    summary: 'Score the change, apply hard rules, rank the fragments to read and measure intent drift.',
+    usage:
+      'eyes-on check [--base <ref>] [--head <ref>] [--intent "..."] [--no-model] [--strict] [--format toon|md|json]',
+    summary:
+      'Score the change from repository history and apply the hard rules. Exits 0 whatever the band is, unless --strict is passed. Fragment ranking and intent drift arrive in stage 2.',
     stage: 1,
     mutating: true,
-    implemented: false,
+    implemented: true,
   },
   {
     name: 'why',
-    usage: 'eyes-on why <file>',
-    summary: 'Explain where the risk of this file came from, signal by signal.',
+    usage: 'eyes-on why <file> | eyes-on why --top <n>',
+    summary:
+      'Explain where the risk of this file came from: the fix commits that blamed into it, the commits that touched it, and any hard rule naming it. With --top and no file, list the riskiest code files in the repository instead.',
     stage: 1,
     mutating: false,
-    implemented: false,
+    implemented: true,
   },
   {
     name: 'rules',
-    usage: 'eyes-on rules --check',
-    summary: 'Evaluate the hard rules alone, without scoring.',
+    usage: 'eyes-on rules --check [--strict]',
+    summary:
+      'Evaluate the hard rules alone, without scoring. Rules are read from the default branch at a pinned commit, so a branch that deletes one still gets it.',
     stage: 1,
     mutating: false,
-    implemented: false,
+    implemented: true,
   },
   {
     name: 'export-path-instructions',
-    usage: 'eyes-on export-path-instructions',
-    summary: 'Emit a review.path_instructions block for .no-mistakes.yaml. A bridge, never a dependency.',
+    usage: 'eyes-on export-path-instructions [--min-risk <0-100>]',
+    summary:
+      'Emit a review.path_instructions block for .no-mistakes.yaml, inside its 32-entry and 16384-byte caps. A bridge, never a dependency.',
     stage: 1,
     mutating: false,
-    implemented: false,
+    implemented: true,
   },
   {
     name: 'backtest',
-    usage: 'eyes-on backtest --split <date>',
-    summary: 'Replay the risk model against history either side of a split date.',
+    usage: 'eyes-on backtest --split <date>[,<date>...] [--horizon <days>]',
+    summary:
+      'Replay the risk signal against history either side of a split date and report how much more often the flagged files were fixed afterwards.',
     stage: 1,
     mutating: false,
-    implemented: false,
+    implemented: true,
   },
   {
     name: 'spotlight',

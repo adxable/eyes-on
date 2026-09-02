@@ -35,9 +35,11 @@ import { version } from '../core/version.js';
  * than unlikely: by the time anyone could bind the socket, they have already
  * failed to take the lock.
  *
- * At stage 0 the daemon owns registration, mirrors and status. It computes no
- * risk - that is stage 1 - and it is idle when nothing asks it anything, which
- * is the answer to the captain having two auto-starting daemons (report R3).
+ * The daemon owns registration, mirrors and status. It computes no risk even
+ * now that stage 1 scores changes - `check` runs the assessment in the CLI
+ * process against the mirror the daemon maintains - and it is idle when nothing
+ * asks it anything, which is the answer to the captain having two auto-starting
+ * daemons (report R3).
  */
 export class Daemon {
   private readonly paths: Paths;
@@ -150,7 +152,8 @@ export class Daemon {
 
   /**
    * The post-commit hook's entry point. It refreshes the mirror so the new head
-   * is reachable from eyes-on's own refs; computing risk from it is stage 1.
+   * is reachable from eyes-on's own refs, and stops there: risk is computed on
+   * demand by `eyes-on check`, not by the hook.
    * An unregistered clone is declined rather than silently registered - the
    * hook is not an authorisation to start tracking a repository.
    */
