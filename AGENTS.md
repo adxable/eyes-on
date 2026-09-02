@@ -173,6 +173,14 @@ first) · `npm run genskill`.
   rounds, once per surface; `test/drift.test.ts` covers all three cases. Do not
   add a second helper that decides provenance from a grade alone - one that
   ignored the intent is exactly what was removed.
+- **`unverified` travels with the assessment like the score does.** It means the
+  trusted config could not be read, so `assess` ran with *no* hard rules and the
+  band is a floor - which is exactly what a reader of a published channel cannot
+  guess. `unverifiedSentence()` (`src/risk/signals.ts`) is the single wording,
+  `check`, `status`, `axi respond` and the pull-request comment all print it,
+  and the marker payload carries the flag. `statusFor` gives it precedence over
+  the gate, so `recordDecision` leaves it alone: answering a gate says what a
+  person decided, not that an unreadable configuration became readable.
 - **S7 is the grade minus one, and the score can exceed 100.** Feeding the grade
   itself would put eight points on every change whose drift was measured and
   found to be 1 - a change that did exactly what it said. The cost is that S7

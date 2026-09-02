@@ -459,7 +459,15 @@ test('acceptance: after drift, the score, its maximum, the band and the grade ag
       score_max: number;
       band: string;
     },
-    { head_sha: head, score: expected.score, score_max: expected.score_max, band: expected.band, decision: null, check_id: drifted.check_id },
+    {
+      head_sha: head,
+      score: expected.score,
+      score_max: expected.score_max,
+      band: expected.band,
+      unverified: false,
+      decision: null,
+      check_id: drifted.check_id,
+    },
   );
 
   // Surface 4: check itself, recomputing the same change with the same intent.
@@ -1023,6 +1031,35 @@ test('a run given no intent says so, whether or not it also passed --no-model', 
   const without = (await captureCli(['check', '--format', 'md'], { cwd: repo.path, env })).out;
   assert.doesNotMatch(withFlag, /_Drift:/);
   assert.doesNotMatch(without, /_Drift:/);
+});
+
+test('a change nobody stated an intent for is not reported as an intent nobody compared', async (t) => {
+  // The most-run path in the product: a plain `eyes-on check`, then `eyes-on`
+  // with no subcommand. Saying the stated intent was not compared names a
+  // remedy - run the comparison - for a run that stated no intent to compare.
+  const agent = stubAgent('drift-none-said', [describeAnswer(), compareAnswer(4)]);
+  const repo = repoWith(agent);
+  const env: Record<string, string> = { ...sandboxEnv('drift-none-said'), PATH: agent.path };
+  await initRepo(t, repo, env);
+
+  await captureCli(['check', '--no-model', '--format', 'json'], { cwd: repo.path, env });
+
+  const doc = JSON.parse((await captureCli(['status', '--format', 'json'], { cwd: repo.path, env })).out) as {
+    last_check: { drift_sentence: string };
+  };
+  assert.match(doc.last_check.drift_sentence, /no intent was stated for this change/);
+  assert.doesNotMatch(doc.last_check.drift_sentence, /the stated intent/);
+
+  const markdown = (await captureCli(['status', '--format', 'md'], { cwd: repo.path, env })).out;
+  assert.match(markdown, /no intent was stated for this change/);
+
+  // An intent that was stated and never compared is the other state, and it
+  // still names the intent it was waiting on.
+  const superseded = JSON.parse(
+    (await captureCli(['check', '--intent', INTENT, '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as { drift_sentence: string };
+  assert.match(superseded.drift_sentence, /No drift grade for the intent/);
+  assert.equal(agent.called(), false);
 });
 
 test('drift reports a check recorded without a maximum as having none, rather than printing the word null', async (t) => {

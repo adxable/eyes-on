@@ -126,6 +126,43 @@ test('acceptance: a waiver records the decision, the reason and who gave it', as
   assert.equal(row?.status, 'done', 'answering releases the park');
 });
 
+test('answering the gate records a decision without making an unreadable configuration readable', async (t) => {
+  // A check recorded `unverified` was scored with no hard rules at all, so its
+  // band is a lower bound. Answering the gate says what a person decided; it
+  // says nothing about the configuration eyes-on still cannot read.
+  const repo = tempRepo('gate-unverified');
+  repo.commitFiles('chore: a configuration nobody can read', {
+    '.eyes-on.yml': 'schema: eyes-on/v1\nthresholds: { read_fragments: 80, full_review: 20 }\n',
+    'src/a.ts': 'export const a = 1;\n',
+  });
+  repo.git(['checkout', '-q', '-b', 'work']);
+  repo.commitFiles('feat: another module', { 'src/b.ts': 'export const b = 2;\n' });
+  const env = sandboxEnv('gate-unverified');
+  await initRepo(t, repo, env);
+
+  const check = JSON.parse((await captureCli(['check', '--format', 'json'], { cwd: repo.path, env })).out) as CheckDoc & {
+    config_state: string;
+  };
+  assert.equal(check.config_state, 'unverified');
+
+  const result = await captureCli(['axi', 'respond', '--action', 'read', '--format', 'json'], { cwd: repo.path, env });
+  const doc = JSON.parse(result.out) as RespondDoc & { unverified: boolean };
+  assert.equal(result.code, EXIT_OK);
+  assert.equal(doc.action, 'read', 'the decision is still recorded');
+  assert.equal(doc.status, 'unverified', 'the payload reports the status the row was left in');
+  assert.equal(doc.unverified, true);
+
+  const db = openDb(env);
+  const row = db.get<{ status: string }>('SELECT status FROM checks WHERE id = ?', check.check_id);
+  const decision = db.get<{ action: string }>('SELECT action FROM decisions WHERE check_id = ?', check.check_id);
+  db.close();
+  assert.equal(decision?.action, 'read');
+  assert.equal(row?.status, 'unverified', 'the record that no hard rule was evaluated survives the answer');
+
+  const status = await captureCli(['status', '--format', 'md'], { cwd: repo.path, env });
+  assert.match(status.out, /no hard rule was evaluated and this band is a lower bound/);
+});
+
 test('a waiver with no reason is refused, and nothing is recorded', async (t) => {
   const repo = parkedRepo('gate-noreason');
   const env = sandboxEnv('gate-noreason');

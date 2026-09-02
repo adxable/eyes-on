@@ -7,7 +7,7 @@ import { currentBranch, headSHA, toplevel } from '../git/git.js';
 import { canonicalPath, repoID } from '../core/repoid.js';
 import { Database, findRepoByPath } from '../db/db.js';
 import { latestCheck, type CheckRow } from '../db/checks.js';
-import { bandLabel, driftProvenanceSentence, type Band, type DriftEvidence } from '../risk/signals.js';
+import { bandLabel, driftProvenanceSentence, unverifiedSentence, type Band, type DriftEvidence } from '../risk/signals.js';
 
 /**
  * `eyes-on status` - read-only, and required to keep working from inside a
@@ -156,7 +156,7 @@ function renderMarkdown(doc: ToonObject, assessment: CheckRow | null): string {
       driftProvenanceSentence(carriedEvidence(assessment)),
       '',
       assessment.status === 'unverified'
-        ? 'Recorded as `unverified`: the trusted configuration could not be read, so the hard rules were not evaluated.'
+        ? unverifiedSentence()
         : 'Run `eyes-on check` to assess the current head.',
     );
   } else {

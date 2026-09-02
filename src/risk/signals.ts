@@ -84,6 +84,19 @@ export function bandLabel(band: Band): string {
   }
 }
 
+/**
+ * The one sentence for a check recorded `unverified`.
+ *
+ * `unverified` is a sixth fact about an assessment, beside the score, its
+ * maximum, the band and the drift grade: eyes-on could not read the trusted
+ * configuration, so **no** hard rule was evaluated and the band is a floor
+ * rather than a measurement. Every surface that shows the assessment shows it,
+ * and takes the sentence from here so none of them can say less than another.
+ */
+export function unverifiedSentence(): string {
+  return 'The trusted configuration could not be read, so no hard rule was evaluated and this band is a lower bound.';
+}
+
 export function bandFor(score: number, thresholds: RepoConfig['thresholds']): Band {
   if (score >= thresholds.full_review) return 'pelna';
   if (score >= thresholds.read_fragments) return 'wskazane';
@@ -157,7 +170,12 @@ export function driftProvenanceSentence(evidence: DriftEvidence): string {
         `against ${against(evidence.superseded.intent)} and answers a different question${zero}.`
       );
     }
-    return `No drift grade: the stated intent was not compared with this diff${zero}.`;
+    // Nobody stating an intent and an intent that was never compared are two
+    // different states, and only one of them is fixed by running a model.
+    if (evidence.intent === null) {
+      return `No drift grade: no intent was stated for this change, so nothing was compared with the diff${zero}.`;
+    }
+    return `No drift grade for ${against(evidence.intent)}: it was not compared with this diff${zero}.`;
   }
   if (evidence.provenance === 'carried') {
     return (

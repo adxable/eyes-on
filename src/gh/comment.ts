@@ -1,6 +1,6 @@
 import type { CheckRow } from '../db/checks.js';
 import type { DecisionRow, DriftItemRow, SpotRow } from '../db/gate.js';
-import { bandLabel, driftProvenanceSentence, type Band } from '../risk/signals.js';
+import { bandLabel, driftProvenanceSentence, unverifiedSentence, type Band } from '../risk/signals.js';
 
 /**
  * The single sticky comment (report Appendix C.4).
@@ -34,15 +34,19 @@ export interface MarkerPayload {
    *  here could name a maximum the change was never scored against. */
   score_max: number | null;
   band: string | null;
+  /** True when the trusted configuration could not be read, so no hard rule was
+   *  evaluated and the band beside it is a lower bound. A reader of this marker
+   *  gets the same caveat as a reader of the comment. */
+  unverified: boolean;
   decision: string | null;
   check_id: string;
 }
 
 export function marker(payload: MarkerPayload): string {
   // Single line, and `--` cannot appear in it: JSON.stringify escapes nothing
-  // that would produce one from these fields (two shas, two integers, a band
-  // identifier and an action), and a marker split across lines would not be
-  // found again.
+  // that would produce one from these fields (two shas, two integers, a
+  // boolean, a band identifier and an action), and a marker split across lines
+  // would not be found again.
   return `${MARKER_PREFIX}${JSON.stringify(payload)}${MARKER_SUFFIX}`;
 }
 
@@ -87,6 +91,7 @@ export interface CommentInput {
 export function renderComment(input: CommentInput): string {
   const { check } = input;
   const band = (check.band ?? 'auto') as Band;
+  const unverified = check.status === 'unverified';
   const outOf = check.score_max === null ? '' : ` of at most ${check.score_max}`;
   const lines: string[] = [
     marker({
@@ -94,12 +99,18 @@ export function renderComment(input: CommentInput): string {
       score: check.score,
       score_max: check.score_max,
       band: check.band,
+      unverified,
       decision: input.decision?.action ?? null,
       check_id: check.id,
     }),
     `**eyes-on - ${check.score ?? 0}${outOf}, channel: ${bandLabel(band)}**`,
     '',
   ];
+  // The channel above reads as measured, and on an unverified check the hard
+  // rules behind it were never evaluated. This is the surface a reviewer reads.
+  if (unverified) {
+    lines.push(unverifiedSentence(), '');
+  }
   if (check.score_max === null) {
     lines.push(
       'This assessment was recorded before eyes-on stored the maximum a score can reach, so the number above has no denominator here. Re-run `eyes-on check` to record one.',

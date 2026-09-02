@@ -55,6 +55,12 @@ export function allDecisions(db: Database, checkId: string): DecisionRow[] {
  * and later read in full" is a true sentence about a change and the ledger has
  * to be able to say it. The check's status moves to `done`, which is what
  * un-parks it.
+ *
+ * A check recorded `unverified` keeps that status. `statusFor` gives it
+ * precedence over the gate for a reason - eyes-on could not read the trusted
+ * config, so it never evaluated the rules a human would be sent to - and
+ * answering a gate says what somebody decided, not that an unreadable
+ * configuration became readable.
  */
 export function recordDecision(
   db: Database,
@@ -69,7 +75,12 @@ export function recordDecision(
     options.decidedBy,
     now,
   );
-  db.run('UPDATE checks SET status = ?, updated_at = ? WHERE id = ?', 'done', now, options.checkId);
+  db.run(
+    "UPDATE checks SET status = CASE WHEN status = 'unverified' THEN status ELSE ? END, updated_at = ? WHERE id = ?",
+    'done',
+    now,
+    options.checkId,
+  );
   return {
     check_id: options.checkId,
     action: options.action,

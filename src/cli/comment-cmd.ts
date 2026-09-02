@@ -8,7 +8,7 @@ import { checkByID, checkID, type CheckRow } from '../db/checks.js';
 import { driftItemsFor, latestDecision, recordComment, spotsFor } from '../db/gate.js';
 import { findAllMarked, renderComment, MARKER_PREFIX } from '../gh/comment.js';
 import { createComment, listComments, pullHeadSHA, repoSlug, updateComment, GhError } from '../gh/gh.js';
-import { driftProvenanceSentence } from '../risk/signals.js';
+import { driftProvenanceSentence, unverifiedSentence } from '../risk/signals.js';
 
 /**
  * `eyes-on comment --pr <n>` - one sticky comment, and nothing else.
@@ -138,6 +138,9 @@ export async function commentCommand(context: Context): Promise<number> {
     score_max: check.score_max,
     band: check.band,
     gate: check.status === 'must_read' && !decision ? 'must_read' : 'none',
+    // The band travels with what was behind it. An unverified check evaluated
+    // no hard rule at all, so the channel published above is a floor.
+    unverified: check.status === 'unverified',
     decision: decision?.action ?? null,
     fragments: spots.length,
     drift: check.drift,
@@ -171,6 +174,9 @@ function helpLines(dryRun: boolean, stale: boolean, fragments: number, check: Ch
   }
   if (check.status === 'must_read') {
     lines.push('The gate is still parked: answer with `eyes-on axi respond --action read` or `--action waive --reason "..."` and publish again');
+  }
+  if (check.status === 'unverified') {
+    lines.push(`${unverifiedSentence()} The comment says so; re-run \`eyes-on check\` once the configuration parses and publish again`);
   }
   if (markedFound > 1) {
     lines.push(

@@ -7,7 +7,7 @@ import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
 import { checkByID, checkID, type CheckRow } from '../db/checks.js';
 import { allDecisions, latestDecision, recordDecision, type GateAction } from '../db/gate.js';
-import { bandLabel, driftProvenanceSentence, type Band } from '../risk/signals.js';
+import { bandLabel, driftProvenanceSentence, unverifiedSentence, type Band } from '../risk/signals.js';
 
 /**
  * `eyes-on axi respond` - the answer to a parked run.
@@ -64,6 +64,9 @@ export async function respondCommand(context: Context): Promise<number> {
   const previous = latestDecision(db, id);
   const decidedBy = flagString(context.args, 'by') ?? defaultActor(context);
   const decision = recordDecision(db, { checkId: id, action, reason, decidedBy });
+  // Read back rather than asserted: an `unverified` check keeps that status
+  // through the gate, so the row is what this run left behind.
+  const after = checkByID(db, id);
 
   const doc: ToonObject = {
     check_id: id,
@@ -71,7 +74,8 @@ export async function respondCommand(context: Context): Promise<number> {
     // an agent that responds twice has to be able to tell that it did.
     gate_was: previous ? 'none' : check.status === 'must_read' ? 'must_read' : 'none',
     gate: 'none',
-    status: 'done',
+    status: after?.status ?? 'done',
+    unverified: (after ?? check).status === 'unverified',
     action: decision.action,
     reason: decision.reason,
     decided_by: decision.decided_by,
@@ -111,6 +115,9 @@ export async function respondCommand(context: Context): Promise<number> {
 
 function helpLines(check: CheckRow, wasAnswered: boolean): string[] {
   const lines: string[] = [];
+  if (check.status === 'unverified') {
+    lines.push(`${unverifiedSentence()} The decision is recorded and that stays true, so the check keeps the status`);
+  }
   if (check.status !== 'must_read' && !wasAnswered) {
     lines.push(
       'This run was not parked: no hard rule matched it. The decision is recorded anyway, because a deliberate answer about a change nobody had to read is still a fact about that change',

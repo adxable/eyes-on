@@ -11,6 +11,7 @@ import {
   carryDrift,
   driftProvenanceSentence,
   statedIntent,
+  unverifiedSentence,
   type CarryDecision,
 } from '../risk/signals.js';
 import { hitSentence } from '../rules/hard.js';
@@ -359,7 +360,7 @@ function driftState(options: RenderOptions): string {
 function helpLines(assessment: Assessment, options: RenderOptions, gate: 'must_read' | 'none'): ToonValue {
   const lines: string[] = [];
   if (assessment.config_state === 'unverified') {
-    lines.push('config_state is unverified: hard rules were not evaluated, so this band is a lower bound');
+    lines.push(unverifiedSentence());
   }
   if (assessment.hard_rules.length > 0) {
     lines.push('A hard rule matched, so the band is `pelna` whatever the score said');

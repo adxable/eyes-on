@@ -71,6 +71,7 @@ test('the marker is one line, carries the machine contract, and finds its own co
     score: 58,
     score_max: 120,
     band: 'wskazane',
+    unverified: false,
     decision: 'read',
     check_id: 'abc123',
   });
@@ -188,6 +189,59 @@ test('a check with no recorded maximum is published without a denominator, not w
   const line = body.split('\n')[0] ?? '';
   const payload = JSON.parse(line.slice(MARKER_PREFIX.length, line.lastIndexOf(' -->'))) as { score_max: number | null };
   assert.equal(payload.score_max, null);
+});
+
+test('an unverified check is published as one, because no hard rule behind that channel was evaluated', () => {
+  // `unverified` means the trusted configuration could not be read, so `assess`
+  // ran with no hard rules at all and the band is a floor. The comment is the
+  // copy a reviewer reads and argues with, so it is the one surface that must
+  // not present that band as measured.
+  const row = {
+    id: 'abc123',
+    repo_id: 'r',
+    branch: 'work',
+    base_sha: 'b'.repeat(40),
+    head_sha: 'h'.repeat(40),
+    score: 42,
+    score_max: 120,
+    band: 'wskazane',
+    drift: null,
+    intent: null,
+    intent_source: null,
+    drift_intent: null,
+    status: 'unverified',
+    trusted_config_sha: null,
+    created_at: 0,
+    updated_at: 0,
+  };
+  const input = {
+    check: row,
+    spots: [],
+    hits: [],
+    decision: undefined,
+    driftItems: [],
+    signals: [],
+    stale: false,
+    prHeadSHA: null,
+  };
+  const body = renderComment(input);
+
+  assert.match(body, /\*\*eyes-on - 42 of at most 120, channel: read the indicated fragments\*\*/);
+  assert.match(body, /no hard rule was evaluated and this band is a lower bound/);
+
+  // And the machine contract carries it too, so a reader of the marker is not
+  // told less than a reader of the comment.
+  const line = body.split('\n')[0] ?? '';
+  const payload = JSON.parse(line.slice(MARKER_PREFIX.length, line.lastIndexOf(' -->'))) as { unverified: boolean };
+  assert.equal(payload.unverified, true);
+
+  const verified = renderComment({ ...input, check: { ...row, status: 'done' } });
+  assert.doesNotMatch(verified, /lower bound/, 'a check whose rules were evaluated carries no caveat');
+  const verifiedLine = verified.split('\n')[0] ?? '';
+  const verifiedPayload = JSON.parse(
+    verifiedLine.slice(MARKER_PREFIX.length, verifiedLine.lastIndexOf(' -->')),
+  ) as { unverified: boolean };
+  assert.equal(verifiedPayload.unverified, false);
 });
 
 // --- end to end, through the CLI -------------------------------------------
@@ -316,6 +370,7 @@ test('a comment already on the pull request from somebody else is left alone', a
       score: 58,
       score_max: 120,
       band: 'wskazane',
+      unverified: false,
       decision: null,
       check_id: 'somebody-elses-run',
     })}`, '> **eyes-on - 58 of at most 120**', '', 'Why does it say that?'].join('\n'),
@@ -388,6 +443,7 @@ test('a second eyes-on comment is counted, not hidden behind the one that gets u
       score: 58,
       score_max: 120,
       band: 'wskazane',
+      unverified: false,
       decision: null,
       check_id: `run-${id}`,
     })}\n${tail}`,
