@@ -40,8 +40,8 @@ import { version, PRODUCT_NAME } from '../core/version.js';
  *     command cannot accidentally mutate state from inside a no-mistakes run.
  *
  * With no subcommand, eyes-on prints the current state of this repository
- * rather than a usage screen (report M17). At stage 0 there is no assessment to
- * show yet and it says so.
+ * rather than a usage screen (report M17): the daemon, the registration and the
+ * last recorded assessment of this branch, or that there is none yet.
  */
 
 type Handler = (context: Context) => Promise<number> | number;

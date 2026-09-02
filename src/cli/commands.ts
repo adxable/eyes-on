@@ -8,8 +8,9 @@
  * instruction that is maintained by hand disagrees with the CLI within a week.
  *
  * `stage` records which delivery stage owns the command, and `implemented`
- * whether it does anything yet. A stage-1 command that is listed but not built
- * says so plainly and exits non-zero; it never pretends to have an answer.
+ * whether it does anything yet. Stages 0 and 1 are built; a stage-2 or stage-3
+ * command that is listed but not built says so plainly and exits non-zero; it
+ * never pretends to have an answer.
  */
 
 export type Stage = 0 | 1 | 2 | 3;

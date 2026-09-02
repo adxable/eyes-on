@@ -186,9 +186,9 @@ $ NO_MISTAKES_GATE=1 eyes-on doctor   -> exit 0   (read-only, works)
 ```
 
 The refusal is driven by the command registry's `mutating` flag, so it applies
-to every command that records anything - including the stage 1+ commands that
-are not implemented yet. A working directory under `<NM_HOME>/worktrees` is
-detected the same way, whatever the environment says.
+to every command that records anything - including the commands that were still
+unimplemented when this was measured. A working directory under
+`<NM_HOME>/worktrees` is detected the same way, whatever the environment says.
 
 ## 6. Idempotency
 

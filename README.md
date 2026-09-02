@@ -93,6 +93,31 @@ Every score comes with the evidence: which signal contributed how many points,
 which file decided it, and - through `eyes-on why <file>` - the fix commits, by
 subject and date, that pointed at a file in the first place.
 
+## Configuring a repository
+
+Everything above works with no configuration. A repository that wants hard rules
+or its own idea of a code file adds `.eyes-on.yml` at its root, on its default
+branch - that is the copy eyes-on reads:
+
+```yaml
+schema: eyes-on/v1
+hard_rules:
+  - glob: "deploy/**"
+    why: "a deployment change is read by a human, whatever the score says"
+include: ["**/*.{ts,tsx,go,py}"]     # what counts as a code file
+exclude: ["**/dist/**"]              # ...and what never does
+history_window_days: 90
+fix_commit_pattern: "^(fix|hotfix)(\\(|:|!)"
+weights: { fix_history: 0.30 }       # argued from `backtest`, never from taste
+saturation: { fix_history: 5 }
+thresholds: { read_fragments: 35, full_review: 65 }
+```
+
+Every field is optional and the shipped defaults are the report's. A file that
+exists and cannot be parsed is not treated as an empty one: the check is
+reported `unverified`, carrying the parse error, because a rule that cannot be
+read is not the same as a rule nobody wrote.
+
 ## Output contract
 
 - Machine payload on **stdout**: TOON by default under `axi`, Markdown elsewhere;
