@@ -29,6 +29,12 @@ const VALUE_FLAGS = new Set([
   'horizon',
   'min-risk',
   'top',
+  // Stage 2.
+  'action',
+  'reason',
+  'by',
+  'check-id',
+  'lines',
 ]);
 
 export function parseArgs(argv: readonly string[]): ParsedArgs {

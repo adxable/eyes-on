@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from './db.js';
+import { latestDecision } from './gate.js';
 import type { Assessment } from '../risk/assess.js';
 import type { Paths } from '../core/paths.js';
 
@@ -45,31 +46,41 @@ export interface RecordOptions {
   branch: string;
   intent: string | null;
   assessment: Assessment;
+  /** The drift grade folded into this score, or null when drift was not
+   *  measured for this run. Recorded on the row so the pull-request comment and
+   *  the stage 3 ledger read one number rather than recomputing it. */
+  drift?: number | null;
 }
 
 /**
  * Writes the check, its signals and its rule hits.
  *
- * `status` distinguishes the three outcomes a caller has to tell apart:
- * `done` for a complete assessment, `unverified` when the trusted config could
- * not be read (so the hard rules were never evaluated), and - from stage 2 -
- * `must_read` for a parked run. Stage 1 never writes `must_read`: a hard-rule
- * hit sets the band, and the gate that parks on it is stage 2's.
+ * `status` distinguishes the outcomes a caller has to tell apart: `done` for a
+ * complete assessment, `unverified` when the trusted config could not be read
+ * (so the hard rules were never evaluated), and `must_read` for a run parked by
+ * the gate.
+ *
+ * The park is computed here rather than passed in, so every writer of a check
+ * agrees on what parks one: a hard rule fired and no decision has been recorded
+ * for this check yet. A check that was already answered stays `done` when it is
+ * recomputed on the same head - re-running `check` must not silently reopen a
+ * gate somebody has already closed.
  */
 export function recordCheck(db: Database, options: RecordOptions): string {
   const { assessment } = options;
   const id = checkID(options.repoId, assessment.base_sha, assessment.head_sha);
   const now = Math.floor(Date.now() / 1000);
-  const status = assessment.config_state === 'unverified' ? 'unverified' : 'done';
+  const status = statusFor(db, id, assessment);
 
   db.run(
     `INSERT INTO checks (id, repo_id, branch, base_sha, head_sha, score, band, drift, intent, intent_source,
                          status, trusted_config_sha, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        branch = excluded.branch,
        score = excluded.score,
        band = excluded.band,
+       drift = excluded.drift,
        intent = excluded.intent,
        intent_source = excluded.intent_source,
        status = excluded.status,
@@ -82,6 +93,7 @@ export function recordCheck(db: Database, options: RecordOptions): string {
     assessment.head_sha,
     assessment.score,
     assessment.band,
+    options.drift ?? null,
     options.intent,
     options.intent === null ? null : 'flag',
     status,
@@ -109,6 +121,28 @@ export function recordCheck(db: Database, options: RecordOptions): string {
   }
 
   return id;
+}
+
+/**
+ * Whether this check is parked.
+ *
+ * `unverified` wins over the gate: eyes-on could not read the trusted config,
+ * so it does not know which paths a human was supposed to be sent to, and
+ * parking on rules it never evaluated would claim a certainty it does not have.
+ */
+export function statusFor(db: Database, id: string, assessment: Assessment): string {
+  if (assessment.config_state === 'unverified') return 'unverified';
+  if (assessment.hard_rules.length === 0) return 'done';
+  return latestDecision(db, id) ? 'done' : 'must_read';
+}
+
+/** The check recorded for a change, by the two commits it spans. */
+export function findCheck(db: Database, repoId: string, baseSHA: string, headSHA: string): CheckRow | undefined {
+  return checkByID(db, checkID(repoId, baseSHA, headSHA));
+}
+
+export function checkByID(db: Database, id: string): CheckRow | undefined {
+  return db.get<CheckRow>('SELECT * FROM checks WHERE id = ?', id);
 }
 
 /** The most recent assessment of a branch, for `eyes-on` with no subcommand. */

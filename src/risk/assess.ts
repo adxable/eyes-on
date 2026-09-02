@@ -5,7 +5,8 @@ import type { TrustedConfig } from '../rules/trusted.js';
 import { directoryOf, fileFilter, isTestFile, testStem, type FileFilter } from './files.js';
 import { codeFiles, readHistory, type FileHistory, type HistoryWindow } from './history.js';
 import type { RepoConfig, SignalName } from './repoconfig.js';
-import { rationale, saturate, scoreSignals, type Band, type RawSignals, type Score } from './signals.js';
+import { maxScore, rationale, saturate, scoreSignals, type Band, type RawSignals, type Score } from './signals.js';
+import { driftSignalValue } from '../spot/drift.js';
 import { attributeFixes, fixCountsByFile } from './szz.js';
 
 /**
@@ -32,6 +33,12 @@ export interface AssessOptions {
   /** "Now" for the history window. `check` passes the wall clock; `backtest`
    *  passes its split date, so the window is the one that existed then. */
   nowSeconds: number;
+  /**
+   * The drift grade, 1 to 5, when it was measured for this change, else null.
+   * Null is not zero drift: it is no measurement, and S7 contributes nothing
+   * rather than asserting that the change does what it says.
+   */
+  driftGrade?: number | null;
   onProgress?: (message: string) => void;
 }
 
@@ -59,6 +66,9 @@ export interface Assessment {
   base_sha: string;
   head_sha: string;
   score: number;
+  /** The largest score this repository's weights can produce - 120 with the
+   *  defaults once drift is scored. See `maxScore` for why it is not 100. */
+  score_max: number;
   band: Band;
   /** Band before the hard rules were applied, so a report can say that the rule
    *  is what moved it rather than implying the score did. */
@@ -75,6 +85,15 @@ export interface Assessment {
   changed_files: ChangedFile[];
   /** Per-file assessment for the changed code files, riskiest first. */
   files: FileAssessment[];
+  /**
+   * Commits that a fix in the window blamed as having introduced the lines it
+   * removed. The fragment ranking asks whether a hunk touches lines one of
+   * these wrote; computing it here costs nothing, because the SZZ walk that
+   * produces it has already run.
+   */
+  fix_introducers: string[];
+  /** The grade folded into S7, or null when drift was not measured. */
+  drift: number | null;
   /** How the history behind the score was gathered, for the cost condition and
    *  for an honest provenance line. */
   cost: {
@@ -118,7 +137,7 @@ export function assess(options: AssessOptions): Assessment {
   const fixCounts = fixCountsByFile(szz.attributions);
 
   const files = assessFiles(changed, { window, fixCounts, filter, config, nowSeconds: options.nowSeconds });
-  const raw = rawSignals(changed, files, config);
+  const raw = rawSignals(changed, files, config, options.driftGrade ?? null);
   const scored = scoreSignals(raw, config);
 
   const hits = evaluateHardRules(config.hard_rules, changed.map((file) => file.path));
@@ -128,6 +147,7 @@ export function assess(options: AssessOptions): Assessment {
     base_sha: options.baseSHA,
     head_sha: options.headSHA,
     score: scored.score,
+    score_max: maxScore(config),
     band,
     score_band: scored.band,
     signals: scored.signals,
@@ -139,6 +159,8 @@ export function assess(options: AssessOptions): Assessment {
     config_sha: options.trusted.sha,
     changed_files: changed,
     files,
+    fix_introducers: [...new Set(szz.attributions.flatMap((fix) => Object.keys(fix.introducers)))].sort(),
+    drift: options.driftGrade ?? null,
     cost: {
       source: options.reader.source,
       window_days: config.history_window_days,
@@ -241,6 +263,7 @@ export function rawSignals(
   changed: readonly ChangedFile[],
   files: readonly FileAssessment[],
   config: RepoConfig,
+  driftGrade: number | null = null,
 ): RawSignals {
   const code = files.filter((file) => file.code);
 
@@ -270,9 +293,10 @@ export function rawSignals(
     spread: { value: directories.size, from: null },
     no_test: { value: noTest, from: untested[0]?.path ?? null },
     recency: maxBy((file) => freshness(file.days_since_touched, config.saturation.recency)),
-    // S7 lands in stage 2 (P4). It is measured as zero and weighted zero, and
-    // the rationale says which signal is not yet scored rather than hiding it.
-    drift: { value: 0, from: null },
+    // S7. Zero when drift was not measured, which is every run without an
+    // intent and every run with `--no-model`: an unmeasured signal contributes
+    // nothing rather than asserting that the change does what it says.
+    drift: { value: driftSignalValue(driftGrade), from: null },
   };
 }
 

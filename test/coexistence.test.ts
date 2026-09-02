@@ -17,6 +17,7 @@ import {
 } from '../src/git/git.js';
 import { ensureMirror } from '../src/git/mirror.js';
 import { stateRoot, tempDir, tempRepo, run } from './helpers.js';
+import { assertAllowed } from '../src/gh/gh.js';
 
 /**
  * The stage 0 acceptance conditions from report section 4 and section 8, as
@@ -359,4 +360,50 @@ test('acceptance: the mirror fetch reads the clone and writes only into the mirr
   assert.equal(run(repo.path, ['for-each-ref']), refsBefore, 'a ref moved in the clone');
   assert.equal(run(repo.path, ['config', '--local', '--list']), configBefore, 'local config changed');
   assert.equal(run(repo.path, ['remote', '-v']), remotesBefore, 'a remote was added to the clone');
+});
+
+/**
+ * The third hard prohibition, enforced the same way K2 is.
+ *
+ * eyes-on never edits a pull request body, never merges and never files a
+ * GitHub review. The body belongs to no-mistakes and is regenerated on every
+ * update, so a second writer would either lose eyes-on's paragraph or overwrite
+ * what no-mistakes has to say. `gh()` is module-private and every invocation
+ * passes `assertAllowed` before a process exists, so this is a property of the
+ * code rather than of anyone's care.
+ *
+ * The endpoint that edits a pull request body differs from the comment update
+ * eyes-on is allowed to make by one path segment, which is why the allow-list
+ * matches whole paths rather than forbidding verbs.
+ */
+test('acceptance: no gh invocation can edit a pull request, merge one, or review one', () => {
+  const forbidden: string[][] = [
+    ['pr', 'edit', '7', '--body', 'rewritten'],
+    ['pr', 'edit', '7', '--body-file', '-'],
+    ['pr', 'merge', '7', '--squash'],
+    ['pr', 'review', '7', '--approve'],
+    ['pr', 'close', '7'],
+    ['pr', 'ready', '7'],
+    ['pr', 'comment', '7', '--body', 'x'],
+    ['issue', 'edit', '7', '--body', 'x'],
+    ['api', '--method', 'PATCH', 'repos/acme/widgets/issues/7'],
+    ['api', '--method', 'PATCH', 'repos/acme/widgets/pulls/7'],
+    ['api', '--method', 'PUT', 'repos/acme/widgets/pulls/7/merge'],
+    ['api', '--method', 'POST', 'repos/acme/widgets/pulls/7/reviews'],
+    ['api', '--method', 'DELETE', 'repos/acme/widgets/issues/comments/9'],
+  ];
+  for (const argv of forbidden) {
+    assert.throws(() => assertAllowed(argv), /refusing to run/, `gh ${argv.join(' ')} reached a process`);
+  }
+
+  // And the four invocations the product actually needs, so the allow-list is
+  // shown to be a door rather than a wall.
+  for (const argv of [
+    ['repo', 'view', '--json', 'nameWithOwner'],
+    ['api', '--paginate', 'repos/acme/widgets/issues/7/comments'],
+    ['api', '--method', 'POST', 'repos/acme/widgets/issues/7/comments', '--input', '-'],
+    ['api', '--method', 'PATCH', 'repos/acme/widgets/issues/comments/9', '--input', '-'],
+  ]) {
+    assert.doesNotThrow(() => assertAllowed(argv));
+  }
 });

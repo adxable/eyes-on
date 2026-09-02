@@ -22,7 +22,12 @@ correctness bug even when everything still passes:
   (`config`, `remote`, `symbolic-ref`), or through `fetchCloneIntoMirror()`,
   which runs with `--git-dir` set to the mirror and reads the clone as a fetch
   source. Those two exports are the enforcement point;
-- never edit a pull request body, open, merge or review a pull request;
+- never edit a pull request body, open, merge or review a pull request. `gh()`
+  in `src/gh/gh.ts` is module-private, so every invocation passes `assertAllowed`
+  first: two reads and exactly two writes, both issue-comment endpoints, matched
+  as whole paths. `PATCH repos/o/r/issues/<n>` - the pull-request body - differs
+  from the permitted comment update by one path segment, which is why the
+  allow-list is not a list of forbidden verbs;
 - no eyes-on process may have a working directory under a foreign worktree - the
   daemon's cwd is always its own state root.
 
@@ -41,10 +46,12 @@ a design violation, not a flaky test.
   `~/Projects/firstmate/projects/no-mistakes`. **Read-only.** Its line numbers in
   comments are from commit `a68298e`; grep for the symbol name rather than
   trusting the line.
-- **Measured results**: `docs/stage-1-acceptance.md` and
-  `docs/stage-0-acceptance.md`. Both are anchored by description rather than by
-  commit id, because a pull-request SHA does not survive the squash-merge that
-  lands it.
+- **Measured results**: `docs/stage-2-acceptance.md`, `docs/stage-1-acceptance.md`
+  and `docs/stage-0-acceptance.md`. All are anchored by description rather than
+  by commit id, because a pull-request SHA does not survive the squash-merge
+  that lands it. `docs/stage-2-locality.mjs` re-derives the stage 2 locality
+  number; it reads the no-mistakes database through `?mode=ro` and writes
+  nothing anywhere.
 
 ## Commands
 
@@ -99,6 +106,34 @@ first) · `npm run genskill`.
   the point of a hard rule, which must fire for a `deploy/values.yaml` no code
   filter would keep. Both are asserted in `test/check.test.ts` and
   `test/rules.test.ts`.
+- **`--no-model` must be unable to reach a model, not merely choose not to.**
+  `modelOptionsFor` (`src/cli/model-context.ts`) is the only place the flag is
+  read and it returns `null`; every caller checks `null` before building a
+  prompt. Adding a second read of the flag would turn a structural guarantee
+  into three `if`s that have to stay in agreement. `test/spotlight.test.ts`
+  asserts it against a fake agent that records every invocation.
+- **`model.command` is the one config field eyes-on executes.** It comes from
+  the default branch like every other trusted field, which is the right trust
+  level for deciding which paths need a reviewer and not by itself a reason to
+  run an arbitrary program a cloned repository names. The executable's basename
+  must be in `KNOWN_AGENTS`; only `~/.eyes-on/config.yaml`, which no branch can
+  write, can lift that.
+- **Drift is two calls or it is nothing.** The first sees the diff and not the
+  intent; the second sees that description and the intent and never the code.
+  Collapsing them into one call leaves a command that runs, costs money and
+  reports an agreement it never checked. `test/drift.test.ts` asserts the
+  separation by reading the prompts that were actually sent.
+- **S7 is the grade minus one, and the score can exceed 100.** Feeding the grade
+  itself would put eight points on every change whose drift was measured and
+  found to be 1 - a change that did exactly what it said. The cost is that S7
+  reaches 18 of its 20 points rather than 20, because the report's saturation
+  constant is 5 and the raw value tops out at 4. Weights now sum to 1.20 with
+  thresholds unchanged, so `maxScore()` - never a literal 100 - is what a
+  rendering divides by.
+- **`spotlight` ranks code files and hard-rule files, nothing else.** Same
+  measured reason as S1/S2: without the code filter a reviewer gets sent to
+  `AGENTS.md`. The hard-rule union is the deliberate exception, because a rule
+  must reach a `deploy/values.yaml` no code filter would keep.
 - **A history walk stops at the base, not the head.** Counting a branch's own
   commits as history lets it raise its own churn signal by committing more often.
 - **Every git read goes through `RepoReader`** (`src/git/reader.ts`): refs are

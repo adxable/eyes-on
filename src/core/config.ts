@@ -32,6 +32,19 @@ export interface GlobalConfig {
     /** How many per-head report files to keep (Appendix C.2: 200). */
     retention: number;
   };
+  model: {
+    /**
+     * Whether a repository's `model.command` may name any executable.
+     *
+     * `.eyes-on.yml` is read from the default branch, which is the right trust
+     * level for deciding which paths need a reviewer - and not by itself a
+     * reason to execute an arbitrary program named by a repository somebody
+     * cloned. By default eyes-on only runs an agent it knows by name
+     * (`KNOWN_AGENTS`). This field lives here, in the machine's own
+     * configuration, precisely because no branch can write it.
+     */
+    allow_any_command: boolean;
+  };
   telemetry: {
     enabled: boolean;
   };
@@ -45,6 +58,7 @@ export function defaultConfig(): GlobalConfig {
     daemon: { managed_service: true },
     logs: { max_bytes: 8 * 1024 * 1024, backups: 2 },
     reports: { retention: 200 },
+    model: { allow_any_command: false },
     telemetry: { enabled: false },
   };
 }
@@ -69,6 +83,7 @@ export function normalizeConfig(parsed: unknown): GlobalConfig {
   const daemon = asMap(map.daemon);
   const logs = asMap(map.logs);
   const reports = asMap(map.reports);
+  const model = asMap(map.model);
   const telemetry = asMap(map.telemetry);
   return {
     schema: typeof map.schema === 'string' ? map.schema : base.schema,
@@ -78,6 +93,7 @@ export function normalizeConfig(parsed: unknown): GlobalConfig {
       backups: asPositiveInt(logs.backups, base.logs.backups),
     },
     reports: { retention: asPositiveInt(reports.retention, base.reports.retention) },
+    model: { allow_any_command: asBool(model.allow_any_command, base.model.allow_any_command) },
     telemetry: { enabled: asBool(telemetry.enabled, base.telemetry.enabled) },
   };
 }

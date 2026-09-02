@@ -65,8 +65,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'axi',
-    usage: 'eyes-on axi [status|check|respond|logs|abort]',
-    summary: 'Agent surface: TOON on stdout, progress on stderr, exit 0 success, 1 error, 2 usage error.',
+    usage: 'eyes-on axi {status|check|logs|respond --action read|waive --reason "..."}',
+    summary:
+      'Agent surface: TOON on stdout, progress on stderr, exit 0 success, 1 error, 2 usage error. `respond` answers a run parked by a hard rule and records who decided what, and why.',
     stage: 0,
     mutating: false,
     implemented: true,
@@ -76,7 +77,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     usage:
       'eyes-on check [--base <ref>] [--head <ref>] [--intent "..."] [--no-model] [--strict] [--format toon|md|json]',
     summary:
-      'Score the change from repository history and apply the hard rules. Exits 0 whatever the band is, unless --strict is passed. Fragment ranking and intent drift arrive in stage 2.',
+      'Score the change from repository history and apply the hard rules. With --intent it also measures intent-versus-diff drift and scores it as S7. A hard-rule hit parks the run as `must_read` until `axi respond` answers it. Exits 0 whatever the band is, unless --strict is passed.',
     stage: 1,
     mutating: true,
     implemented: true,
@@ -120,26 +121,29 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'spotlight',
     usage: 'eyes-on spotlight [--n 5] [--no-model]',
-    summary: 'Rank the three to five fragments a human should actually read.',
+    summary:
+      'Rank the three to five fragments a human should actually read. Two stages: arithmetic over git narrows the diff to twelve candidates, then one model call picks a few and says why. --no-model returns stage one and calls nothing.',
     stage: 2,
     mutating: true,
-    implemented: false,
+    implemented: true,
   },
   {
     name: 'drift',
     usage: 'eyes-on drift [--intent "..."]',
-    summary: 'Compare the stated intent with what the diff actually does.',
+    summary:
+      'Compare the stated intent with what the diff actually does, in two passes: one model describes the diff without seeing the intent, a second compares that description with it. Shown, never a gate.',
     stage: 2,
     mutating: true,
-    implemented: false,
+    implemented: true,
   },
   {
     name: 'comment',
     usage: 'eyes-on comment --pr <n> [--dry-run]',
-    summary: 'Publish the single sticky eyes-on comment on a pull request. Never touches the body.',
+    summary:
+      'Publish the single sticky eyes-on comment on a pull request, found by its marker and updated in place. Never touches the body, never merges, never files a review.',
     stage: 2,
     mutating: true,
-    implemented: false,
+    implemented: true,
   },
   {
     name: 'label',

@@ -100,13 +100,25 @@ export const SIGNAL_UNITS: Record<SignalName, string> = {
   spread: 'directories the change reaches into',
   no_test: 'share of changed code files with no test changed alongside',
   recency: 'days of freshness (30 = touched today, 0 = untouched for a month)',
-  drift: 'intent-versus-diff drift, 1 to 5',
+  drift: 'grades of intent-versus-diff drift above an aligned 1 of 5',
 };
 
 export interface Score {
   score: number;
   band: Band;
   signals: SignalValue[];
+}
+
+/**
+ * The largest score these weights can produce.
+ *
+ * Not a constant 100. The seven default weights sum to 1.20 once drift is
+ * scored (see the note in `repoconfig.ts`), and a repository may set its own
+ * weights anyway, so the only honest denominator is the one the weights imply.
+ * Every rendering that shows a score out of something reads it from here.
+ */
+export function maxScore(config: RepoConfig): number {
+  return Math.round(SIGNAL_NAMES.reduce((sum, name) => sum + config.weights[name], 0) * 100);
 }
 
 /** Applies the weights and the curve. The only place a score is produced. */

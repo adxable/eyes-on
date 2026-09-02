@@ -23,6 +23,9 @@ import { whyCommand } from './why.js';
 import { rulesCommand } from './rules-cmd.js';
 import { backtestCommand } from './backtest-cmd.js';
 import { exportPathInstructionsCommand } from './export-cmd.js';
+import { spotlightCommand } from './spotlight-cmd.js';
+import { driftCommand } from './drift-cmd.js';
+import { commentCommand } from './comment-cmd.js';
 import { stubCommand } from './stubs.js';
 import { version, PRODUCT_NAME } from '../core/version.js';
 
@@ -61,6 +64,9 @@ const HANDLERS = new Map<string, Handler>([
   ['rules', rulesCommand],
   ['backtest', backtestCommand],
   ['export-path-instructions', exportPathInstructionsCommand],
+  ['spotlight', spotlightCommand],
+  ['drift', driftCommand],
+  ['comment', commentCommand],
 ]);
 
 /** Commands whose machine payload is the primary output, so TOON is the default. */

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -110,4 +110,206 @@ export function run(cwd: string, args: string[], env?: NodeJS.ProcessEnv): strin
     throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`);
   }
   return result.stdout;
+}
+
+/** Captured stdout, stderr and exit code of one in-process CLI run. */
+export interface Captured {
+  code: number;
+  out: string;
+  err: string;
+}
+
+/**
+ * Runs the CLI in-process with a private environment.
+ *
+ * `NO_MISTAKES_GATE` is deleted rather than merely not set: the suite itself
+ * runs from a gate worktree, so an inherited value would make the recursion
+ * guard read every test as a pipeline descendant and refuse.
+ */
+export async function captureCli(
+  argv: string[],
+  options: { cwd: string; env: Record<string, string> },
+): Promise<Captured> {
+  const { run } = await import('../src/cli/run.js');
+  let out = '';
+  let err = '';
+  const writers = { out: (chunk: string) => (out += chunk), err: (chunk: string) => (err += chunk) };
+  const previousCwd = process.cwd();
+  const previousEnv = { ...process.env };
+  process.chdir(options.cwd);
+  delete process.env.NO_MISTAKES_GATE;
+  Object.assign(process.env, options.env);
+  try {
+    const code = await run(argv, writers);
+    return { code, out, err };
+  } finally {
+    process.chdir(previousCwd);
+    for (const key of Object.keys(process.env)) {
+      if (!(key in previousEnv)) delete process.env[key];
+    }
+    Object.assign(process.env, previousEnv);
+  }
+}
+
+/** A private state root, skill root and NM_HOME, so no test can reach a real one. */
+export function sandboxEnv(prefix: string): Record<string, string> {
+  return {
+    EYES_HOME: stateRoot(),
+    EYES_ON_SKILL_ROOT: tempDir(`${prefix}-skills`),
+    EYES_ON_SKIP_SERVICE_MANAGER: '1',
+    NM_HOME: tempDir(`${prefix}-nm-home`),
+  };
+}
+
+export interface StubAgent {
+  /** `model.command` naming this stub, for a `.eyes-on.yml`. */
+  command: string[];
+  /** Every prompt the stub was given, in order. */
+  prompts(): string[];
+  /** Whether the stub was invoked at all. The `--no-model` acceptance condition
+   *  is exactly this being false. */
+  called(): boolean;
+}
+
+/**
+ * A fake local agent on disk.
+ *
+ * Named `claude` on purpose: `model.command` is repository content and eyes-on
+ * only executes an agent it knows by name, so a stub called `stub.js` would be
+ * refused by the very guard these tests exist alongside. Naming it `claude`
+ * exercises the real path rather than an escape hatch.
+ */
+export function stubAgent(prefix: string, responses: readonly string[]): StubAgent {
+  const dir = tempDir(`${prefix}-agent`);
+  const script = join(dir, 'claude');
+  writeFileSync(join(dir, 'responses.json'), JSON.stringify(responses));
+  writeFileSync(
+    script,
+    `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const dir = __dirname;
+const log = path.join(dir, 'prompts.jsonl');
+const prompt = fs.readFileSync(0, 'utf8');
+const before = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\\n').filter(Boolean).length : 0;
+fs.appendFileSync(log, JSON.stringify(prompt) + '\\n');
+const responses = JSON.parse(fs.readFileSync(path.join(dir, 'responses.json'), 'utf8'));
+process.stdout.write(String(responses[Math.min(before, responses.length - 1)] ?? ''));
+`,
+    { mode: 0o755 },
+  );
+  return {
+    command: [script],
+    prompts(): string[] {
+      try {
+        return readFileSync(join(dir, 'prompts.jsonl'), 'utf8')
+          .split('\n')
+          .filter((line) => line.length > 0)
+          .map((line) => JSON.parse(line) as string);
+      } catch {
+        return [];
+      }
+    },
+    called(): boolean {
+      return existsSync(join(dir, 'prompts.jsonl'));
+    },
+  };
+}
+
+export interface StubGh {
+  /** PATH with the fake `gh` in front of it. */
+  path: string;
+  /** Every argument vector the fake `gh` was called with. */
+  calls(): string[][];
+  /** The comments the fake pull request holds. */
+  comments(): { id: number; body: string }[];
+  /** The pull request body, so a test can prove it did not move. */
+  body(): string;
+}
+
+/**
+ * A fake `gh` holding one pull request.
+ *
+ * It answers only the endpoints eyes-on is allowed to call and records every
+ * invocation, which is what lets a test assert the two conditions that matter:
+ * the body is untouched, and there is exactly one eyes-on comment however many
+ * times the command runs. It also keeps a body, so "untouched" is a comparison
+ * rather than an absence of evidence.
+ */
+export function stubGh(prefix: string, options: { slug: string; number: number; headSHA: string; body: string }): StubGh {
+  const dir = tempDir(`${prefix}-gh`);
+  const store = join(dir, 'store.json');
+  writeFileSync(store, JSON.stringify({ ...options, comments: [], nextId: 1000 }));
+  writeFileSync(
+    join(dir, 'gh'),
+    `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const dir = __dirname;
+const store = path.join(dir, 'store.json');
+const args = process.argv.slice(2);
+fs.appendFileSync(path.join(dir, 'calls.jsonl'), JSON.stringify(args) + '\\n');
+const state = JSON.parse(fs.readFileSync(store, 'utf8'));
+const save = () => fs.writeFileSync(store, JSON.stringify(state));
+const out = (value) => process.stdout.write(JSON.stringify(value));
+const method = (() => {
+  const at = args.indexOf('--method');
+  return at >= 0 ? args[at + 1] : 'GET';
+})();
+const endpoint = args.find((arg, index) => index > 0 && !arg.startsWith('-') && args[index - 1] !== '--method' && args[index - 1] !== '--jq');
+if (args[0] === 'repo' && args[1] === 'view') {
+  process.stdout.write(state.slug + '\\n');
+  process.exit(0);
+}
+if (args[0] !== 'api' || !endpoint) { process.stderr.write('unsupported: ' + args.join(' ') + '\\n'); process.exit(1); }
+if (method === 'GET' && endpoint === 'repos/' + state.slug + '/pulls/' + state.number) {
+  process.stdout.write(state.headSHA + '\\n');
+  process.exit(0);
+}
+if (method === 'GET' && endpoint === 'repos/' + state.slug + '/issues/' + state.number + '/comments') {
+  out(state.comments);
+  process.exit(0);
+}
+const input = () => JSON.parse(fs.readFileSync(0, 'utf8'));
+if (method === 'POST' && endpoint === 'repos/' + state.slug + '/issues/' + state.number + '/comments') {
+  const comment = { id: state.nextId++, body: input().body, html_url: 'https://example.invalid/c/' + state.nextId, user: { login: 'tester' } };
+  state.comments.push(comment);
+  save();
+  out(comment);
+  process.exit(0);
+}
+const patch = /^repos\\/(.+)\\/issues\\/comments\\/(\\d+)$/.exec(endpoint || '');
+if (method === 'PATCH' && patch) {
+  const id = Number(patch[2]);
+  const comment = state.comments.find((entry) => entry.id === id);
+  if (!comment) { process.stderr.write('no such comment\\n'); process.exit(1); }
+  comment.body = input().body;
+  save();
+  out(comment);
+  process.exit(0);
+}
+process.stderr.write('unsupported: ' + method + ' ' + endpoint + '\\n');
+process.exit(1);
+`,
+    { mode: 0o755 },
+  );
+  return {
+    path: `${dir}:${process.env.PATH ?? ''}`,
+    calls(): string[][] {
+      try {
+        return readFileSync(join(dir, 'calls.jsonl'), 'utf8')
+          .split('\n')
+          .filter((line) => line.length > 0)
+          .map((line) => JSON.parse(line) as string[]);
+      } catch {
+        return [];
+      }
+    },
+    comments(): { id: number; body: string }[] {
+      return (JSON.parse(readFileSync(store, 'utf8')) as { comments: { id: number; body: string }[] }).comments;
+    },
+    body(): string {
+      return (JSON.parse(readFileSync(store, 'utf8')) as { body: string }).body;
+    },
+  };
 }

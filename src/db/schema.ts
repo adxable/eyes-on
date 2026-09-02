@@ -69,6 +69,17 @@ export const SCHEMA_STATEMENTS: readonly string[] = [
      decided_at INTEGER NOT NULL
    )`,
   `CREATE INDEX IF NOT EXISTS decisions_check ON decisions (check_id)`,
+  // One row per item rather than a joined string, for the same reason
+  // `hard_rule_matches` is a list: a sentence containing the separator read
+  // back out of a joined cell becomes two sentences nobody wrote.
+  `CREATE TABLE IF NOT EXISTS drift_items (
+     check_id TEXT NOT NULL,
+     kind     TEXT NOT NULL,
+     position INTEGER NOT NULL,
+     item     TEXT NOT NULL,
+     PRIMARY KEY (check_id, kind, position)
+   )`,
+  `CREATE INDEX IF NOT EXISTS drift_items_check ON drift_items (check_id)`,
   `CREATE TABLE IF NOT EXISTS prs (
      repo_id      TEXT NOT NULL,
      number       INTEGER NOT NULL,
@@ -99,8 +110,14 @@ export interface ColumnAddition {
   definition: string;
 }
 
-export const COLUMN_ADDITIONS: readonly ColumnAddition[] = [];
+export const COLUMN_ADDITIONS: readonly ColumnAddition[] = [
+  // Stage 2. `spots` shipped at stage 0 without a column saying which stage
+  // chose a fragment, and the distinction is the product: a fragment the
+  // arithmetic picked carries no category, and a reader must be able to tell
+  // that from one the model categorised.
+  { table: 'spots', column: 'source', definition: "TEXT NOT NULL DEFAULT 'rank'" },
+];
 
 /** Schema version recorded in schema_meta, for diagnostics only: the
  *  migrations themselves are declarative and do not branch on it. */
-export const SCHEMA_VERSION = '1';
+export const SCHEMA_VERSION = '2';

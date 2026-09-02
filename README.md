@@ -9,21 +9,21 @@ the code being good; eyes-on is responsible for a human reading the part that
 matters, and for making it possible to check afterwards whether the threshold
 was set correctly.
 
-## Status: stage 1
+## Status: stage 2
 
-Stage 1 delivers the product's reason for existing: a risk score computed from
-repository history, and hard rules on sensitive paths. Stage 0 before it built
-the skeleton - the state root, the daemon, the mirror, the command surface and
-the agent skill.
+Stage 2 answers the second half of the question. Stage 1 says *whether* a human
+has to read a change; stage 2 says *what* - three to five fragments, ranked from
+the repository's history and then chosen by one model call - compares the diff
+with the intent its author stated, parks a change a hard rule protects until
+somebody records a decision about it, and publishes the result as a single
+sticky pull-request comment.
 
-**The fragment ranking and the intent-drift signal are not implemented yet**;
-they arrive in stage 2, and the `drift` signal is reported with a weight of zero
-rather than hidden. Commands that belong to a later stage are listed and
-documented, and report the stage that will deliver them - they never return a
-made-up answer.
+The ledger and the leak measurement (`label`, `leaks`, `calibrate`) arrive in
+stage 3. Commands that belong to it are listed and report the stage that owns
+them; they never return a made-up answer.
 
-Measured acceptance results: [stage 1](docs/stage-1-acceptance.md),
-[stage 0](docs/stage-0-acceptance.md).
+Measured acceptance results: [stage 2](docs/stage-2-acceptance.md),
+[stage 1](docs/stage-1-acceptance.md), [stage 0](docs/stage-0-acceptance.md).
 
 ## Install
 
@@ -47,16 +47,61 @@ leaves a healthy install alone. `eyes-on init --watch` additionally installs a
 | `eyes-on doctor` | Readiness, degradations, and collisions with no-mistakes |
 | `eyes-on status` | Daemon and registered repositories |
 | `eyes-on daemon {start\|stop\|restart\|status\|run --root <dir>\|notify-commit}` | Manage the daemon |
-| `eyes-on check [--base <ref>] [--head <ref>] [--strict]` | Score the change and apply the hard rules |
+| `eyes-on check [--base <ref>] [--head <ref>] [--intent "..."] [--no-model] [--strict]` | Score the change, apply the hard rules, and with an intent measure the drift |
+| `eyes-on spotlight [--n 5] [--no-model]` | The three to five fragments a human should actually read |
+| `eyes-on drift [--intent "..."]` | What the diff does, against what its author said it would |
+| `eyes-on comment --pr <n> [--dry-run]` | One sticky comment on the pull request; never the body |
 | `eyes-on why <file>` \| `eyes-on why --top <n>` | Where one file's risk came from, or where risk lives in the repository |
 | `eyes-on rules --check` | The hard rules alone, read from the default branch |
 | `eyes-on export-path-instructions` | A `review.path_instructions` block for `.no-mistakes.yaml` |
 | `eyes-on backtest --split <date>[,<date>...]` | Whether the signal knew anything, on this repository's own history |
-| `eyes-on axi [status\|check]` | The agent surface |
+| `eyes-on axi {status\|check\|logs\|respond}` | The agent surface, including the `must_read` gate |
 
-`spotlight`, `drift`, `comment`, `label`, `leaks` and `calibrate` arrive in
-stages 2 and 3. `eyes-on help` prints the full surface with the stage that owns
-each one.
+`label`, `leaks` and `calibrate` arrive in stage 3. `eyes-on help` prints the
+full surface with the stage that owns each one.
+
+## What to read, and whether it matches the intent
+
+```sh
+eyes-on check --intent "why this change was made, not what it changes"
+eyes-on spotlight              # three to five fragments, with a sentence each
+eyes-on comment --pr 42        # one sticky comment; the body is never touched
+```
+
+`spotlight` is two stages and the split is not an optimisation. Stage one is
+arithmetic over git - `file_risk x hunk size x 2 (hard rule) x 1.5 (lines a past
+fix blamed) x 1.2 (no test)` - and it narrows the diff to twelve candidates.
+Stage two is **one** model call that picks three to five of them and writes a
+sentence about each. The median commit in the reference repository is 604 lines,
+which a model handed the whole change does not read.
+
+`--no-model` returns stage one alone and calls no model at all. It is the path
+that has to work when the model is rate-limited, so it is a complete answer
+rather than a degraded one; the payload's `stage` field says which you got, and
+a stage-one fragment carries no category because the arithmetic does not know
+what kind of thing it found.
+
+`drift` is two model calls against anchoring: the first describes the diff
+**without being shown the intent**, the second compares that description with the
+intent and never sees the code. The grade is 1 (the change does what it said) to
+5 (they are about different things), and it is shown rather than enforced - it
+raises the score through S7 and changes no exit code.
+
+## When a hard rule fires
+
+A hard rule sets the band to `pelna` and **parks the check as `must_read`**. The
+park holds nothing up outside eyes-on: no exit code moves, no push waits, no
+pull request goes red. What it does is refuse to call the change decided until
+somebody records what they decided:
+
+```sh
+eyes-on axi respond --action read
+eyes-on axi respond --action waive --reason "why this is safe to merge unread"
+```
+
+A waiver with no reason is refused. The decision, the reason and who gave it are
+written down, which is what turns the channel label from a declaration into
+evidence - and is what stage 3's ledger reads.
 
 ## How the score is built
 
@@ -64,6 +109,14 @@ Seven signals, each normalised by `min(1, ln(1+x)/ln(1+K))` and summed with its
 weight, times 100. Two thresholds turn the number into a band: under 35 needs no
 reading, 35 to 64 means read the indicated fragments, 65 and over means a full
 review.
+
+The six signals computed from history total exactly 100 between them. Drift adds
+its 0.20 on top rather than displacing them - the report keeps the thresholds at
+35 and 65 - so a change whose diff does something its intent never mentioned can
+score above 100. Every rendering divides by what the weights actually allow
+rather than by a hard-coded hundred. A change assessed without an intent, or
+with `--no-model`, carries S7 = 0 and scores exactly what it would have at
+stage 1.
 
 | signal | weight | K | what x counts |
 |---|---|---|---|
@@ -73,7 +126,7 @@ review.
 | `spread` | 0.10 | 12 | directories the change reaches into |
 | `no_test` | 0.15 | 1 | share of changed code files with no test changed beside them |
 | `recency` | 0.05 | 30 | days of freshness: 30 is touched today, 0 is untouched for a month |
-| `drift` | 0.00 | 5 | intent against diff - stage 2 |
+| `drift` | 0.20 | 5 | intent against diff, above an aligned grade of 1 |
 
 Three rules about it are not adjustable and are the product rather than the
 implementation:
@@ -85,9 +138,10 @@ implementation:
 - **hard rules are read from the default branch at a pinned commit**, never from
   the branch being assessed, and they match the full changed-file list before any
   filter. A branch that deletes a rule still gets it.
-- **nothing blocks.** `check` exits 0 whatever the band is and whatever the rules
-  say. `--strict` exists for a caller who has explicitly asked otherwise, and it
-  is the only thing that produces a non-zero exit.
+- **nothing blocks.** `check` exits 0 whatever the band is, whatever the rules
+  say and whatever the drift grade is. `--strict` exists for a caller who has
+  explicitly asked otherwise, and it is the only thing in the product that
+  produces a non-zero exit.
 
 Every score comes with the evidence: which signal contributed how many points,
 which file decided it, and - through `eyes-on why <file>` - the fix commits, by
@@ -111,12 +165,23 @@ fix_commit_pattern: "^(fix|hotfix)(\\(|:|!)"
 weights: { fix_history: 0.30 }       # argued from `backtest`, never from taste
 saturation: { fix_history: 5 }
 thresholds: { read_fragments: 35, full_review: 65 }
+model:
+  command: ["claude", "-p"]          # [] opts this repository out of the model
+  max_hunks: 12                      # candidates the second stage is given
 ```
 
 Every field is optional and the shipped defaults are the report's. A file that
 exists and cannot be parsed is not treated as an empty one: the check is
 reported `unverified`, carrying the parse error, because a rule that cannot be
 read is not the same as a rule nobody wrote.
+
+`model.command` is the one field eyes-on **executes**, so it is treated more
+narrowly than the rest: the executable's name must be an agent eyes-on knows
+(`claude`, `codex`, `copilot`, `cursor-agent`, `opencode`, `pi`, `rovodev`).
+Reading a repository's configuration to decide which paths need a reviewer is
+not by itself a reason to run an arbitrary program a cloned repository names.
+Set `model: { allow_any_command: true }` in `~/.eyes-on/config.yaml` - the
+machine's own file, which no branch can write - to lift that.
 
 ## Output contract
 
@@ -133,6 +198,13 @@ requests, edit a pull request body, run tests, lint or CI, or block anything. It
 writes nothing into `~/.no-mistakes` and no ref into your working clone: fresh
 objects are fetched only into its own mirror, which borrows the clone's object
 store through `objects/info/alternates` rather than copying it.
+
+The pull-request prohibition is enforced rather than intended: every `gh`
+invocation passes an allow-list of two comment endpoints before a process is
+spawned, and the endpoint that would edit a pull request body differs from the
+comment update eyes-on is allowed to make by a single path segment. The body
+belongs to no-mistakes, which regenerates it on every update; eyes-on writes one
+comment, finds it again by its marker, and edits that.
 
 Called from inside a no-mistakes pipeline run, eyes-on refuses to record
 anything and says so. Read-only commands keep working there.

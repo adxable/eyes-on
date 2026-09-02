@@ -16,7 +16,10 @@ export default tseslint.config(
     },
   },
   {
-    files: ['bin/*.js', 'eslint.config.js'],
-    languageOptions: { globals: { process: 'readonly', console: 'readonly' } },
+    // Plain JavaScript that runs under Node outside the TypeScript build: the
+    // bin shim, this file, and the one-off measurement script behind
+    // docs/stage-2-acceptance.md.
+    files: ['bin/*.js', 'eslint.config.js', 'docs/*.mjs'],
+    languageOptions: { globals: { process: 'readonly', console: 'readonly', URL: 'readonly' } },
   },
 );

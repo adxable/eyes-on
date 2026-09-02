@@ -26,12 +26,15 @@ this skill tells you what a reviewer must look at.
 | `eyes-on doctor` | Report git, node and gh availability, mirror reachability, daemon and service state, and any collision or degradation eyes-on can detect. |
 | `eyes-on status` | Show the daemon, the registered repositories and the current head of this repository. Read-only. |
 | `eyes-on daemon {start|stop|restart|status|run --root <dir>|notify-commit}` | Manage the eyes-on daemon. `run` is the foreground entry point the OS service invokes. |
-| `eyes-on axi [status|check|respond|logs|abort]` | Agent surface: TOON on stdout, progress on stderr, exit 0 success, 1 error, 2 usage error. |
-| `eyes-on check [--base <ref>] [--head <ref>] [--intent "..."] [--no-model] [--strict] [--format toon|md|json]` | Score the change from repository history and apply the hard rules. Exits 0 whatever the band is, unless --strict is passed. Fragment ranking and intent drift arrive in stage 2. |
+| `eyes-on axi {status|check|logs|respond --action read|waive --reason "..."}` | Agent surface: TOON on stdout, progress on stderr, exit 0 success, 1 error, 2 usage error. `respond` answers a run parked by a hard rule and records who decided what, and why. |
+| `eyes-on check [--base <ref>] [--head <ref>] [--intent "..."] [--no-model] [--strict] [--format toon|md|json]` | Score the change from repository history and apply the hard rules. With --intent it also measures intent-versus-diff drift and scores it as S7. A hard-rule hit parks the run as `must_read` until `axi respond` answers it. Exits 0 whatever the band is, unless --strict is passed. |
 | `eyes-on why <file> | eyes-on why --top <n>` | Explain where the risk of this file came from: the fix commits that blamed into it, the commits that touched it, and any hard rule naming it. With --top and no file, list the riskiest code files in the repository instead. |
 | `eyes-on rules --check [--strict]` | Evaluate the hard rules alone, without scoring. Rules are read from the default branch at a pinned commit, so a branch that deletes one still gets it. |
 | `eyes-on export-path-instructions [--min-risk <0-100>]` | Emit a review.path_instructions block for .no-mistakes.yaml, inside its 32-entry and 16384-byte caps. A bridge, never a dependency. |
 | `eyes-on backtest --split <date>[,<date>...] [--horizon <days>]` | Replay the risk signal against history either side of a split date and report how much more often the flagged files were fixed afterwards. |
+| `eyes-on spotlight [--n 5] [--no-model]` | Rank the three to five fragments a human should actually read. Two stages: arithmetic over git narrows the diff to twelve candidates, then one model call picks a few and says why. --no-model returns stage one and calls nothing. |
+| `eyes-on drift [--intent "..."]` | Compare the stated intent with what the diff actually does, in two passes: one model describes the diff without seeing the intent, a second compares that description with it. Shown, never a gate. |
+| `eyes-on comment --pr <n> [--dry-run]` | Publish the single sticky eyes-on comment on a pull request, found by its marker and updated in place. Never touches the body, never merges, never files a review. |
 
 ## Commands that are planned but not built yet
 
@@ -39,12 +42,36 @@ Calling one of these prints `error:` with the stage that owns it and exits 1. It
 
 | Command | Stage | What it will do |
 |---|---|---|
-| `eyes-on spotlight [--n 5] [--no-model]` | stage 2 | Rank the three to five fragments a human should actually read. |
-| `eyes-on drift [--intent "..."]` | stage 2 | Compare the stated intent with what the diff actually does. |
-| `eyes-on comment --pr <n> [--dry-run]` | stage 2 | Publish the single sticky eyes-on comment on a pull request. Never touches the body. |
 | `eyes-on label --pr <n>` | stage 3 | Record the channel, the decision and the merge commit in the ledger after a merge. |
 | `eyes-on leaks [--window 14d] [--since 90d]` | stage 3 | Report post-merge fixes per channel - the line-level variant only. |
 | `eyes-on calibrate` | stage 3 | Propose thresholds from the ledger by sweeping them over recorded history. |
+
+## The order these commands go in
+
+```sh
+eyes-on check --intent "why this change was made, not what it changes"
+eyes-on spotlight              # the three to five fragments to read
+eyes-on comment --pr 42        # one sticky comment on the pull request
+```
+
+`check` scores the change and, with an intent, measures how far the diff has drifted from it. `spotlight`
+ranks fragments in two stages: arithmetic over the repository's history narrows the diff to twelve
+candidates, and one model call picks three to five and says why. `--no-model` returns the first stage
+alone and calls no model at all - use it when the model is rate-limited, and read the `stage` field to
+see which answer you got.
+
+## When a hard rule parks the run
+
+A hard rule matching sets the band to `pelna` and parks the check as `must_read`. Answer it:
+
+```sh
+eyes-on axi respond --action read
+eyes-on axi respond --action waive --reason "why this is safe to merge unread"
+```
+
+A waiver without a reason is refused. **The park holds nothing up outside eyes-on** - no exit code
+changes, no push waits, no pull request goes red. What it does is record that somebody was told and what
+they decided, so the channel label is evidence rather than a declaration.
 
 ## Output contract
 
@@ -56,7 +83,10 @@ Calling one of these prints `error:` with the stage that owns it and exits 1. It
 ## Working with no-mistakes
 
 Both tools read the same working clone and nothing else is shared. eyes-on never writes to
-`~/.no-mistakes`, never creates a ref in your clone, and never touches a pull request body.
+`~/.no-mistakes`, never creates a ref in your clone, and never touches a pull request body: the body is
+no-mistakes' and is regenerated on every update, so eyes-on publishes a single comment carrying a marker
+and updates that same comment however many times it is recomputed. It never merges and never files a
+GitHub review.
 
 Called from inside a no-mistakes pipeline step - `NO_MISTAKES_GATE=1`, or a working directory under the
 no-mistakes worktree root - eyes-on refuses to record anything and says so. That is deliberate: the work

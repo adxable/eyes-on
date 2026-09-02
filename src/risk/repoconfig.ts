@@ -54,7 +54,15 @@ export interface RepoConfig {
   saturation: SignalNumbers;
   thresholds: { read_fragments: number; full_review: number };
   hard_rules: HardRule[];
-  model: { command: string[]; max_hunks: number };
+  /**
+   * The local agent the second stage of the fragment ranking and the drift
+   * comparison call. `null` means the field was absent and the built-in default
+   * applies; an explicitly empty list means this repository has opted out of
+   * the model, which is the meaning Appendix C.3 gives it. The two must stay
+   * distinguishable: they produce the same ranking and completely different
+   * explanations of why.
+   */
+  model: { command: string[] | null; max_hunks: number };
 }
 
 /**
@@ -63,9 +71,17 @@ export interface RepoConfig {
  * point of `backtest` and, later, `calibrate` is that a change to these numbers
  * is argued from measured history rather than from taste.
  *
- * `drift` carries weight 0.00 at stage 1 because the signal that would feed it
- * (P4) lands in stage 2. It is present with a weight rather than absent, so the
- * rationale a human reads lists all seven and says which one is not yet scored.
+ * `drift` moved from 0.00 to 0.20 at stage 2, on the report's own schedule, now
+ * that P4 measures it. The other six are unchanged and the thresholds are
+ * unchanged, so the weights sum to 1.20 rather than to 1: a change whose diff
+ * does something its intent never mentioned can score above 100. That is the
+ * report's arithmetic read literally, and it is why `maxScore` exists rather
+ * than a hard-coded 100 - renormalising instead would quietly lower every
+ * stage 1 score and move every change that sits near a threshold.
+ *
+ * S7 is only scored when drift was actually measured. A change assessed without
+ * an intent, or with `--no-model`, carries S7 = 0 and scores exactly what it
+ * would have scored at stage 1.
  */
 export const DEFAULT_WEIGHTS: SignalNumbers = {
   fix_history: 0.3,
@@ -74,7 +90,7 @@ export const DEFAULT_WEIGHTS: SignalNumbers = {
   spread: 0.1,
   no_test: 0.15,
   recency: 0.05,
-  drift: 0.0,
+  drift: 0.2,
 };
 
 export const DEFAULT_SATURATION: SignalNumbers = {
@@ -148,7 +164,7 @@ export function defaultRepoConfig(): RepoConfig {
     saturation: { ...DEFAULT_SATURATION },
     thresholds: { ...DEFAULT_THRESHOLDS },
     hard_rules: [],
-    model: { command: [], max_hunks: 12 },
+    model: { command: null, max_hunks: 12 },
   };
 }
 
