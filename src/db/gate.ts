@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Database } from './db.js';
 import type { DriftResult } from '../spot/drift.js';
 import type { Spot } from '../spot/spotlight.js';
@@ -32,16 +33,78 @@ export interface DecisionRow {
   reason: string | null;
   decided_by: string | null;
   decided_at: number;
+  /** The hard-rule hits this decision answered, as `hitsFingerprint` names
+   *  them. Null on a row written before eyes-on recorded it, which answers no
+   *  set of hits: what a person was shown is exactly what is not known. */
+  hits_fingerprint: string | null;
+  /** The trusted configuration those hits came from. */
+  config_sha: string | null;
 }
 
-/** The decision recorded for a check, or undefined while it is still parked.
- *  The newest wins: a change reassessed after a waiver may be waived again, and
- *  the record keeps both. */
+/** One hard-rule hit: the glob that fired and the file it matched. */
+export interface GateHit {
+  glob: string;
+  file: string;
+}
+
+/**
+ * The identity of a set of hard-rule hits.
+ *
+ * A decision answers the hits a person was actually shown, so it is recorded
+ * against them rather than against the check alone. Order does not matter and
+ * duplicates do not, which is why the pairs are sorted and the digest is taken
+ * of a structured encoding rather than of a joined string: a glob or a path may
+ * contain any separator.
+ */
+export function hitsFingerprint(hits: readonly GateHit[]): string {
+  const pairs = hits
+    .map((hit) => [hit.glob, hit.file] as const)
+    .sort((a, b) => (a[0] === b[0] ? compare(a[1], b[1]) : compare(a[0], b[0])));
+  return createHash('sha256').update(JSON.stringify(pairs)).digest('hex').slice(0, 16);
+}
+
+function compare(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** The hard-rule hits recorded for a check, one row per matched file. */
+export function recordedHits(db: Database, checkId: string): GateHit[] {
+  return db.all<GateHit>('SELECT glob, file FROM hits WHERE check_id = ? ORDER BY glob, file', checkId);
+}
+
+/** Every decision recorded for a check, newest first, whatever it answered. */
 export function latestDecision(db: Database, checkId: string): DecisionRow | undefined {
   return db.get<DecisionRow>(
     'SELECT * FROM decisions WHERE check_id = ? ORDER BY decided_at DESC, rowid DESC LIMIT 1',
     checkId,
   );
+}
+
+/**
+ * The decision that answers these hits, or undefined while they are unanswered.
+ *
+ * A decision is evidence about the rules it was given against and about nothing
+ * else. An answer recorded when no rule had fired - which `respond` accepts,
+ * and which an unreadable trusted configuration produces for every change -
+ * must not close a gate that appears afterwards, or the pull request publishes
+ * a waiver against a rule nobody was ever shown. So the gate asks whether the
+ * hits in front of it have been answered, not whether the check has.
+ *
+ * The newest wins among those that match: a change waived, reassessed and read
+ * in full keeps both rows and reports the latest.
+ */
+export function decisionCovering(db: Database, checkId: string, hits: readonly GateHit[]): DecisionRow | undefined {
+  return db.get<DecisionRow>(
+    'SELECT * FROM decisions WHERE check_id = ? AND hits_fingerprint = ? ORDER BY decided_at DESC, rowid DESC LIMIT 1',
+    checkId,
+    hitsFingerprint(hits),
+  );
+}
+
+/** The same question asked of the hits already recorded for the check, for the
+ *  surfaces that read a row rather than compute an assessment. */
+export function recordedDecisionCovering(db: Database, checkId: string): DecisionRow | undefined {
+  return decisionCovering(db, checkId, recordedHits(db, checkId));
 }
 
 export function allDecisions(db: Database, checkId: string): DecisionRow[] {
@@ -64,16 +127,29 @@ export function allDecisions(db: Database, checkId: string): DecisionRow[] {
  */
 export function recordDecision(
   db: Database,
-  options: { checkId: string; action: GateAction; reason: string | null; decidedBy: string },
+  options: {
+    checkId: string;
+    action: GateAction;
+    reason: string | null;
+    decidedBy: string;
+    /** The hits this answer was given against, and the configuration they came
+     *  from. A decision that does not carry them answers nothing later. */
+    hits: readonly GateHit[];
+    configSha: string | null;
+  },
 ): DecisionRow {
   const now = Math.floor(Date.now() / 1000);
+  const fingerprint = hitsFingerprint(options.hits);
   db.run(
-    'INSERT INTO decisions (check_id, action, reason, decided_by, decided_at) VALUES (?, ?, ?, ?, ?)',
+    `INSERT INTO decisions (check_id, action, reason, decided_by, decided_at, hits_fingerprint, config_sha)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
     options.checkId,
     options.action,
     options.reason,
     options.decidedBy,
     now,
+    fingerprint,
+    options.configSha,
   );
   db.run(
     "UPDATE checks SET status = CASE WHEN status = 'unverified' THEN status ELSE ? END, updated_at = ? WHERE id = ?",
@@ -87,6 +163,8 @@ export function recordDecision(
     reason: options.reason,
     decided_by: options.decidedBy,
     decided_at: now,
+    hits_fingerprint: fingerprint,
+    config_sha: options.configSha,
   };
 }
 
@@ -192,6 +270,9 @@ export function driftItemsFor(db: Database, checkId: string): DriftItemRow[] {
 export interface PrRow {
   repo_id: string;
   number: number;
+  /** The check whose assessment the sticky comment carries. Null on a row
+   *  written before eyes-on recorded it. */
+  check_id: string | null;
   url: string | null;
   head_sha: string | null;
   state: string | null;
@@ -204,23 +285,31 @@ export function findPr(db: Database, repoId: string, number: number): PrRow | un
   return db.get<PrRow>('SELECT * FROM prs WHERE repo_id = ? AND number = ?', repoId, number);
 }
 
-/** Notes that the sticky comment for this pull request exists. Stage 3's ledger
- *  reads the same row to find the comment it must not duplicate. */
+/**
+ * Notes that the sticky comment for this pull request exists. Stage 3's ledger
+ * reads the same row to find the comment it must not duplicate.
+ *
+ * The check it published is recorded beside it rather than re-derived: a check
+ * is keyed on (repository, base, head) and this row holds no base, so a head
+ * alone does not name the assessment the comment carries.
+ */
 export function recordComment(
   db: Database,
-  options: { repoId: string; number: number; url: string | null; headSHA: string },
+  options: { repoId: string; number: number; url: string | null; headSHA: string; checkId: string },
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.run(
-    `INSERT INTO prs (repo_id, number, url, head_sha, state, merge_sha, commented_at, observed_at)
-     VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)
+    `INSERT INTO prs (repo_id, number, check_id, url, head_sha, state, merge_sha, commented_at, observed_at)
+     VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)
      ON CONFLICT(repo_id, number) DO UPDATE SET
+       check_id = excluded.check_id,
        url = COALESCE(excluded.url, prs.url),
        head_sha = excluded.head_sha,
        commented_at = excluded.commented_at,
        observed_at = excluded.observed_at`,
     options.repoId,
     options.number,
+    options.checkId,
     options.url,
     options.headSHA,
     now,

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from './db.js';
-import { latestDecision, recordDrift, supersedeDrift } from './gate.js';
+import { decisionCovering, recordDrift, supersedeDrift, type GateHit } from './gate.js';
 import type { Assessment } from '../risk/assess.js';
 import type { CarryDecision } from '../risk/signals.js';
 import type { DriftResult } from '../spot/drift.js';
@@ -204,11 +204,23 @@ export function recordAssessment(db: Database, options: RecordAssessmentOptions)
  * `unverified` wins over the gate: eyes-on could not read the trusted config,
  * so it does not know which paths a human was supposed to be sent to, and
  * parking on rules it never evaluated would claim a certainty it does not have.
+ *
+ * A decision releases the park only for the hits it was given against. A run
+ * that was never parked can still be answered, and an unreadable configuration
+ * evaluates no rules at all - so asking merely whether *some* decision exists
+ * would let either of those pre-answer a rule that fires later, and publish a
+ * waiver against a rule nobody was shown.
  */
 export function statusFor(db: Database, id: string, assessment: Assessment): string {
   if (assessment.config_state === 'unverified') return 'unverified';
   if (assessment.hard_rules.length === 0) return 'done';
-  return latestDecision(db, id) ? 'done' : 'must_read';
+  return decisionCovering(db, id, hitsOf(assessment)) ? 'done' : 'must_read';
+}
+
+/** The hard-rule hits of an assessment, in the shape the gate records and
+ *  compares them - one row per matched file, exactly as `hits` holds them. */
+export function hitsOf(assessment: Assessment): GateHit[] {
+  return assessment.hard_rules.flatMap((hit) => hit.matched_files.map((file) => ({ glob: hit.glob, file })));
 }
 
 /** The check recorded for a change, by the two commits it spans. */

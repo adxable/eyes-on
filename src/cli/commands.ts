@@ -66,7 +66,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'axi',
     usage:
-      'eyes-on axi {status|check|logs [--lines <n>]|respond --action read|waive --reason "..." [--check-id <id>] [--by <name>]}',
+      'eyes-on axi {status|check|logs [--lines <n>]|respond --action read|waive --reason "..." [--check-id <id>] [--by <name>]} [--base <ref>] [--head <ref>] [--default-branch <ref>]',
     summary:
       'Agent surface: TOON on stdout, progress on stderr, exit 0 success, 1 error, 2 usage error. `respond` answers a run parked by a hard rule and records who decided what, and why.',
     stage: 0,
@@ -76,7 +76,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'check',
     usage:
-      'eyes-on check [--base <ref>] [--head <ref>] [--intent "..."] [--no-model] [--strict] [--format toon|md|json]',
+      'eyes-on check [--base <ref>] [--head <ref>] [--default-branch <ref>] [--intent "..."] [--no-model] [--strict] [--format toon|md|json]',
     summary:
       'Score the change from repository history and apply the hard rules. With --intent it also measures intent-versus-diff drift and scores it as S7. A hard-rule hit parks the run as `must_read` until `axi respond` answers it. Exits 0 whatever the band is, unless --strict is passed.',
     stage: 1,
@@ -85,7 +85,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'why',
-    usage: 'eyes-on why <file> | eyes-on why --top <n>',
+    usage: 'eyes-on why <file> | eyes-on why --top <n> [--default-branch <ref>]',
     summary:
       'Explain where the risk of this file came from: the fix commits that blamed into it, the commits that touched it, and any hard rule naming it. With --top and no file, list the riskiest code files in the repository instead.',
     stage: 1,
@@ -94,7 +94,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'rules',
-    usage: 'eyes-on rules --check [--strict]',
+    usage: 'eyes-on rules --check [--strict] [--base <ref>] [--head <ref>] [--default-branch <ref>]',
     summary:
       'Evaluate the hard rules alone, without scoring. Rules are read from the default branch at a pinned commit, so a branch that deletes one still gets it.',
     stage: 1,
@@ -103,7 +103,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'export-path-instructions',
-    usage: 'eyes-on export-path-instructions [--min-risk <0-100>]',
+    usage: 'eyes-on export-path-instructions [--min-risk <0-100>] [--default-branch <ref>]',
     summary:
       'Emit a review.path_instructions block for .no-mistakes.yaml, inside its 32-entry and 16384-byte caps. A bridge, never a dependency.',
     stage: 1,
@@ -112,7 +112,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'backtest',
-    usage: 'eyes-on backtest --split <date>[,<date>...] [--horizon <days>]',
+    usage: 'eyes-on backtest --split <date>[,<date>...] [--horizon <days>] [--default-branch <ref>]',
     summary:
       'Replay the risk signal against history either side of a split date and report how much more often the flagged files were fixed afterwards.',
     stage: 1,
@@ -121,7 +121,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'spotlight',
-    usage: 'eyes-on spotlight [--base <ref>] [--head <ref>] [--n 5] [--intent "..."] [--no-model]',
+    usage: 'eyes-on spotlight [--base <ref>] [--head <ref>] [--default-branch <ref>] [--n 5] [--intent "..."] [--no-model]',
     summary:
       'Rank the three to five fragments a human should actually read. Two stages: arithmetic over git narrows the diff to twelve candidates, then one model call picks a few and says why. --no-model returns stage one and calls nothing.',
     stage: 2,
@@ -130,7 +130,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'drift',
-    usage: 'eyes-on drift [--base <ref>] [--head <ref>] [--intent "..."] [--no-model]',
+    usage: 'eyes-on drift [--base <ref>] [--head <ref>] [--default-branch <ref>] [--intent "..."] [--no-model]',
     summary:
       'Compare the stated intent with what the diff actually does, in two passes: one model describes the diff without seeing the intent, a second compares that description with it. The grade is folded into the recorded check as signal S7, so the score, its maximum and the band move with it. This command itself is never a gate.',
     stage: 2,
@@ -139,7 +139,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'comment',
-    usage: 'eyes-on comment --pr <n> [--check-id <id>] [--dry-run]',
+    usage: 'eyes-on comment --pr <n> [--check-id <id>] [--base <ref>] [--head <ref>] [--default-branch <ref>] [--dry-run]',
     summary:
       'Publish the single sticky eyes-on comment on a pull request, found by its marker and updated in place. Never touches the body, never merges, never files a review.',
     stage: 2,

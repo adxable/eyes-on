@@ -364,6 +364,43 @@ interface SpotlightDoc {
   model_command: string[] | null;
 }
 
+test('a ranking made without the hard rules says so, because a rule would have changed it', async (t) => {
+  // `unverified` means the trusted config could not be read, so `assess` ran
+  // with no hard rules - and the union that exists to pull a `deploy/values.yaml`
+  // into this ranking contributed nothing. A band and a fragment list printed as
+  // if measured is the one thing this command must not do.
+  const repo = tempRepo('spot-unverified');
+  repo.commitFiles('chore: a configuration nobody can read', {
+    '.eyes-on.yml': 'schema: eyes-on/v1\nthresholds: { read_fragments: 80, full_review: 20 }\n',
+    'src/hot.ts': 'export const hot = 1;\n',
+  });
+  repo.git(['checkout', '-q', '-b', 'work']);
+  repo.commitFiles('feat: change several things', {
+    'src/hot.ts': 'export const hot = 2;\nexport const hotter = 3;\n',
+    'deploy/values.yaml': 'replicas: 4\n',
+  });
+  const env = sandboxEnv('spot-unverified');
+  await initRepo(t, repo, env);
+
+  const doc = JSON.parse(
+    (await captureCli(['spotlight', '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as SpotlightDoc & { config_state: string; help: string[] };
+  assert.equal(doc.config_state, 'unverified', 'the payload carries the fact, not only stderr');
+  assert.ok(doc.help.some((line) => line.includes('no hard rule was evaluated and this band is a lower bound')));
+
+  const markdown = (await captureCli(['spotlight', '--no-model', '--format', 'md'], { cwd: repo.path, env })).out;
+  assert.match(markdown, /no hard rule was evaluated and this band is a lower bound/);
+
+  // And a repository whose configuration parses carries no caveat.
+  const fine = repoWithModel(null);
+  const fineEnv = sandboxEnv('spot-verified');
+  await initRepo(t, fine, fineEnv);
+  const verified = JSON.parse(
+    (await captureCli(['spotlight', '--no-model', '--format', 'json'], { cwd: fine.path, env: fineEnv })).out,
+  ) as SpotlightDoc & { config_state: string };
+  assert.equal(verified.config_state, 'trusted');
+});
+
 test('acceptance: --no-model returns stage 1 and does not call a model once', async (t) => {
   const agent = stubAgent('spot-nomodel', ['{"spotlight":[]}']);
   const repo = repoWithModel([`  agent: ${agent.agent}`]);

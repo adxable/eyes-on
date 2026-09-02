@@ -127,6 +127,22 @@ export const COLUMN_ADDITIONS: readonly ColumnAddition[] = [
   // the intent recorded beside the grade, a later run that states a different
   // intent inherits a verdict about a question nobody asked.
   { table: 'checks', column: 'drift_intent', definition: 'TEXT' },
+  // Stage 2. A gate decision answers a set of hard-rule hits, and this row is
+  // keyed on the check alone. Without the hits recorded beside the decision,
+  // an answer given when no rule had fired - or when none could be evaluated -
+  // silently pre-answers a rule that only becomes visible later, and the
+  // pull-request comment attributes a waiver to a rule nobody was shown.
+  { table: 'decisions', column: 'hits_fingerprint', definition: 'TEXT' },
+  // Stage 2. The trusted configuration those rules came from, recorded for the
+  // ledger. The gate turns on the hits themselves - they are what a person was
+  // shown - and this says which configuration produced them.
+  { table: 'decisions', column: 'config_sha', definition: 'TEXT' },
+  // Stage 2. A `prs` row says a sticky comment exists; the assessment it
+  // published is what stage 3's ledger has to read back. `head_sha` alone does
+  // not name it - a check is keyed on (repository, base, head) - so the check
+  // is recorded beside the comment rather than re-derived from a base nobody
+  // stored.
+  { table: 'prs', column: 'check_id', definition: 'TEXT' },
 ];
 
 /** Schema version recorded in schema_meta, for diagnostics only: the

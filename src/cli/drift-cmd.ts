@@ -11,6 +11,7 @@ import {
   carryDrift,
   driftProvenanceSentence,
   statedIntent,
+  unverifiedSentence,
   type CarryDecision,
 } from '../risk/signals.js';
 import { detailOf, driftSentence, measureDrift, type DriftResult } from '../spot/drift.js';
@@ -250,6 +251,10 @@ export function renderDoc(result: DriftResult, options: DocOptions): ToonObject 
     rescored: recordOutcome(options) === 'rescored',
     recorded_changed: recordOutcome(options) === 'rescored' || recordOutcome(options) === 'superseded',
     record_sentence: recordSentence(options),
+    // The numbers above are the recorded assessment's, so the caveat that
+    // travels with them travels here too: an `unverified` check was scored with
+    // no hard rules at all and its band is a floor.
+    unverified: options.recorded?.status === 'unverified',
     intent: options.intent,
     pass_describe: result.passes.describe,
     pass_compare: result.passes.compare,
@@ -315,6 +320,9 @@ function recordSentence(options: DocOptions): string {
 
 function helpLines(result: DriftResult, options: DocOptions): string[] {
   const lines: string[] = [];
+  if (options.recorded?.status === 'unverified') {
+    lines.push(unverifiedSentence());
+  }
   if (result.grade === null) {
     lines.push(`No grade from this run: ${detailOf(result.model)}`);
     if (options.noModel) {
@@ -348,6 +356,7 @@ export function renderMarkdown(result: DriftResult, doc: ToonObject): string {
     '',
     `Change ${String(doc.base)}..${String(doc.head)}. Two passes: the first described the diff without seeing the intent, the second compared that description with it.`,
     '',
+    ...(doc.unverified ? [`**Unverified.** ${unverifiedSentence()}`, ''] : []),
     '## Stated intent',
     '',
     String(doc.intent ?? '').trim(),

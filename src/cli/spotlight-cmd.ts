@@ -5,16 +5,17 @@ import { emitDoc, progress, EXIT_OK, EXIT_USAGE, UserFacingError } from './outpu
 import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
 import { modelOptionsFor } from './model-context.js';
-import { assess } from '../risk/assess.js';
+import { assess, type Assessment } from '../risk/assess.js';
 import {
   bandLabel,
   carryDrift,
   driftProvenanceSentence,
   statedIntent,
+  unverifiedSentence,
   type CarryDecision,
 } from '../risk/signals.js';
-import { findCheck, recordAssessment } from '../db/checks.js';
-import { latestDecision, recordSpots } from '../db/gate.js';
+import { findCheck, hitsOf, recordAssessment } from '../db/checks.js';
+import { decisionCovering, recordSpots } from '../db/gate.js';
 import { parseHunks } from '../spot/hunks.js';
 import { blamedHunks, rankHunks, DEFAULT_MAX_PER_FILE, type Candidate } from '../spot/rank.js';
 import { clampN, selectSpotlight, type Spot, type SpotlightResult } from '../spot/spotlight.js';
@@ -153,12 +154,14 @@ export async function spotlightCommand(context: Context): Promise<number> {
 
   const doc = renderDoc(assessment.score, assessment.score_max, assessment.band, {
     result,
+    configState: assessment.config_state,
+    configDetail: assessment.config_detail,
     candidates,
     hunks: hunks.length,
     hunksInChange: allHunks.length,
     n,
     checkId,
-    gate: gateOf(risk, assessment.hard_rules.length, checkId),
+    gate: gateOf(risk, assessment, checkId),
     intent: carry.rowIntent,
     carry,
     base: risk.baseSHA,
@@ -173,12 +176,12 @@ export async function spotlightCommand(context: Context): Promise<number> {
  *  is nowhere an answer could have been recorded, so a hit is still a park. */
 function gateOf(
   risk: ReturnType<typeof riskContext>,
-  hits: number,
+  assessment: Assessment,
   checkId: string | null,
 ): 'must_read' | 'none' {
-  if (hits === 0) return 'none';
+  if (assessment.hard_rules.length === 0) return 'none';
   if (!risk.db || !checkId) return 'must_read';
-  return latestDecision(risk.db, checkId) ? 'none' : 'must_read';
+  return decisionCovering(risk.db, checkId, hitsOf(assessment)) ? 'none' : 'must_read';
 }
 
 interface DocOptions {
@@ -198,6 +201,11 @@ interface DocOptions {
   /** Which grade the score contains, where it came from and which intent it
    *  answers - decided by `carryDrift`, exactly as `check` decides it. */
   carry: CarryDecision;
+  /** Whether the trusted config was read. `unverified` means no hard rule was
+   *  evaluated, so the band is a floor - and the hard-rule union that pulls a
+   *  `deploy/values.yaml` into this ranking contributed nothing to it. */
+  configState: string;
+  configDetail: string | null;
   base: string;
   head: string;
 }
@@ -212,6 +220,8 @@ export function renderDoc(score: number, scoreMax: number, band: string, options
     base: options.base.slice(0, 12),
     head: options.head.slice(0, 12),
     check_id: options.checkId,
+    config_state: options.configState,
+    config_detail: options.configDetail,
     intent: options.intent,
     // The score above contains this grade, and this command never measures one:
     // whatever is here was carried from the recorded assessment of this same
@@ -266,6 +276,9 @@ export function renderDoc(score: number, scoreMax: number, band: string, options
 
 function helpLines(options: DocOptions): string[] {
   const lines: string[] = [];
+  if (options.configState === 'unverified') {
+    lines.push(`${unverifiedSentence()} No hard rule reached this ranking either, so a path only a rule would have kept is not in it`);
+  }
   if (options.result.stage === 1) {
     lines.push(`Stage 1 only: ${detailOf(options.result.model)}`);
     lines.push('A stage 1 fragment has no category: the arithmetic knows a fragment is worth reading, not what kind of thing it is');
@@ -300,6 +313,9 @@ export function renderMarkdown(doc: ToonObject): string {
     `Change ${String(doc.base)}..${String(doc.head)}, score ${String(doc.score)} of at most ${String(doc.score_max)}, band **${String(doc.band_label)}**.`,
     `Stage ${String(doc.stage)}: ${String(doc.candidates_considered)} candidates from ${String(doc.hunks)} hunks. ${String(doc.model_detail)}`,
   ];
+  if (doc.config_state === 'unverified') {
+    lines.push('', `**Unverified.** ${unverifiedSentence()} No hard rule reached this ranking either.`);
+  }
   if (doc.drift !== null || doc.drift_intent !== null) {
     lines.push('', String(doc.drift_sentence));
   }

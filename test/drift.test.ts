@@ -1033,6 +1033,31 @@ test('a run given no intent says so, whether or not it also passed --no-model', 
   assert.doesNotMatch(without, /_Drift:/);
 });
 
+test('drift reports an unverified assessment as one, because the numbers it reads back are a floor', async (t) => {
+  // The score, the maximum and the band come off the row, so the caveat that
+  // travels with them travels here too: that assessment evaluated no hard rule.
+  const repo = tempRepo('drift-unverified');
+  repo.commitFiles('chore: a configuration nobody can read', {
+    '.eyes-on.yml': 'schema: eyes-on/v1\nthresholds: { read_fragments: 80, full_review: 20 }\n',
+    'src/a.ts': 'export const a = 1;\n',
+  });
+  repo.git(['checkout', '-q', '-b', 'work']);
+  repo.commitFiles('feat: another module', { 'src/b.ts': 'export const b = 2;\n' });
+  const env = sandboxEnv('drift-unverified');
+  await initRepo(t, repo, env);
+
+  await captureCli(['check', '--no-model', '--format', 'json'], { cwd: repo.path, env });
+  const doc = JSON.parse(
+    (await captureCli(['drift', '--intent', INTENT, '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as { unverified: boolean; score: number | null; help: string[] };
+  assert.equal(doc.unverified, true);
+  assert.ok(doc.score !== null, 'and it is reporting numbers, which is why the caveat is needed');
+  assert.ok(doc.help.some((line) => line.includes('no hard rule was evaluated and this band is a lower bound')));
+
+  const markdown = (await captureCli(['drift', '--intent', INTENT, '--no-model', '--format', 'md'], { cwd: repo.path, env })).out;
+  assert.match(markdown, /\*\*Unverified\.\*\*/);
+});
+
 test('a change nobody stated an intent for is not reported as an intent nobody compared', async (t) => {
   // The most-run path in the product: a plain `eyes-on check`, then `eyes-on`
   // with no subcommand. Saying the stated intent was not compared names a

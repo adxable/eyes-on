@@ -67,8 +67,43 @@ a design violation, not a flaky test.
 `npm run build` · `npm run typecheck` · `npm run lint` · `npm test` (builds
 first) · `npm run genskill`.
 
+## Every recorded fact carries what it was recorded against
+
+This governs stage 3 and everything after it, and it is here because the same
+shape broke five review rounds in a row, once per fact:
+
+- a **drift grade** measures the pair (diff, intent), so `drift_intent` is
+  recorded beside it and `carryDrift` decides whether it still answers the
+  question being asked;
+- a **score** is only meaningful against the weights it was computed under, so
+  `score_max` is recorded beside it and no renderer recomputes a denominator;
+- a **gate decision** answers a set of hard-rule hits, so `hits_fingerprint` and
+  `config_sha` are recorded beside it and `decisionCovering` (`src/db/gate.ts`)
+  is what every surface asks - never "is there a decision".
+- a **published comment** carries an assessment, so `prs.check_id` records which
+  one; a head alone does not name a check keyed on (repository, base, head).
+
+When a later run's context differs, the recorded fact **does not apply**: the
+grade is superseded, the run parks again. Adding a column for symmetry is not
+the rule - the rule is about what can come apart. Two facts already carry their
+context and need nothing: `spots` rows carry `check_id` and `source` (which
+assessment, which stage chose the fragment), and `blame_cache` is keyed on the
+fix commit whose blame it holds, which never changes; the trusted config decides
+only whether a commit is a *fix*, and that decision is taken before the cache is
+consulted.
+
 ## Sharp edges
 
+- **A gate decision is evidence about the rules it was shown, and nothing
+  else.** `respond` accepts an answer on a run no rule parked - a deliberate
+  answer about a change nobody had to read is still a fact - so asking only
+  whether a decision row exists let that answer, or one given while the trusted
+  config was unreadable and *no* rule could be evaluated, pre-answer a rule that
+  fired later; the pull request then published a waiver against a rule nobody
+  was shown. `hitsFingerprint` names the set, `recordDecision` stores it and
+  `statusFor` compares it, so a change whose rule set moves parks again while a
+  genuinely answered gate never reopens. `test/gate.test.ts` covers both
+  directions.
 - **Zero runtime dependencies is deliberate** (report section 7). The TOON
   encoder, the YAML subset and the SQLite access layer are hand-written for that
   reason. Do not add a runtime dependency without revisiting that decision.

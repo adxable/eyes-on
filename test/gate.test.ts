@@ -126,6 +126,53 @@ test('acceptance: a waiver records the decision, the reason and who gave it', as
   assert.equal(row?.status, 'done', 'answering releases the park');
 });
 
+test('a decision answers the rules it was shown, so a rule that appears later parks the change again', async (t) => {
+  // A decision is evidence about the rules somebody was given. Answering a run
+  // no rule matched is supported and recorded - but it must not pre-answer a
+  // rule that only becomes visible when the default branch gains one, or the
+  // pull request publishes a waiver against a rule nobody was ever shown.
+  const repo = tempRepo('gate-newrule');
+  repo.commitFiles('chore: nothing to protect yet', { 'src/a.ts': 'export const a = 1;\n' });
+  repo.git(['checkout', '-q', '-b', 'work']);
+  repo.commitFiles('chore: bump replicas', { 'deploy/values.yaml': 'replicas: 4\n' });
+  const env = sandboxEnv('gate-newrule');
+  await initRepo(t, repo, env);
+
+  const before = JSON.parse((await captureCli(['check', '--format', 'json'], { cwd: repo.path, env })).out) as CheckDoc;
+  assert.equal(before.gate, 'none', 'no rule has been written yet');
+
+  const answered = await captureCli(['axi', 'respond', '--action', 'waive', '--reason', 'nothing here needs reading', '--format', 'json'], {
+    cwd: repo.path,
+    env,
+  });
+  assert.equal(answered.code, EXIT_OK);
+  const answer = JSON.parse(answered.out) as RespondDoc & { answered_hits: unknown[] };
+  assert.deepEqual(answer.answered_hits, [], 'the decision was given against no rule at all');
+
+  // The rule lands on the default branch. base..head does not move - the
+  // merge-base is still where `work` left `main` - so this is the same check.
+  repo.checkout('main');
+  repo.commitFiles('chore: protect the deployment', { '.eyes-on.yml': CONFIG });
+  repo.checkout('work');
+
+  const after = JSON.parse((await captureCli(['check', '--format', 'json'], { cwd: repo.path, env })).out) as CheckDoc;
+  assert.equal(after.check_id, before.check_id, 'the same change, so the same check');
+  assert.equal(after.band, 'pelna');
+  assert.equal(after.gate, 'must_read', 'the rule was never answered, so it parks');
+  assert.equal(after.decision, null, 'and the earlier waiver is not attributed to it');
+
+  const db = openDb(env);
+  const parked = db.get<{ status: string }>('SELECT status FROM checks WHERE id = ?', after.check_id);
+  db.close();
+  assert.equal(parked?.status, 'must_read');
+
+  // Answering the rule that actually fired releases it, and stays released.
+  await captureCli(['axi', 'respond', '--action', 'read', '--format', 'json'], { cwd: repo.path, env });
+  const released = JSON.parse((await captureCli(['check', '--format', 'json'], { cwd: repo.path, env })).out) as CheckDoc;
+  assert.equal(released.gate, 'none');
+  assert.equal(released.decision, 'read');
+});
+
 test('answering the gate records a decision without making an unreadable configuration readable', async (t) => {
   // A check recorded `unverified` was scored with no hard rules at all, so its
   // band is a lower bound. Answering the gate says what a person decided; it
@@ -146,11 +193,18 @@ test('answering the gate records a decision without making an unreadable configu
   assert.equal(check.config_state, 'unverified');
 
   const result = await captureCli(['axi', 'respond', '--action', 'read', '--format', 'json'], { cwd: repo.path, env });
-  const doc = JSON.parse(result.out) as RespondDoc & { unverified: boolean };
+  const doc = JSON.parse(result.out) as RespondDoc & { unverified: boolean; help: string[] };
   assert.equal(result.code, EXIT_OK);
   assert.equal(doc.action, 'read', 'the decision is still recorded');
   assert.equal(doc.status, 'unverified', 'the payload reports the status the row was left in');
   assert.equal(doc.unverified, true);
+  // Not evaluated and not matched are different states with different remedies,
+  // and one document may not claim both.
+  assert.ok(doc.help.some((line) => line.includes('no hard rule could be evaluated')));
+  assert.ok(
+    !doc.help.some((line) => line.includes('no hard rule matched it')),
+    'a run whose rules were never evaluated cannot report that none matched',
+  );
 
   const db = openDb(env);
   const row = db.get<{ status: string }>('SELECT status FROM checks WHERE id = ?', check.check_id);

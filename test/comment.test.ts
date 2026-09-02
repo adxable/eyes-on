@@ -127,7 +127,7 @@ test('the comment says what to read and never becomes a second pull-request body
       { check_id: 'abc123', file: 'deploy/my values.yaml', line: 4, category: 'correctness', why: 'check the replica count', weight: 10, source: 'model' },
     ],
     hits: [{ glob: 'deploy/**', why: 'costs a machine', files: ['deploy/my values.yaml'] }],
-    decision: { check_id: 'abc123', action: 'read', reason: null, decided_by: 'crewmate', decided_at: 0 },
+    decision: { check_id: 'abc123', action: 'read', reason: null, decided_by: 'crewmate', decided_at: 0, hits_fingerprint: 'f', config_sha: null },
     driftItems: [{ check_id: 'abc123', kind: 'unrequested_in_diff', position: 0, item: 'a health endpoint nobody asked for' }],
     signals: [{ name: 'fix_history', normalized: 0.72 }, { name: 'churn', normalized: 0 }],
     stale: false,

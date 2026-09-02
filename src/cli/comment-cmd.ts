@@ -5,7 +5,7 @@ import { emitDoc, progress, EXIT_OK, EXIT_ERROR, EXIT_USAGE, UserFacingError } f
 import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
 import { checkByID, checkID, type CheckRow } from '../db/checks.js';
-import { driftItemsFor, latestDecision, recordComment, spotsFor } from '../db/gate.js';
+import { driftItemsFor, recordedDecisionCovering, recordComment, spotsFor } from '../db/gate.js';
 import { findAllMarked, renderComment, MARKER_PREFIX } from '../gh/comment.js';
 import { createComment, listComments, pullHeadSHA, repoSlug, updateComment, GhError } from '../gh/gh.js';
 import { driftProvenanceSentence, unverifiedSentence } from '../risk/signals.js';
@@ -47,7 +47,10 @@ export async function commentCommand(context: Context): Promise<number> {
     ]);
   }
 
-  const decision = latestDecision(db, id);
+  // The decision that answers the hits recorded for this check, never merely
+  // the newest one: publishing a waiver beside a rule it was not given against
+  // attributes it to a rule nobody was shown.
+  const decision = recordedDecisionCovering(db, id);
   const spots = spotsFor(db, id);
 
   // GitHub is consulted before the comment is rendered, because whether the
@@ -113,7 +116,7 @@ export async function commentCommand(context: Context): Promise<number> {
       : updateComment(risk.clonePath, slug, existingId, finalBody);
     url = written?.html_url ?? existingUrl;
     commentId = written?.id ?? existingId;
-    recordComment(db, { repoId: risk.repoId, number, url, headSHA: check.head_sha });
+    recordComment(db, { repoId: risk.repoId, number, url, headSHA: check.head_sha, checkId: check.id });
     progress(context.writers, `${action === 'create' ? 'posted' : 'updated'} the eyes-on comment on #${number}`);
   }
 

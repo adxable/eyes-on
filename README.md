@@ -47,15 +47,15 @@ leaves a healthy install alone. `eyes-on init --watch` additionally installs a
 | `eyes-on doctor` | Readiness, degradations, and collisions with no-mistakes |
 | `eyes-on status` | Daemon and registered repositories |
 | `eyes-on daemon {start\|stop\|restart\|status\|run --root <dir>\|notify-commit}` | Manage the daemon |
-| `eyes-on check [--base <ref>] [--head <ref>] [--intent "..."] [--no-model] [--strict]` | Score the change, apply the hard rules, and with an intent measure the drift |
-| `eyes-on spotlight [--n 5] [--intent "..."] [--no-model]` | The three to five fragments a human should actually read |
-| `eyes-on drift [--intent "..."] [--no-model]` | What the diff does, against what its author said it would |
-| `eyes-on comment --pr <n> [--check-id <id>] [--dry-run]` | One sticky comment on the pull request; never the body |
-| `eyes-on why <file>` \| `eyes-on why --top <n>` | Where one file's risk came from, or where risk lives in the repository |
-| `eyes-on rules --check` | The hard rules alone, read from the default branch |
-| `eyes-on export-path-instructions` | A `review.path_instructions` block for `.no-mistakes.yaml` |
-| `eyes-on backtest --split <date>[,<date>...]` | Whether the signal knew anything, on this repository's own history |
-| `eyes-on axi {status\|check\|logs [--lines <n>]\|respond [--check-id <id>] [--by <name>]}` | The agent surface, including the `must_read` gate |
+| `eyes-on check [--base <ref>] [--head <ref>] [--default-branch <ref>] [--intent "..."] [--no-model] [--strict]` | Score the change, apply the hard rules, and with an intent measure the drift |
+| `eyes-on spotlight [--base <ref>] [--head <ref>] [--default-branch <ref>] [--n 5] [--intent "..."] [--no-model]` | The three to five fragments a human should actually read |
+| `eyes-on drift [--base <ref>] [--head <ref>] [--default-branch <ref>] [--intent "..."] [--no-model]` | What the diff does, against what its author said it would |
+| `eyes-on comment --pr <n> [--check-id <id>] [--base <ref>] [--head <ref>] [--default-branch <ref>] [--dry-run]` | One sticky comment on the pull request; never the body |
+| `eyes-on why <file>` \| `eyes-on why --top <n> [--default-branch <ref>]` | Where one file's risk came from, or where risk lives in the repository |
+| `eyes-on rules --check [--base <ref>] [--head <ref>] [--default-branch <ref>]` | The hard rules alone, read from the default branch |
+| `eyes-on export-path-instructions [--min-risk <0-100>] [--default-branch <ref>]` | A `review.path_instructions` block for `.no-mistakes.yaml` |
+| `eyes-on backtest --split <date>[,<date>...] [--horizon <days>] [--default-branch <ref>]` | Whether the signal knew anything, on this repository's own history |
+| `eyes-on axi {status\|check\|logs [--lines <n>]\|respond [--check-id <id>] [--by <name>]} [--base <ref>] [--head <ref>] [--default-branch <ref>]` | The agent surface, including the `must_read` gate |
 
 `label`, `leaks` and `calibrate` arrive in stage 3. `eyes-on help` prints the
 full surface with the stage that owns each one.
@@ -103,9 +103,12 @@ eyes-on axi respond --action read
 eyes-on axi respond --action waive --reason "why this is safe to merge unread"
 ```
 
-A waiver with no reason is refused. The decision, the reason and who gave it are
-written down, which is what turns the channel label from a declaration into
-evidence - and is what stage 3's ledger reads.
+A waiver with no reason is refused. The decision, the reason, who gave it and
+**which rule hits it answered** are written down, which is what turns the channel
+label from a declaration into evidence - and is what stage 3's ledger reads. A
+decision answers the rules it was shown: answer a change no rule matched, then
+add a rule that reaches it, and the change parks again rather than arriving
+pre-waived.
 
 ## How the score is built
 

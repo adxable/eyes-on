@@ -6,7 +6,13 @@ import { emitDoc, EXIT_OK, EXIT_USAGE, UserFacingError } from './output.js';
 import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
 import { checkByID, checkID, type CheckRow } from '../db/checks.js';
-import { allDecisions, latestDecision, recordDecision, type GateAction } from '../db/gate.js';
+import {
+  allDecisions,
+  decisionCovering,
+  recordDecision,
+  recordedHits,
+  type GateAction,
+} from '../db/gate.js';
 import { bandLabel, driftProvenanceSentence, unverifiedSentence, type Band } from '../risk/signals.js';
 
 /**
@@ -61,9 +67,21 @@ export async function respondCommand(context: Context): Promise<number> {
     ]);
   }
 
-  const previous = latestDecision(db, id);
+  // The hits this answer is given against. A decision is evidence about the
+  // rules somebody was shown and about nothing else, so they are recorded with
+  // it and the gate compares them - answering a run no rule fired on cannot
+  // pre-answer a rule that appears later.
+  const hits = recordedHits(db, id);
+  const previous = decisionCovering(db, id, hits);
   const decidedBy = flagString(context.args, 'by') ?? defaultActor(context);
-  const decision = recordDecision(db, { checkId: id, action, reason, decidedBy });
+  const decision = recordDecision(db, {
+    checkId: id,
+    action,
+    reason,
+    decidedBy,
+    hits,
+    configSha: check.trusted_config_sha,
+  });
   // Read back rather than asserted: an `unverified` check keeps that status
   // through the gate, so the row is what this run left behind.
   const after = checkByID(db, id);
@@ -74,6 +92,10 @@ export async function respondCommand(context: Context): Promise<number> {
     // an agent that responds twice has to be able to tell that it did.
     gate_was: previous ? 'none' : check.status === 'must_read' ? 'must_read' : 'none',
     gate: 'none',
+    // What this answer was given against, so a later run can tell whether it
+    // answers the rules in front of it. One row per matched file.
+    answered_hits: hits.map((hit) => ({ glob: hit.glob, file: hit.file })) as ToonValue,
+    answered_config_sha: check.trusted_config_sha,
     status: after?.status ?? 'done',
     unverified: (after ?? check).status === 'unverified',
     action: decision.action,
@@ -86,6 +108,10 @@ export async function respondCommand(context: Context): Promise<number> {
       reason: row.reason,
       decided_by: row.decided_by,
       decided_at: row.decided_at,
+      // Whether that row answers the rules in front of this run. A decision
+      // taken against a different set of hits is still a fact about the change
+      // and is kept, but it is not an answer to this gate.
+      answers_these_hits: row.hits_fingerprint === decision.hits_fingerprint,
     })) as ToonValue,
     branch: check.branch,
     base: check.base_sha.slice(0, 12),
@@ -117,10 +143,12 @@ function helpLines(check: CheckRow, wasAnswered: boolean): string[] {
   const lines: string[] = [];
   if (check.status === 'unverified') {
     lines.push(`${unverifiedSentence()} The decision is recorded and that stays true, so the check keeps the status`);
-  }
-  if (check.status !== 'must_read' && !wasAnswered) {
     lines.push(
-      'This run was not parked: no hard rule matched it. The decision is recorded anyway, because a deliberate answer about a change nobody had to read is still a fact about that change',
+      'This run was not parked because no hard rule could be evaluated, not because none matched; this decision answers no rule, and one that fires once the configuration parses parks the change again',
+    );
+  } else if (check.status !== 'must_read' && !wasAnswered) {
+    lines.push(
+      'This run was not parked: no hard rule matched it. The decision is recorded anyway, because a deliberate answer about a change nobody had to read is still a fact about that change, and it answers no rule that fires later',
     );
   }
   if (wasAnswered) {

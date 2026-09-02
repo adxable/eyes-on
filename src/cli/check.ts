@@ -15,8 +15,8 @@ import {
   type CarryDecision,
 } from '../risk/signals.js';
 import { hitSentence } from '../rules/hard.js';
-import { findCheck, recordAssessment, writeReport } from '../db/checks.js';
-import { driftItemsFor, latestDecision, type DecisionRow, type DriftItemRow } from '../db/gate.js';
+import { findCheck, hitsOf, recordAssessment, writeReport } from '../db/checks.js';
+import { decisionCovering, driftItemsFor, type DecisionRow, type DriftItemRow } from '../db/gate.js';
 import { measureDrift, detailOf, type DriftResult } from '../spot/drift.js';
 import { loadConfig } from '../core/config.js';
 
@@ -123,7 +123,7 @@ export async function checkCommand(context: Context): Promise<number> {
       carry,
       measured: drift,
     });
-    decision = latestDecision(risk.db, checkId);
+    decision = decisionCovering(risk.db, checkId, hitsOf(assessment));
     // The two lists belong to the grade, so they are read back from the record
     // rather than from this run's result: a carried grade would otherwise be
     // published beside two empty lists, which reads as "the intent and the diff
