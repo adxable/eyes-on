@@ -174,6 +174,10 @@ export interface StubAgent {
   /** Every argument vector the stub was invoked with, as it was executed. This
    *  is how a test asserts what eyes-on ran rather than what it said it ran. */
   argv(): string[][];
+  /** The working directory the stub was actually started in, once per run. A
+   *  coding agent reads the configuration of wherever it starts, so this is the
+   *  environment eyes-on handed it rather than the one it claimed to. */
+  cwds(): string[];
   /** Whether the stub was invoked at all. The `--no-model` acceptance condition
    *  is exactly this being false. */
   called(): boolean;
@@ -203,6 +207,7 @@ const prompt = fs.readFileSync(0, 'utf8');
 const before = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\\n').filter(Boolean).length : 0;
 fs.appendFileSync(log, JSON.stringify(prompt) + '\\n');
 fs.appendFileSync(path.join(dir, 'argv.jsonl'), JSON.stringify(process.argv.slice(1)) + '\\n');
+fs.appendFileSync(path.join(dir, 'cwd.jsonl'), JSON.stringify(process.cwd()) + '\\n');
 const responses = JSON.parse(fs.readFileSync(path.join(dir, 'responses.json'), 'utf8'));
 process.stdout.write(String(responses[Math.min(before, responses.length - 1)] ?? ''));
 `,
@@ -218,6 +223,16 @@ process.stdout.write(String(responses[Math.min(before, responses.length - 1)] ??
           .split('\n')
           .filter((line) => line.length > 0)
           .map((line) => JSON.parse(line) as string[]);
+      } catch {
+        return [];
+      }
+    },
+    cwds(): string[] {
+      try {
+        return readFileSync(join(dir, 'cwd.jsonl'), 'utf8')
+          .split('\n')
+          .filter((line) => line.length > 0)
+          .map((line) => JSON.parse(line) as string);
       } catch {
         return [];
       }

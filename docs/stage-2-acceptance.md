@@ -359,6 +359,20 @@ repository is repository-controlled input to process execution.
 `test/spotlight.test.ts` asserts the argv the agent was actually invoked with,
 and that a planted `tools/claude` is never executed.
 
+**And it does not choose the agent's working directory either.** The agent is
+started in `<state root>/agent`, a directory eyes-on creates and owns, rather
+than in the clone. The consequence, stated plainly because it changes what a
+real `claude` sees: the agent no longer reads the assessed repository's agent
+configuration or instruction files - a `.claude/settings.json` and a `CLAUDE.md`
+added by the branch under review are simply not on its path any more. What that
+means for the result is that the prompt is self-contained by construction, so
+the fragments and the drift grade are computed from the text eyes-on supplies
+on stdin and from nothing the repository can add. The working directory was the
+third disguise of one vector - the program's path, then its argv, then the
+directory it starts in - so it is closed the same way the other two were:
+`modelOptionsFor` is the only place a cwd is chosen. `test/spotlight.test.ts`
+asserts the directory the agent was actually run in.
+
 ## 7. Drift does not gate
 
 `eyes-on drift` exits 0 for a grade of 5 exactly as it does for a grade of 1,
@@ -480,6 +494,17 @@ marker file stamped between them:
 | `git for-each-ref` | 369 lines | identical |
 | `git config --local --list` | 18 lines | identical |
 | `git remote -v` | 4 lines | identical |
+
+**This is a measurement of one session, not a guarantee.** It says the clone was
+byte-identical across this sweep; it does not say nothing eyes-on runs can ever
+write there. eyes-on's own writes are structural - `gitReadClone()` allow-lists
+the subcommands so no git invocation can move a ref, an index entry or a config
+value, and every other write goes through `Paths` - but a local agent is a
+separate process with the user's environment and eyes-on has no sandbox for it.
+What eyes-on controls is the environment it hands that process, which since the
+change above is a working directory under its own state root and a prompt on
+stdin, with nothing pointing at the clone. The table above is evidence for the
+one session; the enforcement claim is deliberately the narrower one.
 
 The stage 0 and stage 1 caveat applies again and was observed again:
 `~/.no-mistakes/telemetry-gate.json` is written while eyes-on runs, by

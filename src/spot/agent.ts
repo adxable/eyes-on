@@ -29,6 +29,10 @@ import { delimiter, isAbsolute, join, resolve } from 'node:path';
  * of `AGENT_ARGV` and eyes-on holds the whole argv that name maps to. There is
  * nothing left for a repository to choose: not the path, not the name outside
  * the set, not the flags, and not a dimension nobody has thought of yet.
+ * The working directory was such a dimension - a coding agent reads the
+ * settings and instruction files of the directory it starts in - and it is
+ * closed the same way: `modelOptionsFor` starts the agent in `Paths.agentDir`,
+ * a directory eyes-on owns, and never in the clone.
  * `model.command` is honoured only under `model.allow_any_command` in
  * `~/.eyes-on/config.yaml`, which no branch can write; a repository that
  * carries `model.command` without it is refused and the caller falls back to
@@ -292,8 +296,9 @@ export function hasPathSeparator(name: string): boolean {
  * `cwd` is the directory a relative name is resolved against, and it is the
  * same one `askModel` spawns in. Passing it here rather than reading
  * `process.cwd()` is what keeps the check and the spawn looking at one file:
- * eyes-on runs from anywhere inside the clone, so the two would otherwise
- * disagree the moment somebody runs it from a subdirectory.
+ * the agent starts in eyes-on's own directory while the command runs from
+ * wherever the caller invoked it, so the two would otherwise disagree about
+ * what a relative name means.
  */
 export function isExecutable(name: string, env: NodeJS.ProcessEnv, cwd?: string): boolean {
   if (hasPathSeparator(name)) {

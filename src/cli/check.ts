@@ -165,7 +165,7 @@ function driftFor(
   intent: string | null,
 ): DriftResult | null {
   if (intent === null || intent.trim().length === 0) return null;
-  const model = modelOptionsFor(context, risk.trusted.config, risk.clonePath);
+  const model = modelOptionsFor(context, risk.trusted.config);
   if (model === null) {
     progress(context.writers, '--no-model: this run measured no drift');
     return null;

@@ -129,11 +129,6 @@ export interface DriftEvidence {
   superseded?: { grade: number; intent: string | null } | null;
 }
 
-export function driftProvenanceOf(measuredNow: number | null, recorded: number | null): DriftProvenance {
-  if (recorded === null) return 'none';
-  return measuredNow === null ? 'carried' : 'measured';
-}
-
 /**
  * The one sentence that says where the grade came from and what it answers,
  * written here rather than in each renderer so no surface can claim more than

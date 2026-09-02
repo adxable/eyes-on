@@ -105,7 +105,7 @@ export async function spotlightCommand(context: Context): Promise<number> {
     intent: flagString(context.args, 'intent') ?? existing?.intent ?? null,
     score: assessment.score,
     band: assessment.band,
-    model: modelOptionsFor(context, risk.trusted.config, risk.clonePath),
+    model: modelOptionsFor(context, risk.trusted.config),
   });
   if (result.stage === 1 && !noModel) {
     progress(context.writers, `stage 2 did not run: ${detailOf(result.model)}`);

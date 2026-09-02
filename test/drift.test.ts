@@ -917,3 +917,40 @@ test('drift reuses the intent recorded by check rather than asking for it twice'
   assert.equal(doc.intent, INTENT);
   assert.equal(doc.drift, 2);
 });
+
+test('the intent column records whether this run stated an intent or reused the recorded one', async (t) => {
+  // `intent_source` exists to say where the intent came from, and `drift` with
+  // no `--intent` reuses the one already on the row. Recording that as `flag`
+  // said this invocation stated an intent it was never given, and `spotlight`
+  // reads the value back and rewrites it, so the wrong answer persisted.
+  const agent = stubAgent('drift-source', [describeAnswer(), compareAnswer(3)]);
+  const repo = repoWith(agent);
+  const env: Record<string, string> = { ...sandboxEnv('drift-source'), PATH: agent.path };
+  await initRepo(t, repo, env);
+  const dbPath = join(env.EYES_HOME as string, 'state.sqlite');
+  const sourceOf = (id: string): { intent: string | null; intent_source: string | null } | undefined => {
+    const db = Database.open(dbPath);
+    try {
+      const row = db.get<{ intent: string | null; intent_source: string | null }>(
+        'SELECT intent, intent_source FROM checks WHERE id = ?',
+        id,
+      );
+      return row ? { intent: row.intent, intent_source: row.intent_source } : undefined;
+    } finally {
+      db.close();
+    }
+  };
+
+  await captureCli(['check', '--format', 'json'], { cwd: repo.path, env });
+  const measured = JSON.parse(
+    (await captureCli(['drift', '--intent', INTENT, '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as DriftDoc;
+  assert.equal(measured.drift, 3);
+  assert.deepEqual(sourceOf(measured.check_id as string), { intent: INTENT, intent_source: 'flag' });
+
+  // No `--intent`: the intent comes off the row, so it is carried, not stated.
+  const carried = JSON.parse(
+    (await captureCli(['drift', '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as DriftDoc;
+  assert.deepEqual(sourceOf(carried.check_id as string), { intent: INTENT, intent_source: 'carried' });
+});

@@ -15,13 +15,22 @@ correctness bug even when everything still passes:
   write lives under the state root, so this is enforced where the root is
   resolved: `Paths` refuses a root inside `NM_HOME` (physical-path containment,
   any depth) and no command gets far enough to create it;
-- never write a ref, an index entry, a remote or a config value into a working
-  clone. `git()` in `src/git/git.ts` is module-private, so a clone is reachable
-  only through `gitReadClone()`, which refuses any subcommand outside the
-  allow-list and refuses the write forms of the three that can go either way
-  (`config`, `remote`, `symbolic-ref`), or through `fetchCloneIntoMirror()`,
-  which runs with `--git-dir` set to the mirror and reads the clone as a fetch
-  source. Those two exports are the enforcement point;
+- **eyes-on itself** never writes a ref, an index entry, a remote or a config
+  value into a working clone. `git()` in `src/git/git.ts` is module-private, so
+  a clone is reachable only through `gitReadClone()`, which refuses any
+  subcommand outside the allow-list and refuses the write forms of the three
+  that can go either way (`config`, `remote`, `symbolic-ref`), or through
+  `fetchCloneIntoMirror()`, which runs with `--git-dir` set to the mirror and
+  reads the clone as a fetch source. Those two exports plus `Paths` - which
+  every other write goes through - are the enforcement point. This prohibition
+  covers two actors and only one of them is ours to enforce: a spawned agent is
+  a separate process with the user's environment, and no allow-list of ours can
+  stop an arbitrary program from writing to an arbitrary path. eyes-on has no
+  sandbox, so the honest guarantee is stated at the granularity it is enforced
+  at - eyes-on's own writes are structural, and what eyes-on controls about the
+  agent is the environment it hands it: a working directory under its own state
+  root, a prompt on stdin, and nothing pointing at the clone. Do not restate
+  this as "nothing eyes-on runs writes into a clone";
 - never edit a pull request body, open, merge or review a pull request. `gh()`
   in `src/gh/gh.ts` is module-private, so every invocation passes `assertAllowed`
   first: two reads and exactly two writes, both issue-comment endpoints, matched
@@ -126,6 +135,15 @@ first) · `npm run genskill`.
   ignored. `isExecutable` resolves against the directory `askModel` spawns in,
   so the check and the spawn cannot look at two different files.
   `test/spotlight.test.ts` asserts the argv the stub was actually invoked with.
+- **The agent starts in `Paths.agentDir`, never in the clone.** The working
+  directory is the same vector as the argv in a third disguise: a coding agent
+  reads the settings and instruction files of the directory it starts in, so a
+  branch adding `.claude/settings.json` and a `CLAUDE.md` would be configuring
+  the process eyes-on spawns over that same branch's diff. `modelOptionsFor`
+  (`src/cli/model-context.ts`) is the one place a cwd is chosen and it chooses
+  a directory under the state root. The prompt is on stdin and carries the whole
+  input, so the agent needs nothing from the repository; `test/spotlight.test.ts`
+  asserts the directory the stub was actually run in.
 - **A prompt the model cannot see the edge of produces a wrong answer, not a
   missing one.** The drift description's diff is cut at a size limit and git
   orders its output by path, so an unmarked cut described a three-thousand-line
@@ -138,6 +156,20 @@ first) · `npm run genskill`.
   Collapsing them into one call leaves a command that runs, costs money and
   reports an agreement it never checked. `test/drift.test.ts` asserts the
   separation by reading the prompts that were actually sent.
+- **A drift grade measures the pair (diff, intent); the row is keyed without the
+  intent.** `checks` is keyed on (repository, base, head), so the intent it was
+  measured against is recorded beside the grade in `drift_intent` and travels
+  with it. `carryDrift` (`src/risk/signals.ts`) is the single place that decides
+  between measured, carried and superseded, and `driftProvenanceSentence` is the
+  single place that says which - four commands read both. Not measuring is not
+  changing: a run that took no measurement moves none of the four recorded facts
+  and deletes no `drift_items`. A run stating a *different* intent is the
+  exception, because the previous verdict answers a different question: the
+  grade is dropped through `supersedeDrift` rather than inherited, and that run
+  does move the numbers and must say so. This broke on four consecutive review
+  rounds, once per surface; `test/drift.test.ts` covers all three cases. Do not
+  add a second helper that decides provenance from a grade alone - one that
+  ignored the intent is exactly what was removed.
 - **S7 is the grade minus one, and the score can exceed 100.** Feeding the grade
   itself would put eight points on every change whose drift was measured and
   found to be 1 - a change that did exactly what it said. The cost is that S7

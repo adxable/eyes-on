@@ -206,6 +206,20 @@ export class Paths {
   get reportsDir(): string {
     return join(this.root, 'reports');
   }
+
+  /**
+   * The working directory a spawned agent is given.
+   *
+   * A process has to start somewhere, and a coding agent reads the settings and
+   * instruction files of whatever directory it starts in. Starting it in the
+   * clone would let the branch under assessment configure the process eyes-on
+   * runs over that same branch's diff, so it starts here instead: a directory
+   * eyes-on owns, holding nothing. The prompt arrives on stdin and carries the
+   * whole input, so nothing the agent needs is in the clone.
+   */
+  get agentDir(): string {
+    return join(this.root, 'agent');
+  }
   reportFile(headSHA: string): string {
     return join(this.reportsDir, `${headSHA}.json`);
   }
@@ -226,4 +240,4 @@ export class Paths {
 }
 
 /** Directories that must exist before anything writes into the root. */
-export const STATE_SUBDIRS = ['logs', 'mirrors', 'reports'] as const;
+export const STATE_SUBDIRS = ['logs', 'mirrors', 'reports', 'agent'] as const;

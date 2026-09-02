@@ -196,6 +196,13 @@ prompt those flags govern is built from the same repository's diff, so
 itself an agent with broad permissions and attacker-controlled input. There is
 now nothing left for it to choose.
 
+The agent is also started in a directory eyes-on owns, under the state root,
+rather than in the clone. A coding agent reads the settings and instruction
+files of the directory it starts in, and those would be the assessed branch's.
+It stops reading them: the prompt arrives on stdin and carries the whole input,
+so the fragments and the drift grade are computed from the text eyes-on supplies
+and from nothing the repository can add.
+
 Only `claude` has an argument vector eyes-on will run, because `claude -p` is
 the only invocation exercised here; a repository naming one of the others is
 told that rather than given a guessed flag. `model.command` - the whole argv -
@@ -219,6 +226,12 @@ requests, edit a pull request body, run tests, lint or CI, or block anything. It
 writes nothing into `~/.no-mistakes` and no ref into your working clone: fresh
 objects are fetched only into its own mirror, which borrows the clone's object
 store through `objects/info/alternates` rather than copying it.
+
+That guarantee is about eyes-on's own writes, and it is stated no wider than it
+is enforced. A local agent is a separate process running with your environment,
+and eyes-on does not sandbox it. What eyes-on controls is what it hands that
+process: a working directory under its own state root, one prompt on stdin, and
+nothing that points at your clone.
 
 The pull-request prohibition is enforced rather than intended: every `gh`
 invocation passes an allow-list of two comment endpoints before a process is

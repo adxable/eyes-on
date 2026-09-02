@@ -61,7 +61,12 @@ export async function driftCommand(context: Context): Promise<number> {
   assertMayMutate(context, 'drift');
 
   const risk = riskContext(context);
-  const intent = flagString(context.args, 'intent') ?? intentFromRecord(risk);
+  const intentFlag = flagString(context.args, 'intent');
+  const intent = intentFlag ?? intentFromRecord(risk);
+  // Where the intent came from, which is what the column is for: `drift` with
+  // no `--intent` reuses the one already on the row, and recording that as
+  // `flag` would say this invocation stated an intent it was never given.
+  const intentSource = intentFlag === null ? 'carried' : 'flag';
   if (intent === null || intent.trim().length === 0) {
     throw new UserFacingError('drift needs an intent to compare the change against', [
       'Pass --intent "why this change was made - the reason, not the summary"',
@@ -73,7 +78,7 @@ export async function driftCommand(context: Context): Promise<number> {
     progress(context.writers, `no change to compare: ${risk.baseFrom}`);
   }
 
-  const model = modelOptionsFor(context, risk.trusted.config, risk.clonePath);
+  const model = modelOptionsFor(context, risk.trusted.config);
   if (model !== null) {
     progress(context.writers, 'pass 1 of 2: describing the diff without showing the intent');
   }
@@ -120,7 +125,7 @@ export async function driftCommand(context: Context): Promise<number> {
         risk.db.run(
           'UPDATE checks SET intent = ?, intent_source = ?, updated_at = ? WHERE id = ?',
           intent,
-          'flag',
+          intentSource,
           Math.floor(Date.now() / 1000),
           checkId,
         );
@@ -147,6 +152,7 @@ export async function driftCommand(context: Context): Promise<number> {
           repoId: risk.repoId,
           branch: risk.branch,
           intent,
+          intentSource,
           assessment,
           drift: carry.grade,
           driftIntent: carry.intent,
