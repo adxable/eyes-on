@@ -281,18 +281,27 @@ function recordSentence(options: DocOptions): string {
   if (outcome === 'none' || recorded === null) {
     return 'Nothing was recorded: run `eyes-on check` on this change first, and the grade will be stored against it.';
   }
-  const numbers = `${String(recorded.score)} of at most ${String(recorded.score_max)}, band \`${String(recorded.band)}\``;
+  // A row recorded before eyes-on stored the maximum a score can reach has a
+  // score and no denominator, and this command does not rewrite the row it is
+  // describing - so the number is reported without one and the reason is named,
+  // rather than the word `null` being printed as a maximum.
+  const outOf = recorded.score_max === null ? '' : ` of at most ${String(recorded.score_max)}`;
+  const numbers = `${String(recorded.score)}${outOf}, band \`${String(recorded.band)}\``;
+  const missingMax =
+    recorded.score_max === null
+      ? ' That check was recorded before eyes-on stored the maximum a score can reach, so the number above has no denominator here; re-run `eyes-on check` to record one.'
+      : '';
   if (outcome === 'rescored') {
-    return `The check was rescored with this grade to ${numbers} - so \`status\` and \`comment\` read the same numbers.`;
+    return `The check was rescored with this grade to ${numbers} - so \`status\` and \`comment\` read the same numbers.${missingMax}`;
   }
   if (outcome === 'superseded') {
     return (
       `The recorded grade of ${String(options.carry.superseded?.grade)}/5 was measured against a different intent, so ` +
-      `it was dropped along with its lists and the check was rescored without a grade to ${numbers}.`
+      `it was dropped along with its lists and the check was rescored without a grade to ${numbers}.${missingMax}`
     );
   }
   const held = recorded.drift === null ? 'there was no grade to keep' : `the recorded grade of ${String(recorded.drift)}/5 answers this same intent`;
-  return `Nothing on the recorded check moved: nothing was measured and ${held}, so it still reads ${numbers}. Only the intent was updated.`;
+  return `Nothing on the recorded check moved: nothing was measured and ${held}, so it still reads ${numbers}. Only the intent was updated.${missingMax}`;
 }
 
 function helpLines(result: DriftResult, options: DocOptions): string[] {

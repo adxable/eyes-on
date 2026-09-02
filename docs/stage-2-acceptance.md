@@ -48,7 +48,7 @@ does not survive the squash-merge that lands it.
 | Test | Criterion | Result |
 |---|---|---|
 | Locality, stage 1 alone | the fragments land in a file the reviewer commented on, in ≥ 40% of the last 20 merged pull requests | **pass** - 16 of 20, **80%** |
-| Locality, stage 2 (model) | the same, with the model choosing | **pass** - 18 of 20, **90%** |
+| Locality, stage 2 (model) | the same, with the model choosing | **pass** - 18 of 20, **90%**, measured before the agent's working directory moved under the state root and scheduled to be re-measured; see section 1 |
 | Disjointness in the pull request | the body is byte-for-byte identical, and there is exactly one eyes-on comment however many recomputations | **pass** |
 | The gate | a hard-rule hit parks the run; `respond --action waive --reason` records the decision and the reason; no answer blocks anything but the eyes-on run | **pass** |
 | Emergency mode | `--no-model` returns stage 1 and calls no model once | **pass** |
@@ -115,6 +115,25 @@ for real - one call each, twenty calls in total. The sweep was run twice and
 both runs gave 18 of 20 with the same two misses, which is worth recording
 because a model call is not deterministic and one run would not have shown
 whether the number was.
+
+**This figure was measured before the agent's working directory moved under the
+eyes-on state root** (section 6, and the reason is recorded there). Both sweeps
+ran a `claude -p` started inside the adx-worker clone, so it read that
+repository's own `CLAUDE.md` and `.claude/settings.json`; the shipped code no
+longer gives it either. That is a different measurement instrument, so 90% is
+evidence about the previous configuration and not about what this branch ships.
+Which way the number would move is **not known** - the instructions the agent
+was reading were adx-worker's own conventions, which could have helped it pick
+the file a reviewer went to or could have pulled it towards whatever those files
+emphasise. The sweep is scheduled to be re-run against the shipped configuration
+after this branch is released, reported to the captain, and the refreshed figure
+travels with stage 3; until then this number stands with the caveat rather than
+as the last word. Twenty real model calls inside a fix round would wedge the
+pipeline on the first rate limit, which is why it was not re-run here.
+
+The stage 1 figure below takes **no** caveat: it is deterministic arithmetic
+with no model in it at all, so the working directory an agent would have been
+started in cannot touch it.
 
 | | hits | rate | median wall clock |
 |---|---|---|---|

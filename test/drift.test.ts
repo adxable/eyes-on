@@ -954,3 +954,89 @@ test('the intent column records whether this run stated an intent or reused the 
   ) as DriftDoc;
   assert.deepEqual(sourceOf(carried.check_id as string), { intent: INTENT, intent_source: 'carried' });
 });
+
+test('a carried grade is published with the lists it was measured with, not with two empty ones', async (t) => {
+  // An empty list is not "not measured here": it reads as the intent and the
+  // diff agreeing on everything, which is the opposite of what the measurement
+  // this run is carrying actually found.
+  const agent = stubAgent('drift-carry-items', [describeAnswer(), compareAnswer(3)]);
+  const repo = repoWith(agent);
+  const env: Record<string, string> = { ...sandboxEnv('drift-carry-items'), PATH: agent.path };
+  await initRepo(t, repo, env);
+
+  interface CheckDoc {
+    drift: number | null;
+    drift_provenance: string;
+    drift_missing_from_diff: string[];
+    drift_unrequested_in_diff: string[];
+  }
+  const measured = JSON.parse(
+    (await captureCli(['check', '--intent', INTENT, '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as CheckDoc;
+  assert.equal(measured.drift, 3);
+  assert.equal(measured.drift_provenance, 'measured');
+  assert.equal(measured.drift_unrequested_in_diff.length, 1);
+
+  const carried = JSON.parse(
+    (await captureCli(['check', '--intent', INTENT, '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as CheckDoc;
+  assert.equal(carried.drift, 3, 'the grade survives a run that measured nothing');
+  assert.equal(carried.drift_provenance, 'carried');
+  assert.deepEqual(
+    carried.drift_unrequested_in_diff,
+    measured.drift_unrequested_in_diff,
+    'and so do the items that grade was measured with',
+  );
+  assert.deepEqual(carried.drift_missing_from_diff, measured.drift_missing_from_diff);
+
+  const markdown = (await captureCli(['check', '--intent', INTENT, '--no-model', '--format', 'md'], { cwd: repo.path, env })).out;
+  assert.match(markdown, /in the change and not asked for: A health endpoint/);
+});
+
+test('a run given no intent says so, whether or not it also passed --no-model', async (t) => {
+  // The reason reported has to be the one that applies: naming --no-model here
+  // tells an agent that retrying with a model would produce a grade, and no
+  // model produces one for a run that asked no drift question.
+  const agent = stubAgent('drift-why-none', [describeAnswer(), compareAnswer(4)]);
+  const repo = repoWith(agent);
+  const env: Record<string, string> = { ...sandboxEnv('drift-why-none'), PATH: agent.path };
+  await initRepo(t, repo, env);
+
+  const doc = JSON.parse(
+    (await captureCli(['check', '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as { drift_state: string };
+  assert.equal(doc.drift_state, 'not measured: no --intent was given');
+  assert.equal(agent.called(), false);
+
+  // And the Markdown says nothing about drift on either intent-less run, rather
+  // than one of the two printing a line the other suppresses.
+  const withFlag = (await captureCli(['check', '--no-model', '--format', 'md'], { cwd: repo.path, env })).out;
+  const without = (await captureCli(['check', '--format', 'md'], { cwd: repo.path, env })).out;
+  assert.doesNotMatch(withFlag, /_Drift:/);
+  assert.doesNotMatch(without, /_Drift:/);
+});
+
+test('drift reports a check recorded without a maximum as having none, rather than printing the word null', async (t) => {
+  // The ordinary upgrade path: stage 1 recorded a score and no `score_max`, and
+  // this run takes the branch that does not rewrite the row.
+  const agent = stubAgent('drift-no-max', [describeAnswer(), compareAnswer(2)]);
+  const repo = repoWith(agent);
+  const env: Record<string, string> = { ...sandboxEnv('drift-no-max'), PATH: agent.path };
+  await initRepo(t, repo, env);
+  const dbPath = join(env.EYES_HOME as string, 'state.sqlite');
+
+  await captureCli(['check', '--format', 'json'], { cwd: repo.path, env });
+  const write = Database.open(dbPath);
+  write.run('UPDATE checks SET score_max = NULL');
+  write.close();
+
+  const doc = JSON.parse(
+    (await captureCli(['drift', '--intent', INTENT, '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as { record_sentence: string; help: string[] };
+  const markdown = (await captureCli(['drift', '--intent', INTENT, '--no-model', '--format', 'md'], { cwd: repo.path, env })).out;
+
+  assert.doesNotMatch(doc.record_sentence, /at most null/);
+  assert.doesNotMatch(markdown, /at most null/);
+  assert.match(doc.record_sentence, /no denominator here/);
+  assert.ok(doc.help.includes(doc.record_sentence), 'the help lines print the same sentence');
+});

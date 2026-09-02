@@ -116,11 +116,14 @@ first) · `npm run genskill`.
   filter would keep. Both are asserted in `test/check.test.ts` and
   `test/rules.test.ts`.
 - **`--no-model` must be unable to reach a model, not merely choose not to.**
-  `modelOptionsFor` (`src/cli/model-context.ts`) is the only place the flag is
-  read and it returns `null`; every caller checks `null` before building a
-  prompt. Adding a second read of the flag would turn a structural guarantee
-  into three `if`s that have to stay in agreement. `test/spotlight.test.ts`
-  asserts it against a fake agent that records every invocation.
+  `modelOptionsFor` (`src/cli/model-context.ts`) is the only place the flag
+  *decides* anything: it returns `null`, and every caller checks `null` before
+  building a prompt, so there is no branch that reaches `askModel` with the flag
+  set. Three commands read the flag again, but only to choose what their output
+  says about a model they were already unable to call. Keep it that way - a
+  second read that decides reachability would turn a structural guarantee into
+  several `if`s that have to stay in agreement. `test/spotlight.test.ts` asserts
+  it against a fake agent that records every invocation.
 - **A repository picks an agent by name; eyes-on owns the argv.** `.eyes-on.yml`
   comes from the default branch like every other trusted field, which is the
   right trust level for deciding which paths need a reviewer and not a reason to

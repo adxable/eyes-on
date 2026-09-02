@@ -9,7 +9,14 @@ import { assess, type Assessment } from '../risk/assess.js';
 import { bandLabel, carryDrift, driftProvenanceSentence, type CarryDecision } from '../risk/signals.js';
 import { hitSentence } from '../rules/hard.js';
 import { findCheck, recordCheck, writeReport } from '../db/checks.js';
-import { latestDecision, recordDrift, supersedeDrift, type DecisionRow } from '../db/gate.js';
+import {
+  driftItemsFor,
+  latestDecision,
+  recordDrift,
+  supersedeDrift,
+  type DecisionRow,
+  type DriftItemRow,
+} from '../db/gate.js';
 import { measureDrift, detailOf, type DriftResult } from '../spot/drift.js';
 import { loadConfig } from '../core/config.js';
 
@@ -106,6 +113,7 @@ export async function checkCommand(context: Context): Promise<number> {
 
   let decision: DecisionRow | undefined;
   let checkId: string | null = null;
+  let driftItems: DriftItemRow[] | null = null;
   if (risk.db) {
     checkId = recordCheck(risk.db, {
       repoId: risk.repoId,
@@ -122,6 +130,11 @@ export async function checkCommand(context: Context): Promise<number> {
     if (drift && drift.grade !== null) recordDrift(risk.db, checkId, drift, intent);
     else if (carry.supersede) supersedeDrift(risk.db, checkId, intent);
     decision = latestDecision(risk.db, checkId);
+    // The two lists belong to the grade, so they are read back from the record
+    // rather than from this run's result: a carried grade would otherwise be
+    // published beside two empty lists, which reads as "the intent and the diff
+    // agreed on everything" - the opposite of what the measurement found.
+    driftItems = driftItemsFor(risk.db, checkId);
   }
 
   const doc = renderDoc(assessment, {
@@ -131,6 +144,7 @@ export async function checkCommand(context: Context): Promise<number> {
     noModel,
     strict,
     drift,
+    driftItems,
     carry,
     decision,
     checkId,
@@ -193,6 +207,11 @@ interface RenderOptions {
   strict: boolean;
   /** What this run measured, or null when it measured nothing. */
   drift: DriftResult | null;
+  /** The two lists as they stand on the record, or null when there was no
+   *  database to record them in. They belong to the grade rather than to this
+   *  invocation, so a carried grade is published with the lists it was measured
+   *  with. */
+  driftItems: DriftItemRow[] | null;
   /** Which grade the score was computed with, where it came from, and the
    *  intent it answers. */
   carry: CarryDecision;
@@ -273,8 +292,8 @@ export function renderDoc(assessment: Assessment, options: RenderOptions): ToonO
     drift_detail: options.drift ? detailOf(options.drift.model) : null,
     // Lists, not joined strings: a sentence containing the separator read back
     // out of a joined cell becomes two sentences nobody wrote.
-    drift_missing_from_diff: (options.drift?.missing_from_diff ?? []) as ToonValue,
-    drift_unrequested_in_diff: (options.drift?.unrequested_in_diff ?? []) as ToonValue,
+    drift_missing_from_diff: driftItemsOf(options, 'missing_from_diff') as ToonValue,
+    drift_unrequested_in_diff: driftItemsOf(options, 'unrequested_in_diff') as ToonValue,
     signals: assessment.signals.map((signal) => ({
       name: signal.name,
       raw: round(signal.raw),
@@ -317,14 +336,31 @@ export function renderDoc(assessment: Assessment, options: RenderOptions): ToonO
   };
 }
 
+/**
+ * One of the two recorded lists, taken from the record rather than from this
+ * run, so a grade and the lists beside it always answer the same measurement.
+ * The result of this run is the fallback for a run with no database to read.
+ */
+function driftItemsOf(options: RenderOptions, kind: 'missing_from_diff' | 'unrequested_in_diff'): string[] {
+  if (options.driftItems !== null) {
+    return options.driftItems.filter((row) => row.kind === kind).map((row) => row.item);
+  }
+  return [...(options.drift?.[kind] ?? [])];
+}
+
 /** Why there is or is not a drift grade, in one word an agent can branch on. */
 function driftState(options: RenderOptions): string {
   if (options.carry.provenance === 'measured') return 'measured';
   if (options.carry.provenance === 'carried') return 'carried from an earlier measurement of this same intent';
   if (options.carry.supersede) return 'not measured: the recorded grade answers a different intent';
   if (options.drift === null) {
-    if (options.noModel) return 'not measured: --no-model';
-    return options.intent === null ? 'not measured: no --intent was given' : 'not measured';
+    // A run given no intent asked no drift question, so `--no-model` is not why
+    // it has no grade: naming it would tell an agent that retrying with a model
+    // would produce one, which it would not.
+    if (options.intent === null || options.intent.trim().length === 0) {
+      return 'not measured: no --intent was given';
+    }
+    return options.noModel ? 'not measured: --no-model' : 'not measured';
   }
   return 'not measured';
 }
