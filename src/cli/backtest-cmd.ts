@@ -8,6 +8,7 @@ import {
   parseSplit,
   CHURN_DECILE_LIFT_TARGET,
   FIX_HISTORY_LIFT_TARGET,
+  type GroupResult,
   type SplitResult,
 } from '../risk/backtest.js';
 import { resolveDefaultBranch } from '../rules/trusted.js';
@@ -25,6 +26,50 @@ import { resolveDefaultBranch } from '../rules/trusted.js';
  * anecdote. The verdict lines compare against the report's stage 1 thresholds
  * so the answer is pass or fail rather than two numbers to eyeball.
  */
+/** The three signals the table reports, in the order it reports them. */
+interface Signal {
+  key: string;
+  label: string;
+  of: (result: SplitResult) => GroupResult;
+  /** Whether its lift carries a threshold, and so is emphasised. */
+  emphasised: boolean;
+}
+
+const SIGNALS: readonly [Signal, Signal, Signal] = [
+  { key: 'fix_history', label: 'fix history', of: (result) => result.fix_history, emphasised: true },
+  { key: 'fix_touch', label: 'fix touch', of: (result) => result.fix_touch, emphasised: false },
+  { key: 'churn_decile', label: 'churn top decile', of: (result) => result.churn_top_decile, emphasised: true },
+];
+
+interface Unmeasured {
+  split: string;
+  signal: string;
+  reason: string;
+}
+
+/**
+ * Every signal that produced no lift, with the reason it did not.
+ *
+ * A split the replay could not get through carries one entry for the split
+ * rather than three identical ones, because the reason is the split's, not each
+ * signal's.
+ */
+function notMeasured(results: readonly SplitResult[]): Unmeasured[] {
+  const entries: Unmeasured[] = [];
+  for (const result of results) {
+    if (result.note !== null) {
+      entries.push({ split: result.split, signal: 'every signal', reason: result.note });
+      continue;
+    }
+    for (const signal of SIGNALS) {
+      const group = signal.of(result);
+      if (group.status === 'measured') continue;
+      entries.push({ split: result.split, signal: signal.label, reason: group.reason });
+    }
+  }
+  return entries;
+}
+
 export async function backtestCommand(context: Context): Promise<number> {
   const raw = flagString(context.args, 'split');
   if (!raw) {
@@ -75,22 +120,19 @@ export async function backtestCommand(context: Context): Promise<number> {
     onProgress: (message) => progress(context.writers, message),
   });
 
-  const evaluated = results.filter((result) => result.note === null);
-  // A verdict is a claim about the splits that measured *that* signal. A split
-  // where nothing was flagged, or where nothing was fixed afterwards, carries a
-  // null lift and is left out of its own signal's verdict rather than counted
-  // as a failure - and the count it rests on is reported beside it, so nobody
-  // has to guess how much evidence a `pass` stands on.
-  const verdict = (
-    pick: (result: SplitResult) => number | null,
-    target: number,
-  ): { measured: number; pass: boolean } => {
-    const lifts = results.map(pick).filter((lift): lift is number => lift !== null);
-    return { measured: lifts.length, pass: lifts.length > 0 && lifts.every((lift) => lift >= target) };
+  // A verdict is a claim about the splits that measured *that* signal, and
+  // `status` says which those are. Nothing here reconstructs the answer from a
+  // null, a zero or an empty string.
+  const verdict = (signal: Signal, target: number): { measured: number; pass: boolean } => {
+    const measured = results.map(signal.of).filter((group) => group.status === 'measured');
+    return { measured: measured.length, pass: measured.length > 0 && measured.every((group) => group.lift >= target) };
   };
-  const fixHistory = verdict((result) => result.fix_history.lift, FIX_HISTORY_LIFT_TARGET);
-  const fixTouch = verdict((result) => result.fix_touch.lift, FIX_HISTORY_LIFT_TARGET);
-  const churnDecile = verdict((result) => result.churn_top_decile.lift, CHURN_DECILE_LIFT_TARGET);
+  const fixHistory = verdict(SIGNALS[0], FIX_HISTORY_LIFT_TARGET);
+  const fixTouch = verdict(SIGNALS[1], FIX_HISTORY_LIFT_TARGET);
+  const churnDecile = verdict(SIGNALS[2], CHURN_DECILE_LIFT_TARGET);
+  // A split is evaluated when at least one of its signals produced a lift.
+  const evaluated = results.filter((result) => SIGNALS.some((signal) => signal.of(result).status === 'measured'));
+  const unmeasured = notMeasured(results);
 
   const doc: ToonObject = {
     splits: results.length,
@@ -106,6 +148,13 @@ export async function backtestCommand(context: Context): Promise<number> {
     fix_touch_pass: fixTouch.pass,
     churn_decile_measured: churnDecile.measured,
     churn_decile_pass: churnDecile.pass,
+    // One row per signal that produced no lift, with the reason as a value. A
+    // bare "not measured" is never the whole explanation in either format.
+    not_measured: unmeasured.map((entry) => ({
+      split: entry.split,
+      signal: entry.signal,
+      reason: entry.reason,
+    })) as ToonValue,
     results: results.map((result) => ({
       split: result.split,
       commit: result.split_commit ? result.split_commit.slice(0, 12) : null,
@@ -115,11 +164,14 @@ export async function backtestCommand(context: Context): Promise<number> {
       after_commits: result.after_commits,
       after_fixes: result.after_fix_commits,
       base_rate: round(result.base_rate),
+      fix_history_status: result.fix_history.status,
       fix_history_flagged: result.fix_history.flagged,
       fix_history_rate: round(result.fix_history.rate),
       fix_history_lift: round(result.fix_history.lift),
+      fix_touch_status: result.fix_touch.status,
       fix_touch_flagged: result.fix_touch.flagged,
       fix_touch_lift: round(result.fix_touch.lift),
+      churn_decile_status: result.churn_top_decile.status,
       churn_decile_flagged: result.churn_top_decile.flagged,
       churn_decile_rate: round(result.churn_top_decile.rate),
       churn_decile_lift: round(result.churn_top_decile.lift),
@@ -146,37 +198,38 @@ function round(value: number | null): number | null {
 
 function renderMarkdown(doc: ToonObject, results: readonly SplitResult[]): string {
   const lines: string[] = [
-    `# eyes-on backtest - ${String(doc.evaluated)} of ${String(doc.splits)} splits evaluated`,
+    `# eyes-on backtest - ${String(doc.evaluated)} of ${String(doc.splits)} splits produced a measurement`,
     '',
     `Anchor: \`${String(doc.anchor)}\`. Signal window: ${String(doc.window_days)} days before each split.`,
     '',
     '| split | files | blamed by a fix | lift | touched by a fix | lift | churn decile | lift |',
     '|---|---|---|---|---|---|---|---|',
   ];
-  // Every cell is keyed off whether the step behind it actually ran. A group
-  // with a null lift flagged nothing, or had nothing to compare against - so
-  // its flagged count is a placeholder zero, not a measurement, and printing it
-  // would state a number nobody took.
-  const cell = (group: { flagged: number; lift: number | null }): string =>
-    group.lift === null ? '- | not measured' : `${group.flagged} | ${round(group.lift)}x`;
-  const notMeasured = results.filter((result) => result.note !== null);
+  // Both cells of a signal come from its own status. `not-run` means the
+  // flagging step never happened, so its count is null rather than zero;
+  // `no-lift` means it did happen and counted real files whose ratio has no
+  // value. The two must not render the same way, or the Markdown and the
+  // machine payload would state different numbers for one run.
+  const cells = (group: GroupResult, emphasised: boolean): string => {
+    if (group.status === 'not-run') return '- | not measured';
+    const mark = emphasised ? '**' : '';
+    const lift = group.status === 'measured' ? `${mark}${round(group.lift)}x${mark}` : 'not measured';
+    return `${group.flagged} | ${lift}`;
+  };
   for (const result of results) {
     const population = result.split_commit === null ? '-' : String(result.population);
-    lines.push(
-      `| ${result.split} | ${population} | ${cell(result.fix_history)} | ${cell(result.fix_touch)} | ${cell(result.churn_top_decile)} |`,
-    );
+    const row = SIGNALS.map((signal) => cells(signal.of(result), signal.emphasised)).join(' | ');
+    lines.push(`| ${result.split} | ${population} | ${row} |`);
   }
 
-  if (notMeasured.length > 0) {
-    lines.push('', `## ${notMeasured.length} of ${results.length} splits were not measured`, '');
-    for (const result of notMeasured) {
-      lines.push(`- **${result.split}** - ${String(result.note)}`);
+  const unmeasured = notMeasured(results);
+  if (unmeasured.length > 0) {
+    lines.push('', `## What was not measured, and why`, '');
+    for (const entry of unmeasured) {
+      lines.push(`- **${entry.split}**, ${entry.signal}: ${entry.reason}`);
     }
   }
 
-  // A verdict over no measured split is neither pass nor fail: `fail` would
-  // claim a measurement that was never taken, which is the reading this table
-  // exists to remove.
   const target = (
     label: string,
     measured: ToonValue | undefined,
@@ -197,9 +250,11 @@ function renderMarkdown(doc: ToonObject, results: readonly SplitResult[]): strin
 
   for (const result of results) {
     // "Went on to be fixed" has to be true of every line beneath the heading,
-    // so a file with no post-split fix is not evidence for it.
+    // so a signal that measured nothing prints none, and neither does a file
+    // with no post-split fix.
+    if (result.fix_history.status !== 'measured') continue;
     const fixed = result.fix_history.examples.filter((example) => example.after > 0);
-    if (result.fix_history.lift === null || fixed.length === 0) continue;
+    if (fixed.length === 0) continue;
     lines.push('', `## ${result.split} - flagged files that went on to be fixed`, '');
     for (const example of fixed) {
       lines.push(`- \`${example.path}\` - ${example.before} fixes before the split, ${example.after} after`);

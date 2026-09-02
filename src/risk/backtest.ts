@@ -63,24 +63,56 @@ export interface SplitResult {
   note: string | null;
 }
 
-export interface GroupResult {
-  /** Files the pre-split signal flagged. */
-  flagged: number;
-  /** Post-split fix touches per flagged file, or null when nothing was
-   *  flagged: an average over an empty set is not zero, it is undefined. */
-  rate: number | null;
-  /**
-   * `rate / base_rate`, or null when the ratio has no value.
-   *
-   * Two ways it has none: nothing was flagged, so the numerator averages over
-   * an empty set; or the base rate is zero, so the denominator is. Reporting
-   * either as `0` would say the signal was measured and failed, which is a
-   * claim about a measurement nobody took.
-   */
-  lift: number | null;
-  /** The flagged files with the most post-split fixes, as evidence. */
-  examples: { path: string; before: number; after: number }[];
+/** One flagged file and how it behaved either side of the split. */
+export interface GroupExample {
+  path: string;
+  before: number;
+  after: number;
 }
+
+/**
+ * What one signal did on one split, and - when it did nothing - why.
+ *
+ * The status is a value, not something a reader infers from a null or a zero.
+ * Three rounds of this file's history were spent getting that inference wrong
+ * at the rendering site, each time in a new way: a lift of `null` has two
+ * different causes, a `flagged` of `0` is sometimes a real count and sometimes
+ * a placeholder, and neither is legible from the number alone.
+ *
+ *   - `measured` - the flagging step ran and the lift has a value. Every field
+ *     is a number.
+ *   - `no-lift` - the flagging step ran, so `flagged` is a real count and
+ *     `rate` is real whenever it has a value, but the ratio does not: either
+ *     nothing was flagged (the numerator averages over an empty set) or the
+ *     base rate is zero (the denominator is).
+ *   - `not-run` - the split never got as far as flagging anything, so every
+ *     number here is null rather than zero.
+ */
+export type GroupResult =
+  | {
+      status: 'measured';
+      reason: null;
+      flagged: number;
+      rate: number;
+      lift: number;
+      examples: GroupExample[];
+    }
+  | {
+      status: 'no-lift';
+      reason: string;
+      flagged: number;
+      rate: number | null;
+      lift: null;
+      examples: GroupExample[];
+    }
+  | {
+      status: 'not-run';
+      reason: string;
+      flagged: null;
+      rate: null;
+      lift: null;
+      examples: GroupExample[];
+    };
 
 export interface BacktestOptions {
   reader: RepoReader;
@@ -121,7 +153,9 @@ function runSplit(split: string, options: BacktestOptions): SplitResult {
   const filter = fileFilter(config);
   const fixPattern = new RegExp(config.fix_commit_pattern);
 
-  const empty: SplitResult = {
+  // A split the replay could not get through: the same reason on the split and
+  // on all three of its signals, because none of them ran.
+  const notRun = (reason: string, known: Partial<SplitResult> = {}): SplitResult => ({
     split,
     split_seconds: splitSeconds,
     split_commit: null,
@@ -131,16 +165,17 @@ function runSplit(split: string, options: BacktestOptions): SplitResult {
     after_commits: 0,
     after_fix_commits: 0,
     base_rate: 0,
-    fix_history: emptyGroup(),
-    fix_touch: emptyGroup(),
-    churn_top_decile: emptyGroup(),
-    elapsed_ms: 0,
-    note: null,
-  };
+    fix_history: notRunGroup(reason),
+    fix_touch: notRunGroup(reason),
+    churn_top_decile: notRunGroup(reason),
+    elapsed_ms: elapsed(started),
+    note: reason,
+    ...known,
+  });
 
   const splitCommit = reader.lastCommitBefore(options.anchorSHA, splitSeconds);
   if (!splitCommit) {
-    return { ...empty, note: 'no commit on this branch is older than the split date', elapsed_ms: elapsed(started) };
+    return notRun('no commit on this branch is older than the split date');
   }
 
   // --- the signal, from before the split only -------------------------------
@@ -174,22 +209,21 @@ function runSplit(split: string, options: BacktestOptions): SplitResult {
   // --- the population: code files that existed at the split -----------------
   const population = reader.filesAt(splitCommit).filter((path) => filter.isCode(path));
   if (population.length === 0 || afterCommits.length === 0) {
-    return {
-      ...empty,
-      split_commit: splitCommit,
-      population: population.length,
-      before_commits: before.commits.length,
-      before_fix_commits: szz.attributions.length,
-      after_commits: afterCommits.length,
-      after_fix_commits: afterFixes.length,
-      note:
-        population.length === 0
-          ? 'no code files existed at the split date under the trusted include patterns'
-          : `no commits landed in the outcome window (after ${split}${
-              options.horizonDays === undefined ? ', up to the branch head' : `, within ${options.horizonDays} days`
-            }): there is no outcome to measure`,
-      elapsed_ms: elapsed(started),
-    };
+    return notRun(
+      population.length === 0
+        ? 'no code files existed at the split date under the trusted include patterns'
+        : `no commits landed in the outcome window (after ${split}${
+            options.horizonDays === undefined ? ', up to the branch head' : `, within ${options.horizonDays} days`
+          }): there is no outcome to measure`,
+      {
+        split_commit: splitCommit,
+        population: population.length,
+        before_commits: before.commits.length,
+        before_fix_commits: szz.attributions.length,
+        after_commits: afterCommits.length,
+        after_fix_commits: afterFixes.length,
+      },
+    );
   }
 
   const outcome = (path: string): number => afterFixTouches.get(path)?.commits ?? 0;
@@ -209,18 +243,36 @@ function runSplit(split: string, options: BacktestOptions): SplitResult {
     .filter((path) => (before.files.get(path)?.commits ?? 0) > 0);
 
   const group = (paths: string[], before_: (path: string) => number): GroupResult => {
-    if (paths.length === 0) return emptyGroup();
+    const examples = paths
+      .map((path) => ({ path, before: before_(path), after: outcome(path) }))
+      .sort((a, b) => b.after - a.after || b.before - a.before)
+      .slice(0, 5);
+    // Flagging nothing is a real count of zero, not an absent step: the signal
+    // ran and had nothing to say. What it has no value for is the ratio.
+    if (paths.length === 0) {
+      return {
+        status: 'no-lift',
+        reason: 'this signal flagged no file before the split, so its rate averages over an empty set',
+        flagged: 0,
+        rate: null,
+        lift: null,
+        examples,
+      };
+    }
     const total = paths.reduce((sum, path) => sum + outcome(path), 0);
     const rate = total / paths.length;
-    return {
-      flagged: paths.length,
-      rate,
-      lift: baseRate === 0 ? null : rate / baseRate,
-      examples: paths
-        .map((path) => ({ path, before: before_(path), after: outcome(path) }))
-        .sort((a, b) => b.after - a.after || b.before - a.before)
-        .slice(0, 5),
-    };
+    if (baseRate === 0) {
+      return {
+        status: 'no-lift',
+        reason:
+          'no fix commit after the split touched any file that existed at it, so the base rate this lift divides by is zero',
+        flagged: paths.length,
+        rate,
+        lift: null,
+        examples,
+      };
+    }
+    return { status: 'measured', reason: null, flagged: paths.length, rate, lift: rate / baseRate, examples };
   };
 
   const fixHistory = group(flaggedByFixes, (path) => fixCounts.get(path) ?? 0);
@@ -241,21 +293,15 @@ function runSplit(split: string, options: BacktestOptions): SplitResult {
     fix_touch: fixTouch,
     churn_top_decile: churnDecile,
     elapsed_ms: elapsed(started),
-    // A split none of the three signals could measure was not evaluated, and
-    // says so rather than reporting a lift of zero. Flagging nothing is not the
-    // same as flagging the wrong files: the first is an absent measurement, the
-    // second is a failed one, and only the second is evidence against a signal.
-    note:
-      baseRate === 0
-        ? 'no fix commit after the split touched any file that existed at it: there is nothing to discriminate'
-        : [fixHistory, fixTouch, churnDecile].some((result) => result.lift !== null)
-          ? null
-          : 'no signal flagged a file before the split: there is nothing to compare against the population',
+    // The replay itself got through. Whether any signal could be measured is a
+    // per-signal question, and each group answers it for itself rather than
+    // being summarised into one sentence here.
+    note: null,
   };
 }
 
-function emptyGroup(): GroupResult {
-  return { flagged: 0, rate: null, lift: null, examples: [] };
+function notRunGroup(reason: string): GroupResult {
+  return { status: 'not-run', reason, flagged: null, rate: null, lift: null, examples: [] };
 }
 
 function elapsed(started: bigint): number {

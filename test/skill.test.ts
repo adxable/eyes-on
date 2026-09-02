@@ -63,6 +63,9 @@ test('install writes both skill bases and rewrites only when stale', () => {
   }
 
   const second = installSkill(root);
+  assert.equal(second.length, INSTALL_BASES.length);
   assert.ok(second.every((entry) => !entry.written), 'an unchanged skill is not rewritten');
-  assert.ok(inspectSkill(root).every((entry) => entry.present && entry.current));
+  const inspected = inspectSkill(root);
+  assert.equal(inspected.length, INSTALL_BASES.length);
+  assert.ok(inspected.every((entry) => entry.present && entry.current));
 });

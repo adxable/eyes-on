@@ -70,11 +70,21 @@ test('the byte cap bites before the entry cap when the instructions are long', (
   assert.ok(fitted.dropped.length > 0);
 });
 
-test('priority order is preserved: a hard rule is never dropped for a history entry', () => {
+test('under the entry cap, priority order decides: a hard rule is kept and history entries fall off the end', () => {
+  // The entry cap stops the list, so what survives it is a prefix. The byte cap
+  // does not - see the test below, where a hard rule too large for the
+  // remaining budget is dropped while smaller later entries are kept.
   const hardRule: PathInstruction = { path: 'deploy/**', instructions: 'a hard rule' };
-  const fitted = fitWithinCaps([hardRule, ...entries(MAX_ENTRIES + 10)]);
+  const candidates = [hardRule, ...entries(MAX_ENTRIES + 10)];
+  const fitted = fitWithinCaps(candidates);
+  assert.equal(fitted.reason, 'entry-cap');
   assert.equal(fitted.entries[0]?.path, 'deploy/**');
-  assert.ok(!fitted.dropped.some((entry) => entry.path === 'deploy/**'));
+  assert.equal(fitted.entries.length, MAX_ENTRIES);
+  assert.equal(fitted.dropped.length, candidates.length - MAX_ENTRIES);
+  assert.ok(
+    fitted.dropped.every((entry) => entry.path.startsWith('packages/')),
+    'only history entries were dropped',
+  );
 });
 
 test('the rendered block is YAML that reads back as path_instructions', () => {

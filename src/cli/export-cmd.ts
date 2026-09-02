@@ -20,8 +20,11 @@ import {
  * `eyes-on export-path-instructions` - what eyes-on knows, in a shape
  * no-mistakes can read.
  *
- * Two entry kinds, in this priority order, because the caps bite from the
- * bottom:
+ * Two entry kinds, in this priority order. The entry cap bites from the bottom,
+ * so under it the order decides what survives; the byte cap does not - it skips
+ * a candidate too large for the remaining budget and keeps the next one that
+ * fits, which is why every entry carries its own provenance rather than being
+ * identified by position:
  *
  *   1. every hard rule, because a hard rule is a statement that statistics do
  *      not get a vote on this path;
