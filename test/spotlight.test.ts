@@ -282,6 +282,28 @@ test('an empty model.agent is the repository asking for stage one, not a failure
   assert.match('detail' in result.model ? result.model.detail : '', /stage one only/);
 });
 
+test('an empty model.command means the same thing, whatever the machine allows', () => {
+  // An empty vector names nothing to run, so it is a repository opting out -
+  // the same thing `agent: ""` says. Reading it as "a vector from the
+  // repository, refused" would describe a state the code is not in, and would
+  // give one configuration two meanings decided by a machine setting that has
+  // nothing to do with which is true.
+  const candidates = rank([hunk({ path: 'src/a.ts', anchor: 1, added: 4 })]);
+  for (const allowAnyCommand of [false, true]) {
+    const result = selectSpotlight({
+      candidates,
+      n: 5,
+      intent: null,
+      score: 10,
+      band: 'auto',
+      model: { agent: null, command: [], allowAnyCommand },
+    });
+    assert.equal(result.model.state, 'skipped', `allow_any_command: ${String(allowAnyCommand)}`);
+    assert.match('detail' in result.model ? result.model.detail : '', /stage one only/);
+    assert.equal(result.stage, 1, 'and the ranking is still a complete answer');
+  }
+});
+
 // --- end to end, through the CLI -------------------------------------------
 
 /** A repository with a hot file, a quiet one, and the `model:` block a test

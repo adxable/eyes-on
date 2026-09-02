@@ -101,6 +101,12 @@ export interface ModelOptions {
  * configured" read differently in the output.
  */
 export function resolveModelCommand(options: ModelOptions): { command: string[] } | { refusal: ModelOutcome } {
+  // An empty vector names nothing to run, so it is the repository opting out -
+  // the same meaning an empty `model.agent` carries - and it means that whether
+  // or not the machine allows a vector at all. Refusing it as "a vector from
+  // the repository" would describe a state the code is not in, and would give
+  // one configuration two readings decided by a setting unrelated to it.
+  if (options.command !== null && options.command.length === 0) return optedOut();
   if (options.command !== null && !options.allowAnyCommand) {
     return {
       refusal: {
@@ -118,15 +124,7 @@ export function resolveModelCommand(options: ModelOptions): { command: string[] 
     : argvForAgent(options.agent);
   if ('refusal' in resolved) return resolved;
   const argv = resolved.argv;
-  if (argv.length === 0) {
-    return {
-      refusal: {
-        state: 'skipped',
-        detail:
-          'the trusted .eyes-on.yml asks for no model, which is how a repository asks for stage one only',
-      },
-    };
-  }
+  if (argv.length === 0) return optedOut();
 
   const name = argv[0] as string;
   if (!isExecutable(name, options.env ?? process.env, options.cwd)) {
@@ -140,6 +138,16 @@ export function resolveModelCommand(options: ModelOptions): { command: string[] 
     };
   }
   return { command: argv };
+}
+
+/** The one reading of a repository asking for no model, however it said so. */
+function optedOut(): { refusal: ModelOutcome } {
+  return {
+    refusal: {
+      state: 'skipped',
+      detail: 'the trusted .eyes-on.yml asks for no model, which is how a repository asks for stage one only',
+    },
+  };
 }
 
 /**

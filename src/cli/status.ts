@@ -7,7 +7,7 @@ import { currentBranch, headSHA, toplevel } from '../git/git.js';
 import { canonicalPath, repoID } from '../core/repoid.js';
 import { Database, findRepoByPath } from '../db/db.js';
 import { latestCheck, type CheckRow } from '../db/checks.js';
-import { bandLabel, type Band } from '../risk/signals.js';
+import { bandLabel, driftProvenanceSentence, type Band } from '../risk/signals.js';
 
 /**
  * `eyes-on status` - read-only, and required to keep working from inside a
@@ -56,6 +56,12 @@ export async function statusCommand(context: Context): Promise<number> {
           // same as 100 and must not be reported as it.
           score_max: assessment.score_max,
           band: assessment.band,
+          drift: assessment.drift,
+          // This command measures nothing, so any grade it shows is one an
+          // earlier run took of this same change. Naming that keeps the four
+          // facts here saying exactly what they can prove.
+          drift_provenance: assessment.drift === null ? 'none' : 'carried',
+          drift_sentence: driftProvenanceSentence(assessment.drift === null ? 'none' : 'carried', assessment.drift),
           status: assessment.status,
           when: new Date(assessment.updated_at * 1000).toISOString(),
         } as ToonValue)
@@ -136,6 +142,8 @@ function renderMarkdown(doc: ToonObject, assessment: CheckRow | null): string {
       );
     }
     lines.push(
+      driftProvenanceSentence(assessment.drift === null ? 'none' : 'carried', assessment.drift),
+      '',
       assessment.status === 'unverified'
         ? 'Recorded as `unverified`: the trusted configuration could not be read, so the hard rules were not evaluated.'
         : 'Run `eyes-on check` to assess the current head.',

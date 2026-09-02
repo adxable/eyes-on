@@ -6,9 +6,9 @@ import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
 import { modelOptionsFor } from './model-context.js';
 import { assess, type Assessment } from '../risk/assess.js';
-import { bandLabel } from '../risk/signals.js';
+import { bandLabel, driftProvenanceOf, driftProvenanceSentence, type DriftProvenance } from '../risk/signals.js';
 import { hitSentence } from '../rules/hard.js';
-import { recordCheck, writeReport } from '../db/checks.js';
+import { findCheck, recordCheck, writeReport } from '../db/checks.js';
 import { latestDecision, recordDrift, type DecisionRow } from '../db/gate.js';
 import { measureDrift, detailOf, type DriftResult } from '../spot/drift.js';
 import { loadConfig } from '../core/config.js';
@@ -36,10 +36,16 @@ import { loadConfig } from '../core/config.js';
  *     outside eyes-on is held up by it, which is the point: the gate proves
  *     that a human was told, and has no lever to pull if they were not.
  *
- * Drift is measured here, and only here, when an intent is given: S7 is a
- * signal of the risk score, so it has to be known before the score is computed.
- * `--no-model` and a missing intent both leave it unmeasured, contributing zero
- * rather than an assumed agreement.
+ * Drift is measured here when an intent is given: S7 is a signal of the risk
+ * score, so it has to be known before the score is computed. `--no-model`, a
+ * missing intent and a model that could not be reached all leave this run with
+ * nothing measured, and then **not measuring is not changing**: a grade already
+ * recorded against this base..head is a measurement of this diff, so it is
+ * carried into the score rather than erased. Only a change nobody has ever
+ * measured a grade for scores S7 at zero. Because that makes the score say more
+ * than this invocation measured, `drift_provenance` names which of the three
+ * states produced it and `driftProvenanceSentence` writes the one sentence
+ * every surface prints.
  *
  * Being a signal is the whole of what S7 is, and that has one consequence worth
  * stating rather than discovering: the band is a function of the score, so a
@@ -60,9 +66,20 @@ export async function checkCommand(context: Context): Promise<number> {
     progress(context.writers, `no change to assess: ${risk.baseFrom}`);
   }
 
+  // Read before anything is written: a grade already recorded against this
+  // base..head is a measurement of this diff, and not measuring is not
+  // changing. A run whose model was rate-limited carries it rather than
+  // erasing it and publishing a score that dropped for no reason.
+  const existing = risk.db ? findCheck(risk.db, risk.repoId, risk.baseSHA, risk.headSHA) : undefined;
+
   const drift = driftFor(context, risk, intent);
   if (drift && drift.grade !== null) {
     progress(context.writers, `intent-versus-diff drift: ${drift.grade}/5`);
+  }
+  const grade = drift?.grade ?? existing?.drift ?? null;
+  const provenance = driftProvenanceOf(drift?.grade ?? null, grade);
+  if (provenance === 'carried') {
+    progress(context.writers, `keeping the drift grade of ${String(grade)}/5 already measured for this change`);
   }
 
   const assessment = assess({
@@ -72,7 +89,7 @@ export async function checkCommand(context: Context): Promise<number> {
     baseSHA: risk.baseSHA,
     headSHA: risk.headSHA,
     nowSeconds: Math.floor(Date.now() / 1000),
-    driftGrade: drift?.grade ?? null,
+    driftGrade: grade,
     onProgress: (message) => progress(context.writers, message),
   });
 
@@ -84,9 +101,12 @@ export async function checkCommand(context: Context): Promise<number> {
       branch: risk.branch,
       intent,
       assessment,
-      drift: drift?.grade ?? null,
+      drift: grade,
     });
-    if (drift) recordDrift(risk.db, checkId, drift);
+    // Only a run that measured one rewrites the items: `recordDrift` replaces
+    // them, so calling it with an unmeasured result would delete the lists of
+    // the measurement this run just kept.
+    if (drift && drift.grade !== null) recordDrift(risk.db, checkId, drift);
     decision = latestDecision(risk.db, checkId);
   }
 
@@ -97,6 +117,8 @@ export async function checkCommand(context: Context): Promise<number> {
     noModel,
     strict,
     drift,
+    grade,
+    provenance,
     decision,
     checkId,
   });
@@ -132,7 +154,7 @@ function driftFor(
   if (intent === null || intent.trim().length === 0) return null;
   const model = modelOptionsFor(context, risk.trusted.config, risk.clonePath);
   if (model === null) {
-    progress(context.writers, '--no-model: drift was not measured, so signal S7 stays at zero');
+    progress(context.writers, '--no-model: this run measured no drift');
     return null;
   }
   progress(context.writers, 'comparing the stated intent with the diff, in two passes');
@@ -156,7 +178,12 @@ interface RenderOptions {
   /** Whether `--strict` was passed, because the payload reports the exit code
    *  the process is actually going to use and `--strict` is what changes it. */
   strict: boolean;
+  /** What this run measured, or null when it measured nothing. */
   drift: DriftResult | null;
+  /** The grade the score was actually computed with: measured now, or carried
+   *  from the recorded assessment of this same change. */
+  grade: number | null;
+  provenance: DriftProvenance;
   decision: DecisionRow | undefined;
   checkId: string | null;
 }
@@ -223,7 +250,12 @@ export function renderDoc(assessment: Assessment, options: RenderOptions): ToonO
     decision: options.decision?.action ?? null,
     decision_reason: options.decision?.reason ?? null,
     decided_by: options.decision?.decided_by ?? null,
-    drift: options.drift?.grade ?? null,
+    drift: options.grade,
+    // Whether this invocation measured that grade or carried it. A score
+    // carrying a grade this run did not take says more than this run measured
+    // unless the payload says which.
+    drift_provenance: options.provenance,
+    drift_sentence: driftProvenanceSentence(options.provenance, options.grade),
     drift_state: driftState(options),
     drift_detail: options.drift ? detailOf(options.drift.model) : null,
     // Lists, not joined strings: a sentence containing the separator read back
@@ -274,11 +306,13 @@ export function renderDoc(assessment: Assessment, options: RenderOptions): ToonO
 
 /** Why there is or is not a drift grade, in one word an agent can branch on. */
 function driftState(options: RenderOptions): string {
+  if (options.provenance === 'measured') return 'measured';
+  if (options.provenance === 'carried') return 'carried from an earlier measurement of this same change';
   if (options.drift === null) {
     if (options.noModel) return 'not measured: --no-model';
     return options.intent === null ? 'not measured: no --intent was given' : 'not measured';
   }
-  return options.drift.grade === null ? 'not measured' : 'measured';
+  return 'not measured';
 }
 
 function helpLines(assessment: Assessment, options: RenderOptions, gate: 'must_read' | 'none'): ToonValue {
@@ -301,13 +335,17 @@ function helpLines(assessment: Assessment, options: RenderOptions, gate: 'must_r
   }
   lines.push('Run `eyes-on why <file>` to see where one file\'s risk came from');
   lines.push('Run `eyes-on spotlight` for the three to five fragments a reviewer should actually read');
-  if (options.drift === null && options.intent === null) {
-    lines.push('Pass --intent "..." to measure intent-versus-diff drift; without it signal S7 is zero');
+  if (options.provenance === 'none' && options.intent === null) {
+    lines.push('Pass --intent "..." to measure intent-versus-diff drift; without a grade signal S7 is zero');
   }
-  if (options.drift?.grade !== null && options.drift !== null) {
+  if (options.provenance !== 'none') {
+    lines.push(driftProvenanceSentence(options.provenance, options.grade));
     lines.push(
-      'The drift grade is shown and scored as S7, so it moves the band like any other signal: without --strict it changes no exit code, and with --strict it can',
+      'The drift grade is scored as S7, so it moves the band like any other signal: without --strict it changes no exit code, and with --strict it can',
     );
+  }
+  if (options.provenance === 'carried') {
+    lines.push('Re-run with --intent "..." and a reachable model to measure the grade again for this same change');
   }
   lines.push(exitCodeSentence(exitCodeFor(assessment, options.strict)));
   return lines as ToonValue;
@@ -350,7 +388,7 @@ export function renderMarkdown(assessment: Assessment, doc: ToonObject): string 
       '',
       '## Intent versus diff',
       '',
-      `Drift **${String(doc.drift)}/5**. It is scored as S7, so it moves the band like every other signal: it changes no exit code except under the explicitly opted-in \`--strict\`.`,
+      `${String(doc.drift_sentence)} It moves the band like every other signal: it changes no exit code except under the explicitly opted-in \`--strict\`.`,
     );
     for (const item of (doc.drift_missing_from_diff as string[]) ?? []) {
       lines.push(`- asked for and not visible in the change: ${item}`);

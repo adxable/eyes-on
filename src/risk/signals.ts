@@ -90,6 +90,44 @@ export function bandFor(score: number, thresholds: RepoConfig['thresholds']): Ba
   return 'auto';
 }
 
+/**
+ * Where the drift grade in a score came from.
+ *
+ * A check is keyed on (repository, base, head), so a grade recorded against a
+ * row is a measurement of *this* diff and a later run that measured none keeps
+ * it rather than erasing it. That is the right arithmetic and the wrong
+ * evidence unless the reader is told: a score carrying a grade this invocation
+ * did not take is claiming more than this invocation measured. So the three
+ * states are named and distinguished everywhere the score is shown.
+ */
+export type DriftProvenance =
+  /** This invocation ran the two passes and got the grade. */
+  | 'measured'
+  /** The grade is the one already recorded for this same base..head. Every
+   *  command that only reads the row - `status`, `comment` - is always here. */
+  | 'carried'
+  /** There is no grade at all. */
+  | 'none';
+
+export function driftProvenanceOf(measuredNow: number | null, recorded: number | null): DriftProvenance {
+  if (recorded === null) return 'none';
+  return measuredNow === null ? 'carried' : 'measured';
+}
+
+/**
+ * The one sentence that says where the grade came from, written here rather
+ * than in each renderer so no surface can claim more than another.
+ */
+export function driftProvenanceSentence(provenance: DriftProvenance, grade: number | null): string {
+  if (provenance === 'none' || grade === null) {
+    return 'No drift grade: the stated intent was not compared with this diff.';
+  }
+  if (provenance === 'carried') {
+    return `Drift ${grade}/5 is carried from an earlier measurement of this same change - nothing was measured now - and the score contains it as S7.`;
+  }
+  return `Drift ${grade}/5 was measured for this change, and the score contains it as S7.`;
+}
+
 /** The raw measurement of each signal, before weights and the curve. */
 export type RawSignals = Record<SignalName, { value: number; from: string | null }>;
 

@@ -371,6 +371,55 @@ test('a comment already on the pull request from somebody else is left alone', a
   assert.equal(gh.body(), BODY);
 });
 
+test('a second eyes-on comment is counted, not hidden behind the one that gets updated', async (t) => {
+  // `eyes_on_comments_found` exists to make a duplicate visible, so it has to
+  // be able to say two. Derived from the single comment about to be updated it
+  // could only ever say one, and the defect it was added for would be invisible
+  // in the field that reports it.
+  const agent = stubAgent('comment-duplicate', [SPOTLIGHT_ANSWER]);
+  const repo = repoWith(agent);
+  const head = repo.git(['rev-parse', 'HEAD']).trim();
+  const twin = (id: number, tail: string): { id: number; body: string } => ({
+    id,
+    body: `${marker({
+      head_sha: head,
+      score: 58,
+      score_max: 120,
+      band: 'wskazane',
+      decision: null,
+      check_id: `run-${id}`,
+    })}\n${tail}`,
+  });
+  const gh = stubGh('comment-duplicate', {
+    slug: SLUG,
+    number: PR,
+    headSHA: head,
+    body: BODY,
+    comments: [twin(601, 'the older one'), twin(602, 'the duplicate')],
+  });
+  const env: Record<string, string> = { ...sandboxEnv('comment-duplicate'), PATH: `${agent.dir}${delimiter}${gh.path}` };
+  await initRepo(t, repo, env);
+
+  await captureCli(['check'], { cwd: repo.path, env });
+  await captureCli(['spotlight', '--no-model'], { cwd: repo.path, env });
+  const doc = JSON.parse(
+    (await captureCli(['comment', '--pr', String(PR), '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as CommentDoc;
+
+  assert.equal(doc.eyes_on_comments_found, 2, 'both are counted');
+  assert.equal(doc.comment_id, 601, 'the oldest is the one updated');
+  assert.equal(gh.comments().length, 2, 'and no third is added');
+  assert.equal(
+    gh.comments().find((comment) => comment.id === 602)?.body.endsWith('the duplicate'),
+    true,
+    'eyes-on never deletes or rewrites the other one',
+  );
+  assert.ok(
+    doc.help.some((line) => line.includes('2 eyes-on comments')),
+    'and the caller is told, because eyes-on cannot clean it up itself',
+  );
+});
+
 test('--dry-run prints the comment and calls no writing endpoint', async (t) => {
   const agent = stubAgent('comment-dry', [SPOTLIGHT_ANSWER]);
   const repo = repoWith(agent);

@@ -1,6 +1,6 @@
 import type { CheckRow } from '../db/checks.js';
 import type { DecisionRow, DriftItemRow, SpotRow } from '../db/gate.js';
-import { bandLabel, type Band } from '../risk/signals.js';
+import { bandLabel, driftProvenanceSentence, type Band } from '../risk/signals.js';
 
 /**
  * The single sticky comment (report Appendix C.4).
@@ -57,7 +57,13 @@ export function marker(payload: MarkerPayload): string {
  * updating that one would be a write to somebody else's comment.
  */
 export function findMarked<T extends { body: string }>(comments: readonly T[]): T | null {
-  return comments.find((comment) => comment.body.startsWith(MARKER_PREFIX)) ?? null;
+  return findAllMarked(comments)[0] ?? null;
+}
+
+/** Every eyes-on comment on a pull request, by the same rule. There should be
+ *  one; a caller that reports how many it found needs to be able to say two. */
+export function findAllMarked<T extends { body: string }>(comments: readonly T[]): T[] {
+  return comments.filter((comment) => comment.body.startsWith(MARKER_PREFIX));
 }
 
 export interface CommentInput {
@@ -139,6 +145,10 @@ export function renderComment(input: CommentInput): string {
     lines.push(
       `Intent versus diff: ${check.drift}/5${first ? ` - ${first.item}` : ' - the change and the stated intent agree'}`,
     );
+    // Publishing reads the recorded assessment and measures nothing, so the
+    // grade above is always one an earlier run took of this same change. The
+    // sentence comes from the same place every other surface takes it from.
+    lines.push(`<sub>${driftProvenanceSentence('carried', check.drift)}</sub>`);
   }
 
   lines.push(

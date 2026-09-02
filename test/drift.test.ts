@@ -285,11 +285,25 @@ test('acceptance: the drift grade gates only through the band, and only when --s
 
   // And the same change with no drift measured stays below the threshold, which
   // is what makes the line above evidence about drift rather than about the
-  // threshold being low.
-  const unmeasured = await check(['--intent', INTENT, '--no-model', '--strict']);
-  assert.equal(unmeasured.doc.drift, null);
-  assert.notEqual(unmeasured.doc.band, 'pelna');
-  assert.equal(unmeasured.code, EXIT_OK);
+  // threshold being low. It needs a state root where no grade was ever taken of
+  // this change: within the first one `--no-model` now carries the grade
+  // already measured rather than dropping back to zero, which is the point of
+  // the test below this one.
+  const fresh: Record<string, string> = { ...sandboxEnv('drift-strict-fresh'), PATH: agent.path };
+  await initRepo(t, repo, fresh);
+  const unmeasured = JSON.parse(
+    (await captureCli(['check', '--intent', INTENT, '--no-model', '--strict', '--format', 'json'], {
+      cwd: repo.path,
+      env: fresh,
+    })).out,
+  ) as { score: number; band: string; drift: number | null; drift_provenance: string };
+  assert.equal(unmeasured.drift, null);
+  assert.equal(unmeasured.drift_provenance, 'none', 'nothing measured and nothing to carry');
+  assert.notEqual(unmeasured.band, 'pelna');
+  assert.equal(
+    (await captureCli(['check', '--intent', INTENT, '--no-model', '--strict'], { cwd: repo.path, env: fresh })).code,
+    EXIT_OK,
+  );
 });
 
 test('the grade and both lists are recorded against the check, as rows rather than as one string', async (t) => {
@@ -519,6 +533,89 @@ test('a check recorded before the maximum was stored says so rather than assumin
   const markdown = (await captureCli(['status', '--format', 'md'], { cwd: repo.path, env })).out;
   assert.doesNotMatch(markdown, /\/100/, 'a denominator nobody recorded is not invented');
   assert.match(markdown, /before eyes-on stored the maximum/);
+});
+
+test('acceptance: a check that measures nothing keeps the grade already taken of this change, and says so', async (t) => {
+  // Not measuring is not changing, and `check` is the command the workflow runs
+  // first. A retry whose model is rate-limited used to reassess with a null
+  // grade, drop the score, and delete the drift items of a measurement taken of
+  // this very base..head - so the pull request published a lower risk because a
+  // later run measured less.
+  const agent = stubAgent('check-keeps', [describeAnswer(), compareAnswer(5)]);
+  const repo = repoWith(agent);
+  const env: Record<string, string> = { ...sandboxEnv('check-keeps'), PATH: agent.path };
+  await initRepo(t, repo, env);
+
+  interface CheckDoc {
+    check_id: string;
+    score: number;
+    score_max: number;
+    band: string;
+    drift: number | null;
+    drift_provenance: string;
+    drift_sentence: string;
+  }
+
+  const measured = JSON.parse(
+    (await captureCli(['check', '--intent', INTENT, '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as CheckDoc;
+  assert.equal(measured.drift, 5);
+  assert.equal(measured.drift_provenance, 'measured', 'this run took the grade itself');
+  assert.doesNotMatch(measured.drift_sentence, /carried/);
+
+  interface Recorded {
+    row: { score: number; score_max: number; band: string; drift: number };
+    signals: Record<string, unknown>[];
+    items: Record<string, unknown>[];
+  }
+  const dbPath = join(env.EYES_HOME as string, 'state.sqlite');
+  const readRow = (): Recorded => {
+    const db = Database.open(dbPath);
+    const row = db.get<Recorded['row']>('SELECT score, score_max, band, drift FROM checks WHERE id = ?', measured.check_id);
+    const signals = db.all('SELECT name, raw, normalized FROM signals WHERE check_id = ? ORDER BY name', measured.check_id);
+    const items = db.all('SELECT kind, position, item FROM drift_items WHERE check_id = ? ORDER BY kind, position', measured.check_id);
+    db.close();
+    return {
+      row: { ...(row as Recorded['row']) },
+      signals: signals.map((entry) => ({ ...entry })),
+      items: items.map((entry) => ({ ...entry })),
+    };
+  };
+
+  const before = readRow();
+  assert.equal(before.row.drift, 5);
+  assert.equal(before.items.length, 1, 'the measurement left an item behind');
+
+  // The retry: same change, no model this time.
+  const carried = JSON.parse(
+    (await captureCli(['check', '--intent', INTENT, '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as CheckDoc;
+
+  assert.deepEqual(readRow(), before, 'the score, its maximum, the band, the grade, the signals and the items are as they were');
+  assert.equal(carried.score, before.row.score, 'the published risk did not drop');
+  assert.equal(carried.band, before.row.band);
+  assert.equal(carried.drift, 5);
+
+  // And the run says the grade is not its own, because a score carrying a grade
+  // this invocation did not take claims more than this invocation measured.
+  assert.equal(carried.drift_provenance, 'carried');
+  assert.match(carried.drift_sentence, /carried from an earlier measurement of this same change/);
+
+  // Every surface that shows the four facts says the same thing.
+  const markdown = (await captureCli(['check', '--intent', INTENT, '--no-model', '--format', 'md'], { cwd: repo.path, env })).out;
+  assert.match(markdown, /carried from an earlier measurement of this same change/);
+  assert.deepEqual(readRow(), before);
+
+  const status = JSON.parse((await captureCli(['status', '--format', 'json'], { cwd: repo.path, env })).out) as {
+    last_check: { score: number; band: string; drift: number; drift_provenance: string } | null;
+  };
+  assert.equal(status.last_check?.drift, 5);
+  assert.equal(status.last_check?.score, before.row.score);
+  assert.equal(status.last_check?.drift_provenance, 'carried');
+  assert.match(
+    (await captureCli(['status', '--format', 'md'], { cwd: repo.path, env })).out,
+    /carried from an earlier measurement of this same change/,
+  );
 });
 
 test('acceptance: a drift run that measures nothing moves nothing it found recorded', async (t) => {

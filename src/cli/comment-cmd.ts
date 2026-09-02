@@ -6,8 +6,9 @@ import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
 import { checkByID, checkID, type CheckRow } from '../db/checks.js';
 import { driftItemsFor, latestDecision, recordComment, spotsFor } from '../db/gate.js';
-import { findMarked, renderComment, MARKER_PREFIX } from '../gh/comment.js';
+import { findAllMarked, renderComment, MARKER_PREFIX } from '../gh/comment.js';
 import { createComment, listComments, pullHeadSHA, repoSlug, updateComment, GhError } from '../gh/gh.js';
+import { driftProvenanceSentence } from '../risk/signals.js';
 
 /**
  * `eyes-on comment --pr <n>` - one sticky comment, and nothing else.
@@ -58,14 +59,19 @@ export async function commentCommand(context: Context): Promise<number> {
   let existingId: number | null = null;
   let existingUrl: string | null = null;
   let comments = 0;
+  let markedFound = 0;
 
   if (slug !== null) {
     prHead = pullHeadSHA(risk.clonePath, slug, number);
     const all = listComments(risk.clonePath, slug, number);
     comments = all.length;
-    const marked = findMarked(all);
-    existingId = marked?.id ?? null;
-    existingUrl = marked?.html_url ?? null;
+    const marked = findAllMarked(all);
+    // Counted rather than derived from the one that will be updated: a second
+    // eyes-on comment is the defect this number exists to make visible, and a
+    // count that can only be 0 or 1 cannot report it.
+    markedFound = marked.length;
+    existingId = marked[0]?.id ?? null;
+    existingUrl = marked[0]?.html_url ?? null;
   }
 
   // A short sha from the API and a full one from the database describe the
@@ -122,7 +128,7 @@ export async function commentCommand(context: Context): Promise<number> {
     // How many eyes-on comments were on the pull request *before* this run.
     // Zero on the first publish and one on every later one; two would be the
     // defect this field exists to make visible.
-    eyes_on_comments_found: existingId === null ? 0 : 1,
+    eyes_on_comments_found: markedFound,
     comments_on_pr: comments,
     check_id: check.id,
     head: check.head_sha.slice(0, 12),
@@ -135,16 +141,21 @@ export async function commentCommand(context: Context): Promise<number> {
     decision: decision?.action ?? null,
     fragments: spots.length,
     drift: check.drift,
+    // This command measures nothing, so a grade it publishes is always one an
+    // earlier run took of this same change. Same three states, same sentence,
+    // one source - `check` and `status` report it the same way.
+    drift_provenance: check.drift === null ? 'none' : 'carried',
+    drift_sentence: driftProvenanceSentence(check.drift === null ? 'none' : 'carried', check.drift),
     body: finalBody,
     exit_code: EXIT_OK,
-    help: helpLines(dryRun, stale, spots.length, check) as ToonValue,
+    help: helpLines(dryRun, stale, spots.length, check, markedFound) as ToonValue,
   };
 
   emitDoc(context.writers, context.format, doc, () => `${finalBody}\n`);
   return EXIT_OK;
 }
 
-function helpLines(dryRun: boolean, stale: boolean, fragments: number, check: CheckRow): string[] {
+function helpLines(dryRun: boolean, stale: boolean, fragments: number, check: CheckRow, markedFound: number): string[] {
   const lines: string[] = [];
   if (dryRun) lines.push('Nothing was published: --dry-run prints the comment and calls no writing endpoint');
   if (fragments === 0) lines.push('The comment has no fragments to read: run `eyes-on spotlight` and publish again');
@@ -155,6 +166,11 @@ function helpLines(dryRun: boolean, stale: boolean, fragments: number, check: Ch
   }
   if (check.status === 'must_read') {
     lines.push('The gate is still parked: answer with `eyes-on axi respond --action read` or `--action waive --reason "..."` and publish again');
+  }
+  if (markedFound > 1) {
+    lines.push(
+      `There are ${markedFound} eyes-on comments on this pull request; the oldest was updated and the rest were left alone. Delete the extras on GitHub - eyes-on never deletes a comment`,
+    );
   }
   lines.push('eyes-on writes exactly one comment per pull request, found by its marker, and never touches the body');
   lines.push('By default this publishes the check for the current base..head; pass --check-id <id> to publish another one');
