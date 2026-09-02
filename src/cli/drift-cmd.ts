@@ -5,8 +5,9 @@ import { emitDoc, progress, EXIT_OK, EXIT_USAGE, UserFacingError } from './outpu
 import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
 import { modelOptionsFor } from './model-context.js';
-import { checkID } from '../db/checks.js';
+import { checkID, findCheck, recordCheck } from '../db/checks.js';
 import { recordDrift } from '../db/gate.js';
+import { assess, type Assessment } from '../risk/assess.js';
 import { detailOf, driftSentence, measureDrift, type DriftResult } from '../spot/drift.js';
 
 /**
@@ -32,10 +33,14 @@ import { detailOf, driftSentence, measureDrift, type DriftResult } from '../spot
  * grade changes any exit code. Keeping S7 out of the band was rejected: it
  * would leave the score and the band disagreeing about the same change.
  *
- * The grade is recorded against the change so `comment` can show it, but the
- * score it feeds is computed by `check`, which is where the score lives. This
- * command says so rather than reporting a score that would disagree with the
- * recorded one.
+ * **A fresh grade rescores the check it lands on.** The score, its maximum, the
+ * band, the signal rows and the grade are five facts about one assessment, and
+ * writing the grade alone would leave a 5/5 sitting beside a score that was
+ * computed with S7 at zero - which is what every surface downstream would then
+ * publish. So this command reassesses with the grade it just measured and
+ * records the result through the same path `check` uses. The cost is a full
+ * risk assessment rather than two model calls; that is the price of the four
+ * numbers agreeing wherever they are read.
  */
 export async function driftCommand(context: Context): Promise<number> {
   assertMayMutate(context, 'drift');
@@ -68,16 +73,31 @@ export async function driftCommand(context: Context): Promise<number> {
   }
 
   let checkId: string | null = null;
+  let assessment: Assessment | null = null;
   if (risk.db) {
-    checkId = checkID(risk.repoId, risk.baseSHA, risk.headSHA);
     // Only against a check that exists. A drift grade with no assessment behind
     // it would be a row nothing points at, and `comment` reads the assessment.
-    const existing = risk.db.get<{ id: string }>('SELECT id FROM checks WHERE id = ?', checkId);
+    const existing = findCheck(risk.db, risk.repoId, risk.baseSHA, risk.headSHA);
     if (existing) {
-      risk.db.run('UPDATE checks SET intent = ?, intent_source = ? WHERE id = ?', intent, 'flag', checkId);
+      progress(context.writers, 'rescoring the recorded check with the grade just measured');
+      assessment = assess({
+        reader: risk.reader,
+        db: risk.db,
+        trusted: risk.trusted,
+        baseSHA: risk.baseSHA,
+        headSHA: risk.headSHA,
+        nowSeconds: Math.floor(Date.now() / 1000),
+        driftGrade: result.grade,
+        onProgress: (message) => progress(context.writers, message),
+      });
+      checkId = recordCheck(risk.db, {
+        repoId: risk.repoId,
+        branch: risk.branch,
+        intent,
+        assessment,
+        drift: result.grade,
+      });
       recordDrift(risk.db, checkId, result);
-    } else {
-      checkId = null;
     }
   }
 
@@ -86,6 +106,7 @@ export async function driftCommand(context: Context): Promise<number> {
     base: risk.baseSHA,
     head: risk.headSHA,
     checkId,
+    assessment,
     noModel: flagBool(context.args, 'no-model'),
   });
   emitDoc(context.writers, context.format, doc, () => renderMarkdown(result, doc));
@@ -111,6 +132,9 @@ interface DocOptions {
   base: string;
   head: string;
   checkId: string | null;
+  /** The reassessment this run recorded, or null when there was no check to
+   *  rescore. Reported here because this command moved those numbers. */
+  assessment: Assessment | null;
   noModel: boolean;
 }
 
@@ -123,6 +147,11 @@ export function renderDoc(result: DriftResult, options: DocOptions): ToonObject 
     base: options.base.slice(0, 12),
     head: options.head.slice(0, 12),
     check_id: options.checkId,
+    // The three numbers this command just moved, read from the assessment it
+    // recorded rather than recomputed anywhere they are shown.
+    score: options.assessment?.score ?? null,
+    score_max: options.assessment?.score_max ?? null,
+    band: options.assessment?.band ?? null,
     intent: options.intent,
     pass_describe: result.passes.describe,
     pass_compare: result.passes.compare,
@@ -148,10 +177,14 @@ function helpLines(result: DriftResult, options: DocOptions): string[] {
   }
   if (options.checkId === null) {
     lines.push('Nothing was recorded: run `eyes-on check` on this change first, and the grade will be stored against it');
+  } else if (options.assessment) {
+    lines.push(
+      `The check was rescored with this grade: ${options.assessment.score} of at most ${options.assessment.score_max}, band \`${options.assessment.band}\` - so \`status\` and \`comment\` read the same numbers`,
+    );
   }
   lines.push('This command exits 0 for a 5 exactly as it does for a 1, with --strict or without it: it computes no band');
-  lines.push('The grade enters the risk score as signal S7 at weight 0.20 when you run `eyes-on check --intent "..."`');
-  lines.push('There it can raise the band like any other signal, so `check --strict` can exit 1 on it; `check` without --strict never does');
+  lines.push('The grade is signal S7 at weight 0.20 of the recorded score, and this command folded it in; there is no second command to run for that');
+  lines.push('In the score it raises the band like any other signal, so `eyes-on check --strict` can exit 1 on it; `check` without --strict never does');
   return lines;
 }
 
@@ -186,7 +219,11 @@ export function renderMarkdown(result: DriftResult, doc: ToonObject): string {
     '',
     '---',
     '',
-    'This command exits 0 whatever the grade is, with `--strict` or without it, because it computes no band. The grade enters the score as S7 (weight 0.20) when `eyes-on check --intent "..."` runs, and there it raises the band like any other signal - so `check --strict` can exit 1 on it, and `check` without `--strict` never does.',
+    `This command exits 0 whatever the grade is, with \`--strict\` or without it, because it computes no band.${
+      doc.score === null
+        ? ' Nothing was rescored: there is no recorded check for this change yet.'
+        : ` The grade is signal S7 (weight 0.20) of the recorded score, and the check was rescored with it to ${String(doc.score)} of at most ${String(doc.score_max)}, band \`${String(doc.band)}\`.`
+    } In the score it raises the band like any other signal, so \`eyes-on check --strict\` can exit 1 on it, and \`check\` without \`--strict\` never does.`,
   );
   return lines.join('\n');
 }

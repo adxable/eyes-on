@@ -33,7 +33,7 @@ this skill tells you what a reviewer must look at.
 | `eyes-on export-path-instructions [--min-risk <0-100>]` | Emit a review.path_instructions block for .no-mistakes.yaml, inside its 32-entry and 16384-byte caps. A bridge, never a dependency. |
 | `eyes-on backtest --split <date>[,<date>...] [--horizon <days>]` | Replay the risk signal against history either side of a split date and report how much more often the flagged files were fixed afterwards. |
 | `eyes-on spotlight [--n 5] [--no-model]` | Rank the three to five fragments a human should actually read. Two stages: arithmetic over git narrows the diff to twelve candidates, then one model call picks a few and says why. --no-model returns stage one and calls nothing. |
-| `eyes-on drift [--intent "..."]` | Compare the stated intent with what the diff actually does, in two passes: one model describes the diff without seeing the intent, a second compares that description with it. Shown, never a gate. |
+| `eyes-on drift [--intent "..."]` | Compare the stated intent with what the diff actually does, in two passes: one model describes the diff without seeing the intent, a second compares that description with it. The grade is folded into the recorded check as signal S7, so the score, its maximum and the band move with it. This command itself is never a gate. |
 | `eyes-on comment --pr <n> [--dry-run]` | Publish the single sticky eyes-on comment on a pull request, found by its marker and updated in place. Never touches the body, never merges, never files a review. |
 
 ## Commands that are planned but not built yet

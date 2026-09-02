@@ -121,7 +121,6 @@ test('the comment says what to read and never becomes a second pull-request body
       created_at: 0,
       updated_at: 0,
     },
-    scoreMax: 120,
     spots: [
       { check_id: 'abc123', file: 'deploy/my values.yaml', line: 4, category: 'correctness', why: 'check the replica count', weight: 10, source: 'model' },
     ],
@@ -142,7 +141,51 @@ test('the comment says what to read and never becomes a second pull-request body
   // the kind of path a hard rule protects.
   assert.match(body, /^ {2}- `deploy\/my values\.yaml`$/m);
   assert.match(body, /Intent versus diff: 2\/5 - a health endpoint nobody asked for/);
-  assert.match(body, /blocks nothing, does not edit this pull request's body, and files no review/);
+  assert.match(body, /reddens this pull request or holds up a merge/);
+  assert.match(body, /does not edit this pull request's body or file a review/);
+});
+
+test('a check with no recorded maximum is published without a denominator, not with an invented one', () => {
+  // Rows written before eyes-on stored `score_max` carry a score computed under
+  // weights that summed to 1.00. Labelling that number with today's maximum
+  // would put a denominator on the comment the change was never scored against,
+  // which is the one thing `status` already refuses to do.
+  const row = {
+    id: 'abc123',
+    repo_id: 'r',
+    branch: 'work',
+    base_sha: 'b'.repeat(40),
+    head_sha: 'h'.repeat(40),
+    score: 58,
+    score_max: null,
+    band: 'wskazane',
+    drift: null,
+    intent: null,
+    intent_source: null,
+    status: 'done',
+    trusted_config_sha: null,
+    created_at: 0,
+    updated_at: 0,
+  };
+  const body = renderComment({
+    check: row,
+    spots: [],
+    hits: [],
+    decision: undefined,
+    driftItems: [],
+    signals: [],
+    stale: false,
+    prHeadSHA: null,
+  });
+
+  assert.match(body, /\*\*eyes-on - 58, channel: read the indicated fragments\*\*/);
+  assert.doesNotMatch(body, /of at most/);
+  assert.match(body, /before eyes-on stored the maximum a score can reach/);
+
+  // And the machine contract says the same: null, not a number nobody recorded.
+  const line = body.split('\n')[0] ?? '';
+  const payload = JSON.parse(line.slice(MARKER_PREFIX.length, line.lastIndexOf(' -->'))) as { score_max: number | null };
+  assert.equal(payload.score_max, null);
 });
 
 // --- end to end, through the CLI -------------------------------------------

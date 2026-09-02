@@ -8,7 +8,6 @@ import { checkByID, checkID, type CheckRow } from '../db/checks.js';
 import { driftItemsFor, latestDecision, recordComment, spotsFor } from '../db/gate.js';
 import { findMarked, renderComment, MARKER_PREFIX } from '../gh/comment.js';
 import { createComment, listComments, pullHeadSHA, repoSlug, updateComment, GhError } from '../gh/gh.js';
-import { maxScore } from '../risk/signals.js';
 
 /**
  * `eyes-on comment --pr <n>` - one sticky comment, and nothing else.
@@ -76,7 +75,6 @@ export async function commentCommand(context: Context): Promise<number> {
 
   const finalBody = renderComment({
     check,
-    scoreMax: maxScore(risk.trusted.config),
     spots,
     hits: hitsFor(db, id),
     decision,
@@ -131,6 +129,7 @@ export async function commentCommand(context: Context): Promise<number> {
     pr_head: prHead ? prHead.slice(0, 12) : null,
     stale,
     score: check.score,
+    score_max: check.score_max,
     band: check.band,
     gate: check.status === 'must_read' && !decision ? 'must_read' : 'none',
     decision: decision?.action ?? null,

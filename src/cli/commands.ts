@@ -131,7 +131,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'drift',
     usage: 'eyes-on drift [--intent "..."]',
     summary:
-      'Compare the stated intent with what the diff actually does, in two passes: one model describes the diff without seeing the intent, a second compares that description with it. Shown, never a gate.',
+      'Compare the stated intent with what the diff actually does, in two passes: one model describes the diff without seeing the intent, a second compares that description with it. The grade is folded into the recorded check as signal S7, so the score, its maximum and the band move with it. This command itself is never a gate.',
     stage: 2,
     mutating: true,
     implemented: true,

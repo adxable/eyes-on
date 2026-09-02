@@ -142,10 +142,11 @@ implementation:
 - **hard rules are read from the default branch at a pinned commit**, never from
   the branch being assessed, and they match the full changed-file list before any
   filter. A branch that deletes a rule still gets it.
-- **nothing blocks.** `check` exits 0 whatever the band is, whatever the rules
-  say and whatever the drift grade is. `--strict` exists for a caller who has
-  explicitly asked otherwise, and it is the only thing in the product that
-  produces a non-zero exit.
+- **nothing blocks unless the caller asks it to.** Without `--strict`, `check`
+  exits 0 whatever the band is, whatever the rules say and whatever the drift
+  grade is. `--strict` is the caller asking to gate on a `pelna` band, and it is
+  the only thing in the product that produces a non-zero exit. Nothing eyes-on
+  publishes reddens a pull request or holds up a merge either way.
 
 Every score comes with the evidence: which signal contributed how many points,
 which file decided it, and - through `eyes-on why <file>` - the fix commits, by

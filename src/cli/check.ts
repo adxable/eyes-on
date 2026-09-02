@@ -18,12 +18,15 @@ import { loadConfig } from '../core/config.js';
  *
  * Three properties of this command are the product, not implementation details:
  *
- *   - **it never blocks.** The exit code is 0 whatever the score is, whatever
- *     the hard rules say and whatever the drift grade is. The research report's
- *     own conclusion from the reference repository's CI (section 372) is that
- *     one false red teaches a team to ignore every red after it, and a risk
- *     score is a heuristic by construction. `--strict` exists for a caller who
- *     has explicitly asked for a non-zero exit; nothing else produces one.
+ *   - **it blocks nothing the caller did not ask it to.** Without `--strict`
+ *     the exit code is 0 whatever the score is, whatever the hard rules say and
+ *     whatever the drift grade is. The research report's own conclusion from
+ *     the reference repository's CI (section 372) is that one false red teaches
+ *     a team to ignore every red after it, and a risk score is a heuristic by
+ *     construction. `--strict` is the caller asking to gate on a `pelna` band;
+ *     nothing else in the product produces a non-zero exit. `exitCodeSentence`
+ *     is the one place that sentence is written, so no surface can say a
+ *     stronger one than the code delivers.
  *   - **it says where the number came from.** The rationale, the file that
  *     decided each signal, and the provenance of the config are all in the
  *     payload. A score nobody can argue with is a score nobody will trust.
@@ -166,6 +169,20 @@ function exitCodeFor(assessment: Assessment, strict: boolean): number {
 }
 
 /**
+ * The one sentence that describes that exit code, derived from the code itself.
+ *
+ * Every surface prints this rather than writing its own. Three rounds of review
+ * found three different renderings of this claim disagreeing with each other
+ * and with the code, because each was written where it was shown; a sentence
+ * computed from the number it describes cannot drift away from it.
+ */
+export function exitCodeSentence(code: number): string {
+  return code === EXIT_OK
+    ? 'Without `--strict` this command exits 0 whatever the band is; `--strict` is the caller asking to gate on a `pelna` band, and this run exits 0'
+    : 'This run exits 1 because `--strict` was passed and the band is `pelna`; without `--strict` this same result exits 0';
+}
+
+/**
  * Whether this run is parked.
  *
  * Computed from the same two facts the recorded status is computed from - a
@@ -292,11 +309,7 @@ function helpLines(assessment: Assessment, options: RenderOptions, gate: 'must_r
       'The drift grade is shown and scored as S7, so it moves the band like any other signal: without --strict it changes no exit code, and with --strict it can',
     );
   }
-  lines.push(
-    exitCodeFor(assessment, options.strict) === EXIT_OK
-      ? 'Exit code is 0 by design: eyes-on directs attention, it does not block'
-      : 'Exit code is 1 because --strict was passed and the band is `pelna`; without --strict this same result exits 0',
-  );
+  lines.push(exitCodeSentence(exitCodeFor(assessment, options.strict)));
   return lines as ToonValue;
 }
 
@@ -369,9 +382,7 @@ export function renderMarkdown(assessment: Assessment, doc: ToonObject): string 
     '',
     '---',
     '',
-    Number(doc.exit_code ?? EXIT_OK) === EXIT_OK
-      ? 'eyes-on never blocks: this command exits 0 whatever the band is. Run `eyes-on spotlight` for the fragments to read, or `eyes-on why <file>` for one file\'s history.'
-      : 'This run exits 1 because `--strict` was passed and the band is `pelna`; without `--strict` the same result exits 0. Run `eyes-on why <file>` for one file\'s history.',
+    `${exitCodeSentence(Number(doc.exit_code ?? EXIT_OK))}. Run \`eyes-on spotlight\` for the fragments to read, or \`eyes-on why <file>\` for one file's history.`,
   );
   return lines.join('\n');
 }

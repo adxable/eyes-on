@@ -29,7 +29,10 @@ export const MARKER_SUFFIX = ' -->';
 export interface MarkerPayload {
   head_sha: string;
   score: number | null;
-  score_max: number;
+  /** The maximum the score was computed against, as it was recorded beside it.
+   *  Null on a row written before eyes-on stored one: a denominator invented
+   *  here could name a maximum the change was never scored against. */
+  score_max: number | null;
   band: string | null;
   decision: string | null;
   check_id: string;
@@ -58,8 +61,11 @@ export function findMarked<T extends { body: string }>(comments: readonly T[]): 
 }
 
 export interface CommentInput {
+  /** The recorded assessment. Score, maximum, band and drift grade are four
+   *  facts about one check and all four are read from this row: a renderer that
+   *  recomputed any of them could publish a number that disagrees with the one
+   *  `check` printed. */
   check: CheckRow;
-  scoreMax: number;
   spots: readonly SpotRow[];
   hits: readonly { glob: string; why: string; files: string[] }[];
   decision: DecisionRow | undefined;
@@ -75,18 +81,25 @@ export interface CommentInput {
 export function renderComment(input: CommentInput): string {
   const { check } = input;
   const band = (check.band ?? 'auto') as Band;
+  const outOf = check.score_max === null ? '' : ` of at most ${check.score_max}`;
   const lines: string[] = [
     marker({
       head_sha: check.head_sha,
       score: check.score,
-      score_max: input.scoreMax,
+      score_max: check.score_max,
       band: check.band,
       decision: input.decision?.action ?? null,
       check_id: check.id,
     }),
-    `**eyes-on - ${check.score ?? 0} of at most ${input.scoreMax}, channel: ${bandLabel(band)}**`,
+    `**eyes-on - ${check.score ?? 0}${outOf}, channel: ${bandLabel(band)}**`,
     '',
   ];
+  if (check.score_max === null) {
+    lines.push(
+      'This assessment was recorded before eyes-on stored the maximum a score can reach, so the number above has no denominator here. Re-run `eyes-on check` to record one.',
+      '',
+    );
+  }
 
   if (input.spots.length > 0) {
     lines.push(`Read ${countWord(input.spots.length)}:`, '');
@@ -130,7 +143,7 @@ export function renderComment(input: CommentInput): string {
 
   lines.push(
     '',
-    `<sub>${check.base_sha.slice(0, 12)}..${check.head_sha.slice(0, 12)}. eyes-on directs attention; it blocks nothing, does not edit this pull request's body, and files no review.${input.stale ? ` **This assessment is of ${check.head_sha.slice(0, 12)}, and the pull request now points at ${(input.prHeadSHA ?? '').slice(0, 12)}.**` : ''}</sub>`,
+    `<sub>${check.base_sha.slice(0, 12)}..${check.head_sha.slice(0, 12)}. eyes-on directs attention; nothing here reddens this pull request or holds up a merge, and it does not edit this pull request's body or file a review.${input.stale ? ` **This assessment is of ${check.head_sha.slice(0, 12)}, and the pull request now points at ${(input.prHeadSHA ?? '').slice(0, 12)}.**` : ''}</sub>`,
   );
   return lines.join('\n');
 }

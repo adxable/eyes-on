@@ -1,8 +1,11 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { join } from 'node:path';
-import { captureCli, sandboxEnv, stubAgent, tempRepo, type StubAgent, type TempRepo } from './helpers.js';
+import { delimiter, join } from 'node:path';
+import { captureCli, sandboxEnv, stubAgent, stubGh, tempRepo, type StubAgent, type TempRepo } from './helpers.js';
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/output.js';
+import { MARKER_PREFIX } from '../src/gh/comment.js';
+import { bandFor, maxScore } from '../src/risk/signals.js';
+import { DEFAULT_THRESHOLDS, DEFAULT_WEIGHTS, SIGNAL_NAMES, defaultRepoConfig } from '../src/risk/repoconfig.js';
 import { driftSignalValue, measureDrift, parseComparison, parseDescription } from '../src/spot/drift.js';
 import { driftComparePrompt, driftDescribePrompt } from '../src/spot/prompt.js';
 import { Database } from '../src/db/db.js';
@@ -25,6 +28,11 @@ import { Database } from '../src/db/db.js';
  * way it can be - by reading the prompts the model was actually given and
  * asserting that the first never contained the intent and the second never
  * contained the diff.
+ *
+ * And one invariant, because three rounds of review found three holes in it:
+ * **the score, the maximum it was computed against, the band and the grade are
+ * four facts about one assessment.** A command that moves one recomputes the
+ * rest, and every surface reads all four from the recorded row.
  */
 
 const INTENT = 'Stop the mailbox poller retrying forever when the upstream returns 429.';
@@ -310,6 +318,122 @@ test('the grade and both lists are recorded against the check, as rows rather th
   assert.equal(items.length, 1);
   assert.equal(items[0]?.kind, 'unrequested_in_diff');
   assert.match(items[0]?.item ?? '', /health endpoint/);
+});
+
+test('acceptance: after drift, the score, its maximum, the band and the grade agree on the row and on every surface', async (t) => {
+  // The invariant this whole file exists to protect: those four numbers are
+  // facts about one assessment. `drift` used to write the grade onto a row
+  // whose score had been computed with S7 at zero, so `status` printed a score
+  // that did not contain the grade printed under it. Whoever moves one of the
+  // four now recomputes the others, and every surface reads them from the row.
+  const agent = stubAgent('drift-agree', [
+    describeAnswer(),
+    compareAnswer(5),
+    describeAnswer(),
+    compareAnswer(5),
+    describeAnswer(),
+    compareAnswer(5),
+  ]);
+  const repo = repoWith(agent);
+  const head = repo.git(['rev-parse', 'HEAD']).trim();
+  const gh = stubGh('drift-agree', { slug: 'acme/widgets', number: 7, headSHA: head, body: 'no-mistakes owns this body\n' });
+  const env: Record<string, string> = {
+    ...sandboxEnv('drift-agree'),
+    PATH: `${agent.dir}${delimiter}${gh.path}`,
+  };
+  await initRepo(t, repo, env);
+
+  interface Four {
+    score: number;
+    score_max: number;
+    band: string;
+    drift: number | null;
+  }
+
+  // A check with no intent: S7 is zero and the recorded score does not contain
+  // a grade, because none was measured.
+  const before = JSON.parse(
+    (await captureCli(['check', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as Four & { check_id: string };
+  assert.equal(before.drift, null);
+
+  const drifted = JSON.parse(
+    (await captureCli(['drift', '--intent', INTENT, '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as DriftDoc & Four;
+  assert.equal(drifted.drift, 5);
+  assert.ok(drifted.check_id);
+  assert.ok(drifted.score > before.score, 'the grade was folded into the score, not written beside it');
+
+  // The row, and its own internal consistency: the score is the weighted sum of
+  // the signal rows recorded with it, the band is the one that score produces,
+  // and the denominator is the one those weights allow.
+  const db = Database.open(join(env.EYES_HOME as string, 'state.sqlite'));
+  const row = db.get<Four>('SELECT score, score_max, band, drift FROM checks WHERE id = ?', drifted.check_id);
+  const signals = db.all<{ name: string; raw: number; normalized: number }>(
+    'SELECT name, raw, normalized FROM signals WHERE check_id = ?',
+    drifted.check_id,
+  );
+  db.close();
+
+  assert.ok(row);
+  assert.equal(row.drift, 5);
+  const byName = new Map(signals.map((signal) => [signal.name, signal.normalized]));
+  assert.equal(byName.size, SIGNAL_NAMES.length, 'every signal was recorded with the score');
+  assert.equal(
+    signals.find((signal) => signal.name === 'drift')?.raw,
+    4,
+    'S7 is the grade above an aligned 1, and it is in the recorded signal rows',
+  );
+  const summed = Math.round(
+    SIGNAL_NAMES.reduce((total, name) => total + DEFAULT_WEIGHTS[name] * (byName.get(name) ?? 0), 0) * 100,
+  );
+  assert.equal(row.score, summed, 'the recorded score is the weighted sum of the recorded signals, S7 included');
+  assert.equal(row.band, bandFor(row.score, DEFAULT_THRESHOLDS), 'the band is the one that score produces');
+  assert.equal(row.score_max, maxScore(defaultRepoConfig()), 'the denominator is the one those weights allow');
+
+  const four = (value: Four): Four => ({
+    score: value.score,
+    score_max: value.score_max,
+    band: value.band,
+    drift: value.drift,
+  });
+  const expected = four(row);
+
+  // Surface 1: the command that measured it.
+  assert.deepEqual(four(drifted), expected);
+
+  // Surface 2: status, which reads the row and nothing else.
+  const status = JSON.parse((await captureCli(['status', '--format', 'json'], { cwd: repo.path, env })).out) as {
+    last_check: { score: number; score_max: number | null; band: string } | null;
+  };
+  assert.equal(status.last_check?.score, expected.score);
+  assert.equal(status.last_check?.score_max, expected.score_max);
+  assert.equal(status.last_check?.band, expected.band);
+  const statusMd = (await captureCli(['status', '--format', 'md'], { cwd: repo.path, env })).out;
+  assert.match(statusMd, new RegExp(`\\*\\*${expected.score}/${expected.score_max} - `));
+
+  // Surface 3: the published comment, in its payload, its prose and its marker.
+  const comment = JSON.parse(
+    (await captureCli(['comment', '--pr', '7', '--dry-run', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as Four & { body: string };
+  assert.deepEqual(four(comment), expected);
+  assert.ok(comment.body.includes(`eyes-on - ${expected.score} of at most ${expected.score_max}`));
+  assert.ok(comment.body.includes(`Intent versus diff: ${String(expected.drift)}/5`));
+  const markerLine = comment.body.split('\n')[0] ?? '';
+  assert.deepEqual(
+    JSON.parse(markerLine.slice(MARKER_PREFIX.length, markerLine.lastIndexOf(' -->'))) as {
+      score: number;
+      score_max: number;
+      band: string;
+    },
+    { head_sha: head, score: expected.score, score_max: expected.score_max, band: expected.band, decision: null, check_id: drifted.check_id },
+  );
+
+  // Surface 4: check itself, recomputing the same change with the same intent.
+  const recomputed = JSON.parse(
+    (await captureCli(['check', '--intent', INTENT, '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as Four;
+  assert.deepEqual(four(recomputed), expected);
 });
 
 test('check --intent scores the drift as S7, and the same change without an intent does not', async (t) => {

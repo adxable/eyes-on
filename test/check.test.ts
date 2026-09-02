@@ -159,12 +159,21 @@ test('acceptance: a hard-rule hit sets the band to pelna and still exits 0', asy
   // code the process is not about to use.
   const lenientMarkdown = await cli(['check', '--format', 'md'], { cwd: repo.path, env });
   assert.equal(lenientMarkdown.code, EXIT_OK);
-  assert.match(lenientMarkdown.out, /eyes-on never blocks: this command exits 0/);
+  assert.match(lenientMarkdown.out, /Without `--strict` this command exits 0 whatever the band is/);
+  assert.match(lenientMarkdown.out, /`--strict` is the caller asking to gate on a `pelna` band/);
 
   const strictMarkdown = await cli(['check', '--strict', '--format', 'md'], { cwd: repo.path, env });
   assert.equal(strictMarkdown.code, EXIT_ERROR);
   assert.match(strictMarkdown.out, /exits 1 because `--strict` was passed/);
-  assert.doesNotMatch(strictMarkdown.out, /exits 0 whatever the band is/);
+  assert.doesNotMatch(strictMarkdown.out, /this run exits 0/i);
+
+  // The same sentence, in the payload's help lines and in the Markdown, because
+  // both take it from the one function that derives it from the exit code.
+  const help = (JSON.parse(lenient.out) as { help: string[] }).help;
+  assert.ok(
+    help.some((line) => lenientMarkdown.out.includes(line) && /--strict/.test(line)),
+    'the help line and the Markdown footer say the same thing about the exit code',
+  );
 });
 
 test('the score, the band, the rationale and the report file agree with each other', async (t) => {
