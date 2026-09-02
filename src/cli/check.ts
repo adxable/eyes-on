@@ -128,6 +128,7 @@ function driftFor(
   progress(context.writers, 'comparing the stated intent with the diff, in two passes');
   const result = measureDrift({
     diff: risk.reader.rangePatch(risk.baseSHA, risk.headSHA),
+    files: risk.reader.changedFiles(risk.baseSHA, risk.headSHA),
     intent,
     model,
   });

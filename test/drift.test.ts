@@ -52,6 +52,34 @@ test('the first pass never sees the intent and the second never sees the diff', 
   assert.match(compare, /5 - the change and the intent are about different things/);
 });
 
+test('a diff too large for the prompt is cut, and the cut is stated rather than silent', () => {
+  // Measured on a real change: git orders its diff by path, so an unmarked cut
+  // handed the model the two documentation files at the top of the alphabet and
+  // nothing else. It described those, and the comparison that followed reported
+  // that four of the five things the change actually did were missing from it -
+  // a confidently wrong grade rather than a missing one.
+  const files = [
+    { path: 'AGENTS.md', added: 40, deleted: 3 },
+    { path: 'src/zzz/late.ts', added: 900, deleted: 12 },
+    { path: 'src/zzz/binary.png', added: 0, deleted: 0 },
+  ];
+  const huge = `--- a/AGENTS.md\n+++ b/AGENTS.md\n@@ -1 +1 @@\n${'+documentation line\n'.repeat(4000)}`;
+
+  const cut = driftDescribePrompt(huge, files);
+  assert.match(cut, /CUT AT THE PROMPT SIZE LIMIT/);
+  assert.match(cut, /EVERY FILE THE CHANGE TOUCHES \(3, complete\)/);
+  // Every file is named even though its diff text is not in the prompt.
+  assert.match(cut, /\+900 -12\tsrc\/zzz\/late\.ts/);
+  assert.match(cut, /binary\tsrc\/zzz\/binary\.png/);
+  assert.match(cut, /Cover the change as a whole/);
+
+  // A diff that fits says so, rather than warning about a cut that did not
+  // happen - a diagnostic must describe the state the code is actually in.
+  const whole = driftDescribePrompt('@@ -1 +1 @@\n-a\n+b', files);
+  assert.match(whole, /THE DIFF, IN FULL/);
+  assert.doesNotMatch(whole, /CUT AT THE PROMPT SIZE LIMIT/);
+});
+
 test('the two passes are two calls, and the second is given the first one\'s answer', () => {
   const agent = stubAgent('drift-passes', [describeAnswer(), compareAnswer(3)]);
   const result = measureDrift({

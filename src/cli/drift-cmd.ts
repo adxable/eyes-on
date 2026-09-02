@@ -51,6 +51,7 @@ export async function driftCommand(context: Context): Promise<number> {
   }
   const result = measureDrift({
     diff: risk.reader.rangePatch(risk.baseSHA, risk.headSHA),
+    files: risk.reader.changedFiles(risk.baseSHA, risk.headSHA),
     intent,
     model,
   });

@@ -118,6 +118,13 @@ first) · `npm run genskill`.
   run an arbitrary program a cloned repository names. The executable's basename
   must be in `KNOWN_AGENTS`; only `~/.eyes-on/config.yaml`, which no branch can
   write, can lift that.
+- **A prompt the model cannot see the edge of produces a wrong answer, not a
+  missing one.** The drift description's diff is cut at a size limit and git
+  orders its output by path, so an unmarked cut described a three-thousand-line
+  change from its two documentation files and then reported that four of the
+  five things it did were missing from it. The first pass is given the complete
+  file list, and the prompt says when the diff text is a prefix. Any new prompt
+  that truncates anything owes the model the same sentence.
 - **Drift is two calls or it is nothing.** The first sees the diff and not the
   intent; the second sees that description and the intent and never the code.
   Collapsing them into one call leaves a command that runs, costs money and

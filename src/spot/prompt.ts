@@ -104,28 +104,58 @@ function clip(text: string, maxBytes: number): string {
   return `${cut}\n... (fragment truncated at ${maxBytes} bytes)`;
 }
 
+/** One line of the complete file list a drift description is given. */
+export interface ChangedFileLine {
+  path: string;
+  added: number;
+  deleted: number;
+}
+
 /**
  * Pass one of the drift check: describe the diff, without being told why it
  * was made.
  *
  * The intent is deliberately absent from this text. That is the anti-anchoring
  * property, and it is the reason the check is two calls rather than one.
+ *
+ * **The file list is complete and the diff text may not be.** A diff larger than
+ * the prompt budget is cut, and git orders its output by path, so an unmarked
+ * cut hands the model the alphabetically first files and nothing else - which
+ * was measured on a real change: a three-thousand-line diff was described
+ * entirely from its two documentation files, and the comparison that followed
+ * confidently reported that four of the five things the change did were
+ * missing from it. A truncation the model cannot see produces a wrong grade
+ * rather than a missing one, so the file list carries the whole change at file
+ * granularity and the cut is stated in the prompt.
  */
-export function driftDescribePrompt(diff: string): string {
+export function driftDescribePrompt(diff: string, files: readonly ChangedFileLine[] = []): string {
+  const body = clip(diff, MAX_TOTAL_BYTES);
+  const truncated = body.length !== diff.length;
   return [
     'Describe what the following code change actually does.',
     '',
     'You are NOT told why it was made, and you must not guess at a motive.',
-    'Report only what the diff shows, in exactly three short points, each one sentence.',
+    'Report only what the change shows, in exactly three short points, each one sentence.',
     'Name concrete behaviour: what is now computed, called, stored, refused or removed.',
     'Do not evaluate quality, do not mention style, do not suggest improvements.',
+    'Cover the change as a whole. Do not describe only the files the diff text happens to show.',
     '',
     'ANSWER WITH JSON AND NOTHING ELSE:',
     '{"describes":["first point","second point","third point"]}',
     '',
-    'THE CHANGE',
+    ...(files.length > 0
+      ? [
+          `EVERY FILE THE CHANGE TOUCHES (${files.length}, complete)`,
+          '',
+          ...files.map((file) => `${file.added > 0 || file.deleted > 0 ? `+${file.added} -${file.deleted}` : 'binary'}\t${file.path}`),
+          '',
+        ]
+      : []),
+    truncated
+      ? 'THE DIFF, CUT AT THE PROMPT SIZE LIMIT. It is a prefix in path order, so later files are absent from it; the file list above is the complete change.'
+      : 'THE DIFF, IN FULL',
     '',
-    clip(diff, MAX_TOTAL_BYTES),
+    body,
   ].join('\n');
 }
 

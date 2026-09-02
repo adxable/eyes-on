@@ -373,7 +373,67 @@ The weights now sum to 1.20 with the thresholds unchanged at 35 and 65, exactly
 as the report specifies, so a fully drifted change can score above 100. Every
 rendering divides by `maxScore()` rather than by a literal hundred.
 
-## 8. The clone and the foreign state root were not touched
+## 8. What this session found, beyond the conditions
+
+**A drift measurement that was confidently wrong, caught only by running it
+against a real model.** The stubbed tests proved the two passes happen, that the
+first never sees the intent and the second never sees the code, and that a
+failure at either end leaves no grade. They could not catch this, because it is
+not a control-flow property.
+
+The prompt budget for the first pass is 40 KB, and git orders its diff output by
+path. A change larger than that was therefore described from its alphabetically
+first files - on this branch, `AGENTS.md` and `README.md` - and the second pass,
+comparing that description with the intent, reported that four of the five
+things the change actually did were **missing from it**:
+
+```
+# eyes-on drift - 3/5
+- asked for, not in the change: The two-stage spotlight ... is not visible in the description.
+- asked for, not in the change: The two-pass intent-versus-diff drift check itself is not shown.
+- asked for, not in the change: The must_read gate ... is not visible.
+- asked for, not in the change: The single sticky pull-request comment ... is not shown.
+```
+
+Every one of those four was in the change. A truncation the model cannot see
+does not produce a missing answer; it produces a wrong one, in the field whose
+whole purpose is to tell an author what their change does that they did not say
+it would.
+
+The fix is not a bigger budget - a budget large enough for any change does not
+exist. The first pass is now given **the complete file list with its line
+counts**, which is cheap and covers the whole change at file granularity, and the
+prompt states outright when the diff text below it is a prefix. On the same
+change, with the same intent:
+
+```
+# eyes-on drift - 2/5
+
+## What the change actually does, described without the intent
+
+- Adds `spotlight`, `drift` and `comment` commands with their supporting modules
+  ... `--no-model` returns the ranking alone through `modelOptionsFor` returning
+  null so no model is ever invoked.
+- Computes intent drift with two separate model calls ... yielding a 1-5 grade
+  ... fed into signal S7 as grade-minus-one at weight 0.20 ...
+- Adds a gate persisted in new schema/`src/db/gate.ts` ... and adds
+  `src/gh/gh.ts`, which routes every `gh` call through an `assertAllowed`
+  whole-path allow-list ...
+
+## Drift: 2/5
+
+- **in the change, not asked for:** The drift grade is fed into risk signal S7 at
+  weight 0.20, changing the weight sum to 1.20 and how scores are rendered, which
+  the intent did not ask for.
+```
+
+Three points covering all three areas of the change, and one unrequested item
+that is genuinely unrequested - the intent used for the run named the two-pass
+check but not its weight in the score. `test/drift.test.ts` now asserts that the
+file list is complete, that the cut is stated when there is one, and that a diff
+which fits says so rather than warning about a cut that did not happen.
+
+## 9. The clone and the foreign state root were not touched
 
 Captured on adx-worker immediately before the session and again after it, with a
 marker file stamped between them:

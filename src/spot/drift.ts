@@ -1,5 +1,5 @@
 import { askModel, extractJson, resolveModelCommand, type ModelOptions, type ModelOutcome } from './agent.js';
-import { driftComparePrompt, driftDescribePrompt } from './prompt.js';
+import { driftComparePrompt, driftDescribePrompt, type ChangedFileLine } from './prompt.js';
 
 /**
  * Intent against diff, in two passes.
@@ -43,6 +43,10 @@ export interface DriftResult {
 
 export interface DriftOptions {
   diff: string;
+  /** Every file the change touches, with its line counts. The diff text is cut
+   *  at a size limit and git orders it by path, so without this the first pass
+   *  would describe the alphabetically first files and nothing else. */
+  files?: readonly ChangedFileLine[];
   intent: string;
   model: ModelOptions | null;
 }
@@ -67,7 +71,7 @@ export function measureDrift(options: DriftOptions): DriftResult {
     return { ...empty, model: resolved.refusal, passes: { describe: resolved.refusal.state, compare: 'skipped' } };
   }
 
-  const described = askModel(driftDescribePrompt(options.diff), options.model);
+  const described = askModel(driftDescribePrompt(options.diff, options.files ?? []), options.model);
   if (described.state !== 'ok') {
     return { ...empty, model: described, passes: { describe: described.state, compare: 'skipped' } };
   }
