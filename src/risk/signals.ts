@@ -127,6 +127,13 @@ export interface DriftEvidence {
   /** A grade this run dropped because it stated a different intent: what it
    *  was, and what it answered. */
   superseded?: { grade: number; intent: string | null } | null;
+  /** Whether there is a recorded assessment for this change. Absent means yes,
+   *  which is every caller that reads a row. `drift` run before any `check` on
+   *  the same base..head is the one caller that sets it false: the two passes
+   *  ran and the grade is real, but there is no score for it to be a signal of,
+   *  and a sentence saying the score contains it would name a number that does
+   *  not exist. */
+  scored?: boolean;
 }
 
 /**
@@ -137,29 +144,48 @@ export interface DriftEvidence {
 export function driftProvenanceSentence(evidence: DriftEvidence): string {
   const against = (intent: string | null): string =>
     intent === null ? 'an intent nobody recorded' : `the intent "${shortIntent(intent)}"`;
+  const scored = evidence.scored !== false;
+  const inScore = scored
+    ? 'the score contains it as S7'
+    : 'there is no recorded assessment for this change to fold it into as S7';
+  const zero = scored ? ', so S7 is zero' : '';
 
   if (evidence.provenance === 'none' || evidence.grade === null) {
     if (evidence.superseded) {
       return (
         `No drift grade for ${against(evidence.intent)}: the recorded ${evidence.superseded.grade}/5 was measured ` +
-        `against ${against(evidence.superseded.intent)} and answers a different question, so S7 is zero.`
+        `against ${against(evidence.superseded.intent)} and answers a different question${zero}.`
       );
     }
-    return 'No drift grade: the stated intent was not compared with this diff, so S7 is zero.';
+    return `No drift grade: the stated intent was not compared with this diff${zero}.`;
   }
   if (evidence.provenance === 'carried') {
     return (
       `Drift ${evidence.grade}/5 is carried from an earlier measurement of this same change against ` +
-      `${against(evidence.intent)} - nothing was measured now - and the score contains it as S7.`
+      `${against(evidence.intent)} - nothing was measured now - and ${inScore}.`
     );
   }
-  return `Drift ${evidence.grade}/5 was measured for this change against ${against(evidence.intent)}, and the score contains it as S7.`;
+  return `Drift ${evidence.grade}/5 was measured for this change against ${against(evidence.intent)}, and ${inScore}.`;
 }
 
 /** An intent short enough to sit in one sentence, whole when it already is. */
 export function shortIntent(intent: string): string {
   const flat = normalizeIntent(intent);
   return flat.length <= 80 ? flat : `${flat.slice(0, 79)}\u2026`;
+}
+
+/**
+ * The one reading of an intent a run was given: whitespace alone states
+ * nothing, so it is the same as not passing the flag at all.
+ *
+ * Every consumer takes the value from here. Four places used to decide this
+ * separately and three of them agreed, so `--intent ""` reached `carryDrift` as
+ * a *different* question and dropped a grade measured of this same change.
+ * Blank and absent cannot come apart while there is one reading.
+ */
+export function statedIntent(intent: string | null): string | null {
+  if (intent === null) return null;
+  return intent.trim().length === 0 ? null : intent;
 }
 
 /** Two intents are the same question when they differ only in whitespace. The

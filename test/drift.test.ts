@@ -1040,3 +1040,84 @@ test('drift reports a check recorded without a maximum as having none, rather th
   assert.match(doc.record_sentence, /no denominator here/);
   assert.ok(doc.help.includes(doc.record_sentence), 'the help lines print the same sentence');
 });
+
+test('an empty --intent states nothing, so it keeps a grade rather than superseding it', async (t) => {
+  // Whitespace alone is not a changed question. It used to reach carryDrift as
+  // one, which dropped a grade measured of this very change and deleted its
+  // lists - the failure the supersede rule exists to prevent.
+  const agent = stubAgent('drift-blank', [describeAnswer(), compareAnswer(3)]);
+  const repo = repoWith(agent);
+  const env: Record<string, string> = { ...sandboxEnv('drift-blank'), PATH: agent.path };
+  await initRepo(t, repo, env);
+  const dbPath = join(env.EYES_HOME as string, 'state.sqlite');
+
+  interface Four {
+    score: number;
+    score_max: number;
+    band: string;
+    drift: number | null;
+  }
+  const recorded = (): { four: Four; items: number; intent: string | null } => {
+    const db = Database.open(dbPath);
+    try {
+      const row = db.get<Four & { intent: string | null; id: string }>(
+        'SELECT id, score, score_max, band, drift, intent FROM checks',
+      );
+      const items = db.all<{ item: string }>('SELECT item FROM drift_items').length;
+      return {
+        four: { score: row?.score as number, score_max: row?.score_max as number, band: row?.band as string, drift: row?.drift ?? null },
+        items,
+        intent: row?.intent ?? null,
+      };
+    } finally {
+      db.close();
+    }
+  };
+
+  await captureCli(['check', '--intent', INTENT, '--format', 'json'], { cwd: repo.path, env });
+  const measured = recorded();
+  assert.equal(measured.four.drift, 3);
+  assert.equal(measured.items, 1);
+
+  const doc = JSON.parse(
+    (await captureCli(['check', '--intent', '   ', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as { drift: number | null; drift_provenance: string; drift_state: string };
+
+  assert.deepEqual(recorded().four, measured.four, 'the four facts did not move');
+  assert.equal(recorded().items, measured.items, 'and neither did the lists');
+  assert.equal(recorded().intent, INTENT, 'the row keeps the intent the grade answers');
+  assert.equal(doc.drift, 3);
+  assert.equal(doc.drift_provenance, 'carried');
+
+  // Which is exactly what a run with no --intent at all does.
+  const bare = JSON.parse(
+    (await captureCli(['check', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as { drift: number | null; drift_provenance: string; drift_state: string };
+  assert.equal(bare.drift, doc.drift);
+  assert.equal(bare.drift_provenance, doc.drift_provenance);
+  assert.equal(bare.drift_state, doc.drift_state);
+  assert.deepEqual(recorded().four, measured.four);
+});
+
+test('drift run before any check says there is no assessment to fold the grade into', async (t) => {
+  // Reachable as a first invocation: the usage error points at `check --intent`
+  // as an alternative rather than a prerequisite, and both model calls are spent
+  // before the grade finds nothing to be a signal of.
+  const agent = stubAgent('drift-unrecorded', [describeAnswer(), compareAnswer(3)]);
+  const repo = repoWith(agent);
+  const env: Record<string, string> = { ...sandboxEnv('drift-unrecorded'), PATH: agent.path };
+  await initRepo(t, repo, env);
+
+  const doc = JSON.parse(
+    (await captureCli(['drift', '--intent', INTENT, '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as DriftDoc & { score: number | null; drift_sentence: string; record_sentence: string; help: string[] };
+
+  assert.equal(doc.drift, 3, 'the grade was measured');
+  assert.equal(doc.score, null);
+  assert.equal(doc.check_id, null);
+  assert.doesNotMatch(doc.drift_sentence, /the score contains it/);
+  assert.match(doc.drift_sentence, /no recorded assessment/);
+  assert.match(doc.record_sentence, /Nothing was recorded/);
+  assert.ok(!doc.help.some((line) => /folded it in/.test(line)), 'nothing claims the grade was folded into a score');
+  assert.ok(doc.help.includes(doc.record_sentence));
+});

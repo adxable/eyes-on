@@ -8,7 +8,12 @@ import { modelOptionsFor } from './model-context.js';
 import { checkByID, checkID, findCheck, recordCheck, type CheckRow } from '../db/checks.js';
 import { recordDrift, supersedeDrift } from '../db/gate.js';
 import { assess } from '../risk/assess.js';
-import { carryDrift, driftProvenanceSentence, type CarryDecision } from '../risk/signals.js';
+import {
+  carryDrift,
+  driftProvenanceSentence,
+  statedIntent,
+  type CarryDecision,
+} from '../risk/signals.js';
 import { detailOf, driftSentence, measureDrift, type DriftResult } from '../spot/drift.js';
 
 /**
@@ -61,13 +66,13 @@ export async function driftCommand(context: Context): Promise<number> {
   assertMayMutate(context, 'drift');
 
   const risk = riskContext(context);
-  const intentFlag = flagString(context.args, 'intent');
-  const intent = intentFlag ?? intentFromRecord(risk);
+  const intentFlag = statedIntent(flagString(context.args, 'intent'));
+  const intent = intentFlag ?? statedIntent(intentFromRecord(risk));
   // Where the intent came from, which is what the column is for: `drift` with
   // no `--intent` reuses the one already on the row, and recording that as
   // `flag` would say this invocation stated an intent it was never given.
   const intentSource = intentFlag === null ? 'carried' : 'flag';
-  if (intent === null || intent.trim().length === 0) {
+  if (intent === null) {
     throw new UserFacingError('drift needs an intent to compare the change against', [
       'Pass --intent "why this change was made - the reason, not the summary"',
       'Or run `eyes-on check --intent "..."` first: drift reuses the intent recorded for this change',
@@ -232,7 +237,14 @@ export function renderDoc(result: DriftResult, options: DocOptions): ToonObject 
     recorded_drift: options.recorded?.drift ?? null,
     recorded_drift_intent: options.recorded?.drift_intent ?? null,
     drift_provenance: options.carry.provenance,
-    drift_sentence: driftProvenanceSentence(options.carry),
+    // Told whether there is an assessment for this grade to be a signal of:
+    // `drift` run before any `check` on this change has measured a real grade
+    // with no score to fold it into, and a sentence saying the score contains
+    // it would name a number the payload reports as null.
+    drift_sentence: driftProvenanceSentence({
+      ...options.carry,
+      scored: recordOutcome(options) !== 'none',
+    }),
     // What this run did to the recorded assessment, in the four states the
     // carry decision distinguishes. `rescored` is the narrow claim - a grade was
     // folded in - and is false for a run that dropped one; `recorded_changed`
@@ -315,11 +327,20 @@ function helpLines(result: DriftResult, options: DocOptions): string[] {
   const weight = options.driftWeight.toFixed(2);
   lines.push(recordSentence(options));
   lines.push('This command exits 0 for a 5 exactly as it does for a 1, with --strict or without it: it computes no band');
-  lines.push(
-    recordOutcome(options) === 'rescored'
-      ? `The grade is signal S7 at weight ${weight} of the recorded score, and this command folded it in; there is no second command to run for that`
-      : `A grade would be signal S7 at weight ${weight} of the recorded score, and this command folds it in when it measures one`,
-  );
+  const outcome = recordOutcome(options);
+  if (outcome === 'rescored') {
+    lines.push(
+      `The grade is signal S7 at weight ${weight} of the recorded score, and this command folded it in; there is no second command to run for that`,
+    );
+  } else if (outcome === 'none') {
+    lines.push(
+      `A grade is signal S7 at weight ${weight} of a recorded assessment, and there is none for this change to fold this one into`,
+    );
+  } else {
+    lines.push(
+      `A grade would be signal S7 at weight ${weight} of the recorded score, and this command folds it in when it measures one`,
+    );
+  }
   lines.push('In the score it raises the band like any other signal, so `eyes-on check --strict` can exit 1 on it; `check` without --strict never does');
   return lines;
 }

@@ -6,7 +6,7 @@ import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
 import { modelOptionsFor } from './model-context.js';
 import { assess } from '../risk/assess.js';
-import { bandLabel, driftProvenanceSentence } from '../risk/signals.js';
+import { bandLabel, driftProvenanceSentence, statedIntent } from '../risk/signals.js';
 import { findCheck, recordCheck } from '../db/checks.js';
 import { latestDecision, recordSpots } from '../db/gate.js';
 import { parseHunks } from '../spot/hunks.js';
@@ -102,7 +102,7 @@ export async function spotlightCommand(context: Context): Promise<number> {
   const result = selectSpotlight({
     candidates,
     n,
-    intent: flagString(context.args, 'intent') ?? existing?.intent ?? null,
+    intent: statedIntent(flagString(context.args, 'intent')) ?? statedIntent(existing?.intent ?? null),
     score: assessment.score,
     band: assessment.band,
     model: modelOptionsFor(context, risk.trusted.config),

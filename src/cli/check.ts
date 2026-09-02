@@ -6,7 +6,13 @@ import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
 import { modelOptionsFor } from './model-context.js';
 import { assess, type Assessment } from '../risk/assess.js';
-import { bandLabel, carryDrift, driftProvenanceSentence, type CarryDecision } from '../risk/signals.js';
+import {
+  bandLabel,
+  carryDrift,
+  driftProvenanceSentence,
+  statedIntent,
+  type CarryDecision,
+} from '../risk/signals.js';
 import { hitSentence } from '../rules/hard.js';
 import { findCheck, recordCheck, writeReport } from '../db/checks.js';
 import {
@@ -65,7 +71,7 @@ export async function checkCommand(context: Context): Promise<number> {
   assertMayMutate(context, 'check');
 
   const risk = riskContext(context);
-  const intent = flagString(context.args, 'intent');
+  const intent = statedIntent(flagString(context.args, 'intent'));
   const strict = flagBool(context.args, 'strict');
   const noModel = flagBool(context.args, 'no-model');
 
@@ -178,7 +184,7 @@ function driftFor(
   risk: ReturnType<typeof riskContext>,
   intent: string | null,
 ): DriftResult | null {
-  if (intent === null || intent.trim().length === 0) return null;
+  if (intent === null) return null;
   const model = modelOptionsFor(context, risk.trusted.config);
   if (model === null) {
     progress(context.writers, '--no-model: this run measured no drift');
@@ -357,9 +363,7 @@ function driftState(options: RenderOptions): string {
     // A run given no intent asked no drift question, so `--no-model` is not why
     // it has no grade: naming it would tell an agent that retrying with a model
     // would produce one, which it would not.
-    if (options.intent === null || options.intent.trim().length === 0) {
-      return 'not measured: no --intent was given';
-    }
+    if (options.intent === null) return 'not measured: no --intent was given';
     return options.noModel ? 'not measured: --no-model' : 'not measured';
   }
   return 'not measured';

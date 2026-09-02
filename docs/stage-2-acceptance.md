@@ -357,10 +357,13 @@ is worth reading, not what kind of thing it is, and guessing would be the one
 place this product invents a fact.
 
 That it calls nothing is structural rather than careful: `modelOptionsFor` is
-the only place the flag is read and it returns `null`, so there is no branch
-anywhere that reaches `askModel` with the flag set. The test asserts it against a
-fake agent that records every invocation, so "it did not call the model" is the
-absence of a file the suite would otherwise have written.
+the only place the flag *decides* anything - it returns `null`, and every caller
+checks `null` before building a prompt, so there is no branch anywhere that
+reaches `askModel` with the flag set. Three commands read the flag again, but
+only to choose what their output says about a model they were already unable to
+call; none of them decides reachability. The test asserts it against a fake agent
+that records every invocation, so "it did not call the model" is the absence of a
+file the suite would otherwise have written.
 
 The same path carries four other cases, each with its own sentence rather than
 one shared shrug: a repository whose `model.agent` is explicitly empty
