@@ -5,8 +5,7 @@ import { emitDoc, progress, EXIT_OK, EXIT_USAGE, UserFacingError } from './outpu
 import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
 import { modelOptionsFor } from './model-context.js';
-import { checkByID, checkID, findCheck, recordCheck, type CheckRow } from '../db/checks.js';
-import { recordDrift, supersedeDrift } from '../db/gate.js';
+import { checkByID, checkID, findCheck, recordAssessment, type CheckRow } from '../db/checks.js';
 import { assess } from '../risk/assess.js';
 import {
   carryDrift,
@@ -153,17 +152,15 @@ export async function driftCommand(context: Context): Promise<number> {
           driftGrade: carry.grade,
           onProgress: (message) => progress(context.writers, message),
         });
-        checkId = recordCheck(risk.db, {
+        checkId = recordAssessment(risk.db, {
           repoId: risk.repoId,
           branch: risk.branch,
           intent,
           intentSource,
           assessment,
-          drift: carry.grade,
-          driftIntent: carry.intent,
+          carry,
+          measured: result,
         });
-        if (result.grade !== null) recordDrift(risk.db, checkId, result, intent);
-        else supersedeDrift(risk.db, checkId, intent);
       }
       // Read back rather than reported from the assessment: the row is the one
       // source every other surface renders these four numbers from.

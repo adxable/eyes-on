@@ -1159,3 +1159,78 @@ test('a model that could not be reached is reported without naming output these 
   assert.doesNotMatch(driftDoc.detail, /stage|ranking/i);
   assert.ok(driftDoc.help.some((line) => line.startsWith('No grade from this run:')));
 });
+
+test('check and spotlight answer the same change the same way, whichever one runs', async (t) => {
+  // Both take --intent and both fold a recorded grade into the score they
+  // publish. A tool that answers differently depending on the order it was
+  // called in is not evidence, it is a draw: spotlight used to keep a grade
+  // measured against the old intent while check dropped it, and whichever ran
+  // last was what the pull-request comment carried.
+  const agent = stubAgent('same-answer', [describeAnswer(), compareAnswer(5), describeAnswer(), compareAnswer(5)]);
+  const repo = repoWith(agent);
+  const viaCheck: Record<string, string> = { ...sandboxEnv('same-answer-check'), PATH: agent.path };
+  const viaSpotlight: Record<string, string> = { ...sandboxEnv('same-answer-spot'), PATH: agent.path };
+  await initRepo(t, repo, viaCheck);
+  await initRepo(t, repo, viaSpotlight);
+
+  interface Published {
+    score: number;
+    score_max: number;
+    band: string;
+    drift: number | null;
+    drift_provenance: string;
+    drift_sentence: string;
+    intent: string | null;
+  }
+  const measured: Published[] = [];
+  for (const env of [viaCheck, viaSpotlight]) {
+    measured.push(
+      JSON.parse(
+        (await captureCli(['check', '--intent', INTENT, '--format', 'json'], { cwd: repo.path, env })).out,
+      ) as Published,
+    );
+  }
+  assert.equal(measured[0]?.drift, 5, 'both state roots start from the same measured grade');
+  assert.equal(measured[1]?.drift, 5);
+
+  const RESTATED = 'Add the health endpoint the dashboard needs from the panel server.';
+  const checked = JSON.parse(
+    (await captureCli(['check', '--intent', RESTATED, '--no-model', '--format', 'json'], { cwd: repo.path, env: viaCheck })).out,
+  ) as Published;
+  const spotted = JSON.parse(
+    (await captureCli(['spotlight', '--intent', RESTATED, '--no-model', '--format', 'json'], { cwd: repo.path, env: viaSpotlight })).out,
+  ) as Published;
+
+  assert.equal(checked.drift, null, 'the recorded grade answers a different question, so it is dropped');
+  assert.ok(checked.score < (measured[0]?.score ?? 0), 'and the score falls with it');
+  assert.deepEqual(
+    {
+      score: spotted.score,
+      score_max: spotted.score_max,
+      band: spotted.band,
+      drift: spotted.drift,
+      drift_provenance: spotted.drift_provenance,
+      drift_sentence: spotted.drift_sentence,
+    },
+    {
+      score: checked.score,
+      score_max: checked.score_max,
+      band: checked.band,
+      drift: checked.drift,
+      drift_provenance: checked.drift_provenance,
+      drift_sentence: checked.drift_sentence,
+    },
+    'the two commands publish one answer for one change',
+  );
+  assert.equal(spotted.intent, RESTATED, 'and spotlight says which intent it was given');
+
+  // The restated intent lands on the row, so a later `drift` with no --intent
+  // reads it rather than the superseded one.
+  for (const env of [viaCheck, viaSpotlight]) {
+    const db = Database.open(join(env.EYES_HOME as string, 'state.sqlite'));
+    const row = db.get<{ intent: string | null; drift: number | null }>('SELECT intent, drift FROM checks');
+    db.close();
+    assert.equal(row?.intent, RESTATED);
+    assert.equal(row?.drift, null);
+  }
+});

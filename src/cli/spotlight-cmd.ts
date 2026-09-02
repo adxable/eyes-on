@@ -6,8 +6,14 @@ import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
 import { modelOptionsFor } from './model-context.js';
 import { assess } from '../risk/assess.js';
-import { bandLabel, driftProvenanceSentence, statedIntent } from '../risk/signals.js';
-import { findCheck, recordCheck } from '../db/checks.js';
+import {
+  bandLabel,
+  carryDrift,
+  driftProvenanceSentence,
+  statedIntent,
+  type CarryDecision,
+} from '../risk/signals.js';
+import { findCheck, recordAssessment } from '../db/checks.js';
 import { latestDecision, recordSpots } from '../db/gate.js';
 import { parseHunks } from '../spot/hunks.js';
 import { blamedHunks, rankHunks, DEFAULT_MAX_PER_FILE, type Candidate } from '../spot/rank.js';
@@ -34,6 +40,14 @@ import { detailOf } from '../spot/drift.js';
  * this exact base and head, the grade is read back so that this command's score
  * is the same number `check` reported; measuring it again would be a second
  * pair of model calls to arrive at the same answer.
+ *
+ * Read back through `carryDrift`, though, and never straight off the row. This
+ * command takes `--intent` too, so it can be handed a question the recorded
+ * grade does not answer, and it used to fold that grade in anyway while `check`
+ * dropped it - the same change scoring eighteen points apart depending on which
+ * command ran last. A tool that answers differently depending on the order it
+ * was called in is not evidence, it is a draw. The decision and the write both
+ * go through what `check` uses.
  */
 export async function spotlightCommand(context: Context): Promise<number> {
   assertMayMutate(context, 'spotlight');
@@ -52,8 +66,22 @@ export async function spotlightCommand(context: Context): Promise<number> {
 
   // The grade already measured for this exact change, so this command's score
   // agrees with the one `check --intent` printed instead of silently dropping
-  // S7 back to zero.
+  // S7 back to zero - and only when it answers the intent this run was given.
   const existing = risk.db ? findCheck(risk.db, risk.repoId, risk.baseSHA, risk.headSHA) : undefined;
+  const intent = statedIntent(flagString(context.args, 'intent'));
+  const carry = carryDrift({
+    measured: null,
+    intent,
+    recordedGrade: existing?.drift ?? null,
+    recordedIntent: existing?.drift_intent ?? null,
+    recordedRowIntent: existing?.intent ?? null,
+  });
+  if (carry.supersede) {
+    progress(
+      context.writers,
+      `dropping the recorded drift grade of ${String(carry.superseded?.grade)}/5: it was measured against a different intent`,
+    );
+  }
 
   const assessment = assess({
     reader: risk.reader,
@@ -62,7 +90,7 @@ export async function spotlightCommand(context: Context): Promise<number> {
     baseSHA: risk.baseSHA,
     headSHA: risk.headSHA,
     nowSeconds: Math.floor(Date.now() / 1000),
-    driftGrade: existing?.drift ?? null,
+    driftGrade: carry.grade,
     onProgress: (message) => progress(context.writers, message),
   });
 
@@ -102,7 +130,7 @@ export async function spotlightCommand(context: Context): Promise<number> {
   const result = selectSpotlight({
     candidates,
     n,
-    intent: statedIntent(flagString(context.args, 'intent')) ?? statedIntent(existing?.intent ?? null),
+    intent: carry.rowIntent,
     score: assessment.score,
     band: assessment.band,
     model: modelOptionsFor(context, risk.trusted.config),
@@ -113,14 +141,12 @@ export async function spotlightCommand(context: Context): Promise<number> {
 
   let checkId: string | null = null;
   if (risk.db) {
-    checkId = recordCheck(risk.db, {
+    checkId = recordAssessment(risk.db, {
       repoId: risk.repoId,
       branch: risk.branch,
-      intent: existing?.intent ?? null,
-      intentSource: existing?.intent_source ?? null,
+      intent,
       assessment,
-      drift: existing?.drift ?? null,
-      driftIntent: existing?.drift_intent ?? null,
+      carry,
     });
     recordSpots(risk.db, checkId, result.spots);
   }
@@ -133,8 +159,8 @@ export async function spotlightCommand(context: Context): Promise<number> {
     n,
     checkId,
     gate: gateOf(risk, assessment.hard_rules.length, checkId),
-    drift: existing?.drift ?? null,
-    driftIntent: existing?.drift_intent ?? null,
+    intent: carry.rowIntent,
+    carry,
     base: risk.baseSHA,
     head: risk.headSHA,
   });
@@ -165,10 +191,13 @@ interface DocOptions {
   n: number;
   checkId: string | null;
   gate: 'must_read' | 'none';
-  /** The recorded grade this run folded into the score, and the intent it was
-   *  measured against. */
-  drift: number | null;
-  driftIntent: string | null;
+  /** The intent this run worked with: the one it was given, or the one already
+   *  on the row when it was given none. It is what the second stage was asked
+   *  about and what the row holds afterwards. */
+  intent: string | null;
+  /** Which grade the score contains, where it came from and which intent it
+   *  answers - decided by `carryDrift`, exactly as `check` decides it. */
+  carry: CarryDecision;
   base: string;
   head: string;
 }
@@ -183,17 +212,15 @@ export function renderDoc(score: number, scoreMax: number, band: string, options
     base: options.base.slice(0, 12),
     head: options.head.slice(0, 12),
     check_id: options.checkId,
+    intent: options.intent,
     // The score above contains this grade, and this command never measures one:
     // whatever is here was carried from the recorded assessment of this same
-    // change. Saying so is the difference between a number and evidence.
-    drift: options.drift,
-    drift_intent: options.driftIntent,
-    drift_provenance: options.drift === null ? 'none' : 'carried',
-    drift_sentence: driftProvenanceSentence({
-      provenance: options.drift === null ? 'none' : 'carried',
-      grade: options.drift,
-      intent: options.driftIntent,
-    }),
+    // change, and only when it answers the intent above. Saying so is the
+    // difference between a number and evidence.
+    drift: options.carry.grade,
+    drift_intent: options.carry.intent,
+    drift_provenance: options.carry.provenance,
+    drift_sentence: driftProvenanceSentence(options.carry),
     gate: options.gate,
     stage: result.stage,
     asked_for: options.n,
@@ -273,6 +300,9 @@ export function renderMarkdown(doc: ToonObject): string {
     `Change ${String(doc.base)}..${String(doc.head)}, score ${String(doc.score)} of at most ${String(doc.score_max)}, band **${String(doc.band_label)}**.`,
     `Stage ${String(doc.stage)}: ${String(doc.candidates_considered)} candidates from ${String(doc.hunks)} hunks. ${String(doc.model_detail)}`,
   ];
+  if (doc.drift !== null || doc.drift_intent !== null) {
+    lines.push('', String(doc.drift_sentence));
+  }
   if (spots.length === 0) {
     lines.push('', 'Nothing to read: this change has no fragments the ranking could rank.');
     return lines.join('\n');

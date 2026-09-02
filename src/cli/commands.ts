@@ -65,7 +65,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'axi',
-    usage: 'eyes-on axi {status|check|logs|respond --action read|waive --reason "..."}',
+    usage:
+      'eyes-on axi {status|check|logs [--lines <n>]|respond --action read|waive --reason "..." [--check-id <id>] [--by <name>]}',
     summary:
       'Agent surface: TOON on stdout, progress on stderr, exit 0 success, 1 error, 2 usage error. `respond` answers a run parked by a hard rule and records who decided what, and why.',
     stage: 0,
@@ -138,7 +139,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'comment',
-    usage: 'eyes-on comment --pr <n> [--dry-run]',
+    usage: 'eyes-on comment --pr <n> [--check-id <id>] [--dry-run]',
     summary:
       'Publish the single sticky eyes-on comment on a pull request, found by its marker and updated in place. Never touches the body, never merges, never files a review.',
     stage: 2,

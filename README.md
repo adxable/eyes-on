@@ -50,12 +50,12 @@ leaves a healthy install alone. `eyes-on init --watch` additionally installs a
 | `eyes-on check [--base <ref>] [--head <ref>] [--intent "..."] [--no-model] [--strict]` | Score the change, apply the hard rules, and with an intent measure the drift |
 | `eyes-on spotlight [--n 5] [--intent "..."] [--no-model]` | The three to five fragments a human should actually read |
 | `eyes-on drift [--intent "..."] [--no-model]` | What the diff does, against what its author said it would |
-| `eyes-on comment --pr <n> [--dry-run]` | One sticky comment on the pull request; never the body |
+| `eyes-on comment --pr <n> [--check-id <id>] [--dry-run]` | One sticky comment on the pull request; never the body |
 | `eyes-on why <file>` \| `eyes-on why --top <n>` | Where one file's risk came from, or where risk lives in the repository |
 | `eyes-on rules --check` | The hard rules alone, read from the default branch |
 | `eyes-on export-path-instructions` | A `review.path_instructions` block for `.no-mistakes.yaml` |
 | `eyes-on backtest --split <date>[,<date>...]` | Whether the signal knew anything, on this repository's own history |
-| `eyes-on axi {status\|check\|logs\|respond}` | The agent surface, including the `must_read` gate |
+| `eyes-on axi {status\|check\|logs [--lines <n>]\|respond [--check-id <id>] [--by <name>]}` | The agent surface, including the `must_read` gate |
 
 `label`, `leaks` and `calibrate` arrive in stage 3. `eyes-on help` prints the
 full surface with the stage that owns each one.

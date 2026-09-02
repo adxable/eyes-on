@@ -14,15 +14,8 @@ import {
   type CarryDecision,
 } from '../risk/signals.js';
 import { hitSentence } from '../rules/hard.js';
-import { findCheck, recordCheck, writeReport } from '../db/checks.js';
-import {
-  driftItemsFor,
-  latestDecision,
-  recordDrift,
-  supersedeDrift,
-  type DecisionRow,
-  type DriftItemRow,
-} from '../db/gate.js';
+import { findCheck, recordAssessment, writeReport } from '../db/checks.js';
+import { driftItemsFor, latestDecision, type DecisionRow, type DriftItemRow } from '../db/gate.js';
 import { measureDrift, detailOf, type DriftResult } from '../spot/drift.js';
 import { loadConfig } from '../core/config.js';
 
@@ -121,20 +114,14 @@ export async function checkCommand(context: Context): Promise<number> {
   let checkId: string | null = null;
   let driftItems: DriftItemRow[] | null = null;
   if (risk.db) {
-    checkId = recordCheck(risk.db, {
+    checkId = recordAssessment(risk.db, {
       repoId: risk.repoId,
       branch: risk.branch,
-      intent: carry.rowIntent,
-      intentSource: intent === null && carry.rowIntent !== null ? 'carried' : undefined,
+      intent,
       assessment,
-      drift: carry.grade,
-      driftIntent: carry.intent,
+      carry,
+      measured: drift,
     });
-    // Only a run that measured one rewrites the items: `recordDrift` replaces
-    // them, so calling it with an unmeasured result would delete the lists of
-    // the measurement this run just kept.
-    if (drift && drift.grade !== null) recordDrift(risk.db, checkId, drift, intent);
-    else if (carry.supersede) supersedeDrift(risk.db, checkId, intent);
     decision = latestDecision(risk.db, checkId);
     // The two lists belong to the grade, so they are read back from the record
     // rather than from this run's result: a carried grade would otherwise be

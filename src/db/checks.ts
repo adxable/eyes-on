@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from './db.js';
-import { latestDecision } from './gate.js';
+import { latestDecision, recordDrift, supersedeDrift } from './gate.js';
 import type { Assessment } from '../risk/assess.js';
+import type { CarryDecision } from '../risk/signals.js';
+import type { DriftResult } from '../spot/drift.js';
 import type { Paths } from '../core/paths.js';
 
 /**
@@ -147,6 +149,53 @@ export function recordCheck(db: Database, options: RecordOptions): string {
   }
 
   return id;
+}
+
+export interface RecordAssessmentOptions {
+  repoId: string;
+  branch: string;
+  /** The intent this run stated, or null when it stated none. */
+  intent: string | null;
+  assessment: Assessment;
+  /** What `carryDrift` decided about the recorded grade: which grade the score
+   *  contains, which intent it answers, what belongs in the row's own `intent`
+   *  column, and whether the recorded facts are superseded. */
+  carry: CarryDecision;
+  /** What this run measured, or null when it measured nothing. Only `check` and
+   *  `drift` ever pass one. */
+  measured?: DriftResult | null;
+  intentSource?: string | null;
+}
+
+/**
+ * The one way an assessment and its drift facts are written together.
+ *
+ * `check`, `drift` and `spotlight` all record the same four facts about one
+ * change, and each used to spell the sequence out for itself. A tool that
+ * answers differently depending on the order it was called in is not evidence,
+ * it is a draw: `check --intent "B"` superseded a grade measured against "A"
+ * and dropped eighteen points, while `spotlight --intent "B"` on the same
+ * change kept it, and whichever ran last was what the pull request published.
+ * One function means the three cannot disagree about that again.
+ */
+export function recordAssessment(db: Database, options: RecordAssessmentOptions): string {
+  const { carry } = options;
+  const checkId = recordCheck(db, {
+    repoId: options.repoId,
+    branch: options.branch,
+    intent: carry.rowIntent,
+    intentSource:
+      options.intentSource ?? (options.intent === null && carry.rowIntent !== null ? 'carried' : undefined),
+    assessment: options.assessment,
+    drift: carry.grade,
+    driftIntent: carry.intent,
+  });
+  // Only a run that measured a grade rewrites the two lists, and only a run
+  // whose intent asks a different question drops them.
+  const measured = options.measured ?? null;
+  if (measured && measured.grade !== null) recordDrift(db, checkId, measured, options.intent);
+  else if (carry.supersede) supersedeDrift(db, checkId, options.intent);
+  return checkId;
 }
 
 /**
