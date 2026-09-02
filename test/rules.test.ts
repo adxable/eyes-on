@@ -6,7 +6,7 @@ import { EXIT_ERROR, EXIT_OK, type Writers } from '../src/cli/output.js';
 import { stateRoot, tempDir, tempRepo, type TempRepo } from './helpers.js';
 import { evaluateHardRules } from '../src/rules/hard.js';
 import { readTrustedConfig } from '../src/rules/trusted.js';
-import { RepoReader, parseRemovedRanges } from '../src/git/reader.js';
+import { RepoReader } from '../src/git/reader.js';
 
 /**
  * The trust property, which is the acceptance condition for stage 1's rules:
@@ -194,13 +194,9 @@ test('a hard rule fires on a path whose name git C-quotes', () => {
   assert.equal(hits.length, 1, 'the deploy/** rule must fire on it');
   assert.deepEqual(hits[0]?.matched_files, ['deploy/wartości.yaml']);
 
-  // The same quoting appears in the tree listing and in the patch header the
-  // SZZ walk reads, so both are checked against the same file.
+  // The tree listing quotes the same way, and the backtest population is built
+  // from it. The patch header is covered by the SZZ chain in test/szz.test.ts.
   assert.ok(reader.filesAt(head).includes('deploy/wartości.yaml'));
-  assert.ok(
-    parseRemovedRanges(reader.commitPatch(head)).every((range) => !range.path.startsWith('"')),
-    'a patch header must never leave a quoted path behind',
-  );
 });
 
 test('a hard-rule hit on a diacritic path sets the band and still exits 0', async () => {

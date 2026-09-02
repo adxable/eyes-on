@@ -31,6 +31,15 @@ import {
  *
  * Nothing is written anywhere. The block goes to stdout for a human to paste.
  */
+/**
+ * A candidate entry, carrying where it came from.
+ *
+ * The provenance travels with the entry rather than being recovered from its
+ * position, because `fitWithinCaps` does not keep a prefix: a hard rule with a
+ * long `why` can be dropped for bytes while a later history entry still fits.
+ */
+type Candidate = PathInstruction & { source: 'hard_rule' | 'history' };
+
 export async function exportPathInstructionsCommand(context: Context): Promise<number> {
   const risk = riskContext(context, { dbMode: 'optional', needRange: false });
   const config = risk.trusted.config;
@@ -67,8 +76,9 @@ export async function exportPathInstructionsCommand(context: Context): Promise<n
   }
   const threshold = minRisk ?? config.thresholds.read_fragments;
 
-  const candidates: PathInstruction[] = [
-    ...config.hard_rules.map((rule) => ({
+  const candidates: Candidate[] = [
+    ...config.hard_rules.map((rule): Candidate => ({
+      source: 'hard_rule',
       path: rule.glob,
       instructions: [
         'eyes-on marks this path as requiring full human review, from a hard rule on the default branch.',
@@ -83,7 +93,7 @@ export async function exportPathInstructionsCommand(context: Context): Promise<n
 
   const fitted = fitWithinCaps(candidates);
   const block = renderPathInstructions(fitted.entries);
-  const hardRulesKept = Math.min(config.hard_rules.length, fitted.entries.length);
+  const hardRulesKept = fitted.entries.filter((entry) => entry.source === 'hard_rule').length;
 
   const doc: ToonObject = {
     entries: fitted.entries.length,
@@ -94,10 +104,9 @@ export async function exportPathInstructionsCommand(context: Context): Promise<n
     dropped: fitted.dropped.length,
     dropped_paths: fitted.dropped.map((entry) => entry.path).join(' '),
     cap_reason: fitted.reason,
-    // Hard rules occupy the head of the candidate list, so the ones that
-    // survived the caps are exactly the first `hard_rules.length` entries -
-    // fewer when the caps bit. Reporting the total here instead would
-    // contradict `entries` and `dropped` in the same document.
+    // Counted off the emitted block, never inferred from position: the byte cap
+    // skips one candidate and keeps the next, so the surviving entries are not
+    // a prefix of the candidate list and no arithmetic on lengths is right.
     from_hard_rules: hardRulesKept,
     hard_rules_available: config.hard_rules.length,
     from_history: fitted.entries.length - hardRulesKept,
@@ -130,7 +139,7 @@ function riskyDirectories(
   ranked: readonly { path: string; risk: number; fix_commits: number; churn: number }[],
   threshold: number,
   windowDays: number,
-): PathInstruction[] {
+): Candidate[] {
   const byDirectory = new Map<string, { risk: number; files: number; fixes: number; worst: string }>();
   for (const entry of ranked) {
     if (entry.risk < threshold) continue;
@@ -150,7 +159,8 @@ function riskyDirectories(
 
   return [...byDirectory.entries()]
     .sort((a, b) => b[1].risk - a[1].risk || b[1].files - a[1].files || a[0].localeCompare(b[0]))
-    .map(([dir, stats]) => ({
+    .map(([dir, stats]): Candidate => ({
+      source: 'history',
       path: dir === '.' ? '*' : `${dir}/**`,
       instructions: [
         `eyes-on scores this directory ${stats.risk}/100 from repository history over the last ${windowDays} days.`,

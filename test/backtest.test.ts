@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { tempDir, tempRepo, type TempRepo } from './helpers.js';
+import { stateRoot, tempDir, tempRepo, type TempRepo } from './helpers.js';
+import { run as runCli } from '../src/cli/run.js';
+import { EXIT_OK, type Writers } from '../src/cli/output.js';
 import { RepoReader } from '../src/git/reader.js';
 import { backtest, parseSplit, CHURN_DECILE_LIFT_TARGET, FIX_HISTORY_LIFT_TARGET } from '../src/risk/backtest.js';
 import { defaultRepoConfig } from '../src/risk/repoconfig.js';
@@ -171,4 +173,83 @@ test('the horizon bounds the outcome window when one is asked for', () => {
   // The note names the window it actually looked in, horizon and all, rather
   // than blaming the split date for a bound the caller chose.
   assert.match(narrow?.note ?? '', /no commits landed in the outcome window \(after 2026-03-01, within 14 days\)/);
+});
+
+async function cli(argv: string[], options: { cwd: string; env: Record<string, string> }): Promise<{ code: number; out: string }> {
+  let out = '';
+  const writers: Writers = { out: (chunk) => (out += chunk), err: () => {} };
+  const previousCwd = process.cwd();
+  const previousEnv = { ...process.env };
+  process.chdir(options.cwd);
+  delete process.env.NO_MISTAKES_GATE;
+  Object.assign(process.env, options.env);
+  try {
+    const code = await runCli(argv, writers);
+    return { code, out };
+  } finally {
+    process.chdir(previousCwd);
+    for (const key of Object.keys(process.env)) {
+      if (!(key in previousEnv)) delete process.env[key];
+    }
+    Object.assign(process.env, previousEnv);
+  }
+}
+
+/**
+ * A repository that reaches both of the reasons a populated split still cannot
+ * be measured: one split has no commits after it at all, and the other has fix
+ * commits after it that touch only a file created later.
+ */
+function repoWithUnmeasurableSplits(): TempRepo {
+  const repo = tempRepo('bt-notes');
+  repo.commitFiles('feat: the file that exists at the split', { 'src/a.ts': 'one\ntwo\n' }, '2026-01-05T12:00:00Z');
+  repo.commitFiles('feat: a file created after the split', { 'src/b.ts': 'one\ntwo\n' }, '2026-04-01T12:00:00Z');
+  repo.commitFiles('fix: correct the newer file', { 'src/b.ts': 'one\nTWO\n' }, '2026-04-05T12:00:00Z');
+  return repo;
+}
+
+test('a split that could not be measured says so in Markdown instead of reading as a zero lift', async () => {
+  const repo = repoWithUnmeasurableSplits();
+  const env = {
+    EYES_HOME: stateRoot(),
+    EYES_ON_SKILL_ROOT: tempDir('bt-skills'),
+    EYES_ON_SKIP_SERVICE_MANAGER: '1',
+    NM_HOME: tempDir('bt-nm-home'),
+  };
+
+  // 2026-03-01: files existed and fixes landed afterwards, but none of them
+  // touched a file that existed at the split - base rate zero, nothing to
+  // discriminate. 2026-06-01: nothing landed after it at all.
+  const result = await cli(['backtest', '--split', '2026-03-01,2026-06-01', '--format', 'md'], {
+    cwd: repo.path,
+    env,
+  });
+  assert.equal(result.code, EXIT_OK);
+
+  const json = await cli(['backtest', '--split', '2026-03-01,2026-06-01', '--format', 'json'], {
+    cwd: repo.path,
+    env,
+  });
+  const doc = JSON.parse(json.out) as {
+    evaluated: number;
+    results: { split: string; population: number; note: string | null }[];
+  };
+  assert.equal(doc.evaluated, 0, 'neither split was evaluated');
+  const notes = new Map(doc.results.map((entry) => [entry.split, entry]));
+  assert.match(String(notes.get('2026-03-01')?.note), /nothing to discriminate/);
+  assert.ok((notes.get('2026-03-01')?.population ?? 0) > 0, 'the first split is populated, so it is not the empty case');
+  assert.match(String(notes.get('2026-06-01')?.note), /no outcome to measure/);
+  assert.ok((notes.get('2026-06-01')?.population ?? 0) > 0);
+
+  // The Markdown a human reads must carry the same two sentences, and must not
+  // present either split as a signal that scored zero.
+  assert.doesNotMatch(result.out, /\*\*0x\*\*/, 'a lift of 0x reads as a failed signal, not as "not measured"');
+  for (const split of ['2026-03-01', '2026-06-01']) {
+    const row = result.out.split('\n').find((line) => line.startsWith(`| ${split} `));
+    assert.ok(row, `${split} must still have a row`);
+    assert.match(row, /not measured/, `${split} must say its lifts were not measured`);
+  }
+  assert.match(result.out, /2 of 2 splits were not measured/);
+  assert.match(result.out, /nothing to discriminate/);
+  assert.match(result.out, /no outcome to measure/);
 });

@@ -56,11 +56,11 @@ function byteLength(value: string): number {
   return Buffer.byteLength(value, 'utf8');
 }
 
-export interface FitResult {
-  entries: PathInstruction[];
+export interface FitResult<T extends PathInstruction = PathInstruction> {
+  entries: T[];
   /** Entries that did not fit, in the order they were dropped. Reported rather
    *  than silently truncated: a cap nobody is told about reads as coverage. */
-  dropped: PathInstruction[];
+  dropped: T[];
   bytes: number;
   reason: 'fits' | 'entry-cap' | 'byte-cap';
 }
@@ -71,10 +71,17 @@ export interface FitResult {
  * The input must already be in priority order - hard rules first, then the
  * paths history says are riskiest - because what falls off the end is decided
  * here by position and nothing else.
+ *
+ * What survives is **not** a prefix of the input. The entry cap stops the list,
+ * but a candidate too large for the remaining byte budget is skipped while
+ * later, smaller ones still fit - so nothing downstream may infer where an
+ * entry came from by counting positions. The candidate type is carried through
+ * unchanged for exactly that reason: whatever an entry knows about itself on
+ * the way in is still attached to it on the way out.
  */
-export function fitWithinCaps(candidates: readonly PathInstruction[]): FitResult {
-  const entries: PathInstruction[] = [];
-  const dropped: PathInstruction[] = [];
+export function fitWithinCaps<T extends PathInstruction>(candidates: readonly T[]): FitResult<T> {
+  const entries: T[] = [];
+  const dropped: T[] = [];
   let reason: FitResult['reason'] = 'fits';
 
   for (const candidate of candidates) {

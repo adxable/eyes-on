@@ -95,3 +95,46 @@ test('an empty export is an explicit empty list rather than a truncated document
   const parsed = parseYaml(block) as { review: { path_instructions: unknown[] } };
   assert.deepEqual(parsed.review.path_instructions, []);
 });
+
+test('the byte cap skips one candidate and keeps the next, so the kept set is not a prefix', () => {
+  // `fitWithinCaps` continues past a byte-cap drop rather than stopping, so
+  // nothing may infer an entry's origin from its position. The provenance a
+  // candidate carries in is what comes out.
+  type Tagged = PathInstruction & { source: 'hard_rule' | 'history' };
+  const rules: Tagged[] = Array.from({ length: 10 }, (_unused, index) => ({
+    source: 'hard_rule',
+    path: `deploy/svc${index}/**`,
+    // One rule carries a `why` far too long for the remaining budget; every
+    // other candidate is small. `why` is arbitrary text from the trusted
+    // `.eyes-on.yml`, so this shape is reachable from a repository config.
+    instructions: index === 3 ? 'x'.repeat(16_000) : 'read this path in full',
+  }));
+  const history: Tagged[] = Array.from({ length: 4 }, (_unused, index) => ({
+    source: 'history',
+    path: `packages/pkg${index}/**`,
+    instructions: 'history says this directory attracts fixes',
+  }));
+
+  const fitted = fitWithinCaps([...rules, ...history]);
+  assert.equal(fitted.reason, 'byte-cap');
+  assert.equal(fitted.dropped.length, 1);
+  assert.equal(fitted.dropped[0]?.path, 'deploy/svc3/**', 'the oversized rule is the one that did not fit');
+
+  const kept = fitted.entries.map((entry) => entry.path);
+  assert.ok(kept.includes('deploy/svc4/**'), 'a later, smaller candidate still fits');
+  assert.ok(!kept.includes('deploy/svc3/**'));
+  assert.ok(
+    kept.includes('packages/pkg0/**'),
+    'history entries survive too, so the kept set is not the first N candidates',
+  );
+
+  // Counting by position would report every kept entry as a hard rule.
+  const hardRulesKept = fitted.entries.filter((entry) => entry.source === 'hard_rule').length;
+  assert.equal(hardRulesKept, 9);
+  assert.equal(fitted.entries.length - hardRulesKept, 4);
+  assert.notEqual(
+    hardRulesKept,
+    Math.min(rules.length, fitted.entries.length),
+    'the position-based count this replaced would have been wrong here',
+  );
+});

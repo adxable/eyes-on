@@ -132,14 +132,29 @@ function renderMarkdown(doc: ToonObject, results: readonly SplitResult[]): strin
     '| split | files | blamed by a fix | lift | touched by a fix | lift | churn decile | lift |',
     '|---|---|---|---|---|---|---|---|',
   ];
+  // A split that carries a note was not measured, whatever its counts say. Its
+  // lifts are zero because nothing was measured, not because the signal failed,
+  // and a row of `0x` reads as the second - so the lift cells say so and the
+  // reason is printed under the table rather than only in the machine payload.
+  const notMeasured = results.filter((result) => result.note !== null);
   for (const result of results) {
-    if (result.note !== null && result.population === 0) {
-      lines.push(`| ${result.split} | - | - | - | - | - | - | ${result.note} |`);
+    if (result.note !== null) {
+      const count = (value: number): string => (result.population === 0 ? '-' : String(value));
+      lines.push(
+        `| ${result.split} | ${count(result.population)} | ${count(result.fix_history.flagged)} | not measured | ${count(result.fix_touch.flagged)} | not measured | ${count(result.churn_top_decile.flagged)} | not measured |`,
+      );
       continue;
     }
     lines.push(
       `| ${result.split} | ${result.population} | ${result.fix_history.flagged} | **${round(result.fix_history.lift)}x** | ${result.fix_touch.flagged} | ${round(result.fix_touch.lift)}x | ${result.churn_top_decile.flagged} | **${round(result.churn_top_decile.lift)}x** |`,
     );
+  }
+
+  if (notMeasured.length > 0) {
+    lines.push('', `## ${notMeasured.length} of ${results.length} splits were not measured`, '');
+    for (const result of notMeasured) {
+      lines.push(`- **${result.split}** - ${String(result.note)}`);
+    }
   }
 
   lines.push(

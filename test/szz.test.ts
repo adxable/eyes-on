@@ -192,3 +192,41 @@ test('a blame that could not be read is not written into the cache', () => {
   assert.deepEqual(repaired.attributions[0]?.files, { 'src/a.ts': 1 });
   db.close();
 });
+
+test('a fix to a path git C-quotes is blamed onto that path, under its real name', () => {
+  // Git reports `deploy/wartości.yaml` as `"deploy/warto\\305\\233ci.yaml"` -
+  // quoted, with the two bytes of `ś` escaped in octal - in the numstat, in
+  // `ls-tree` and in the `--- a/<path>` header of the patch SZZ reads. Left
+  // quoted, the header does not strip its `a/` prefix, `git blame` on that
+  // literal string fails, and the file contributes zero fix history forever.
+  const path = 'deploy/wartości.yaml';
+  const repo = tempRepo('szz-quoted');
+  repo.commitFiles('feat: the deployment', { [path]: 'one\ntwo\nthree\n' });
+  repo.commitFiles('fix: the second line was wrong', { [path]: 'one\nTWO\nthree\n' });
+
+  const reader = readerFor(repo.path);
+  const commits = reader.history({ until: 'HEAD' });
+  const fix = commits.find((commit) => isFixCommit(commit, FIX_PATTERN));
+  assert.ok(fix);
+
+  // The removal the fix made, in the parent's coordinates. Asserted by value
+  // rather than by a predicate over a list that might be empty: without the
+  // unquoting this list holds one range whose path is the quoted string.
+  const ranges = parseRemovedRanges(reader.commitPatch(fix.sha));
+  assert.deepEqual(
+    ranges.map((range) => range.path),
+    [path],
+    'the patch header must name the file, not its C-quoted spelling',
+  );
+  assert.equal(ranges[0]?.start, 2);
+  assert.equal(ranges[0]?.end, 2);
+
+  // The blame that follows that range, and the per-file count built from it.
+  const blamed = blameFix(reader, fix);
+  assert.deepEqual(blamed.files, { [path]: 1 });
+  assert.equal(blamed.complete, true);
+
+  const counts = fixCountsByFile(attributeFixes(commits, { reader, db: null, fixPattern: FIX_PATTERN }).attributions);
+  assert.equal(counts.get(path), 1, 'the fix is attributed to the file under its real name');
+  assert.deepEqual([...counts.keys()], [path]);
+});
