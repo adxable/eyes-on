@@ -16,7 +16,7 @@ below, are the standing evidence for them:
 | Emergency mode | `acceptance: --no-model returns stage 1 and does not call a model once`, in `test/spotlight.test.ts` |
 | Disjointness in the pull request | `acceptance: publishing leaves the pull-request body byte for byte, and leaves exactly one comment`, in `test/comment.test.ts`, and `acceptance: no gh invocation can edit a pull request, merge one, or review one` in `test/coexistence.test.ts` |
 | The gate | `acceptance: a hard-rule hit parks the run, and parking changes no exit code`, `acceptance: a waiver records the decision, the reason and who gave it` and `acceptance: an unanswered gate blocks nothing but the eyes-on run`, in `test/gate.test.ts` |
-| Drift does not gate | `acceptance: drift is shown and changes no exit code, at any grade`, in `test/drift.test.ts` |
+| Drift does not gate | `acceptance: drift is shown and changes no exit code, at any grade` and `acceptance: the drift grade gates only through the band, and only when --strict asks it to`, in `test/drift.test.ts` |
 
 **The fifth - locality - has no automated counterpart**, because it is a
 statement about one particular repository's history compared with what one
@@ -52,7 +52,7 @@ does not survive the squash-merge that lands it.
 | Disjointness in the pull request | the body is byte-for-byte identical, and there is exactly one eyes-on comment however many recomputations | **pass** |
 | The gate | a hard-rule hit parks the run; `respond --action waive --reason` records the decision and the reason; no answer blocks anything but the eyes-on run | **pass** |
 | Emergency mode | `--no-model` returns stage 1 and calls no model once | **pass** |
-| Drift does not gate | the drift grade does not change an exit code | **pass** |
+| Drift does not gate | the drift grade does not change an exit code | **pass, with one stated exception** - `eyes-on drift` exits 0 at every grade, with `--strict` or without it, and `eyes-on check` without `--strict` does too. Under `check --strict` the grade gates through the band exactly like every other signal. See section 7 |
 
 ## 1. Locality
 
@@ -350,11 +350,33 @@ an executable eyes-on does not know (`refused`).
 
 ## 7. Drift does not gate
 
-`eyes-on drift` exits 0 for a grade of 5 exactly as it does for a grade of 1, and
-`--strict` does not change that: `--strict` is about the band, and drift does not
-set a band. The grade does raise the risk score through S7 at weight 0.20, which
-is where "worth reading" is expressed - but the score never produces a non-zero
-exit either.
+`eyes-on drift` exits 0 for a grade of 5 exactly as it does for a grade of 1,
+with `--strict` or without it, because that command computes no band and there
+is nothing for `--strict` to act on. `eyes-on check` without `--strict` exits 0
+at every grade too.
+
+**The exception, and why it exists.** The brief asked for two things that cannot
+both hold: "the drift result does not change any exit code", and "S7 at weight
+0.20 with the thresholds left at 35 and 65". The band is a function of the
+score, S7 is part of the score, and `--strict` exits 1 on a `pelna` band - so a
+drift grade high enough can carry a change over `full_review` and produce a
+non-zero exit under `check --strict`. The same change with `--no-model`, or
+without `--intent`, exits 0.
+
+Resolved in favour of coherence: **drift enters the score and therefore the
+band, and `--strict` remains the caller's explicit consent to gate on the band.**
+The alternative - excluding S7 from the band that `--strict` reads - was
+rejected, because it would leave `check` printing a score and a band that
+disagree about one change, which is the class of incoherence this project has
+been removing since stage 0.
+
+So the criterion is met as: no drift grade changes an exit code except under the
+explicitly opted-in `--strict`, where it gates through the band exactly like
+every other signal. Both directions are locked in by `acceptance: the drift
+grade gates only through the band, and only when --strict asks it to` in
+`test/drift.test.ts`, which puts the `full_review` threshold between the score
+without drift and the score with it and then asserts the exit code with
+`--strict`, without it, and with `--no-model`.
 
 The mechanism is two model calls, and that is asserted by reading the prompts
 that were actually sent: the first contains the diff and not the intent, the

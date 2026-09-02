@@ -245,6 +245,28 @@ test('a model answer wrapped in prose still parses, and one that is not JSON lea
   assert.equal(nonsense.spots[0]?.category, null, 'stage one does not invent a category');
 });
 
+test('prose quoting code before the answer does not cost the run its second stage', () => {
+  // The preamble an agent writes is about the diff it was given, and a diff is
+  // full of braces. A balanced group that is not JSON is prose, not the answer:
+  // stopping at the first one would throw away a correct answer and report the
+  // model as unreadable.
+  const candidates = rank([hunk({ path: 'src/a.ts', anchor: 1, added: 4 })]);
+  const answer = '{"spotlight":[{"file":"src/a.ts","line":1,"category":"correctness","why":"the guard is inverted"}]}';
+
+  for (const preamble of [
+    'Fragment 1 changes `if (ok) { return null; }`, which is the one to read.\n',
+    'I looked at { this } and at { that: "with a } brace in a string" } first.\n\n',
+    '```\n{ not, json }\n```\nHere is the answer:\n',
+  ]) {
+    const parsed = validate(`${preamble}${answer}`, candidates, 5);
+    assert.equal(parsed.spots.length, 1, `a preamble of ${JSON.stringify(preamble)} lost the answer`);
+    assert.equal(parsed.spots[0]?.why, 'the guard is inverted');
+  }
+
+  // An answer that really is not there is still reported as not there.
+  assert.equal(validate('I could not do it: { nope }', candidates, 5).spots.length, 0);
+});
+
 test('an empty model.command is the repository asking for stage one, not a failure', () => {
   const candidates = rank([hunk({ path: 'src/a.ts', anchor: 1, added: 4 })]);
   const result = selectSpotlight({

@@ -222,7 +222,7 @@ export interface StubGh {
   /** Every argument vector the fake `gh` was called with. */
   calls(): string[][];
   /** The comments the fake pull request holds. */
-  comments(): { id: number; body: string }[];
+  comments(): { id: number; body: string; user?: { login: string } }[];
   /** The pull request body, so a test can prove it did not move. */
   body(): string;
 }
@@ -236,10 +236,26 @@ export interface StubGh {
  * times the command runs. It also keeps a body, so "untouched" is a comparison
  * rather than an absence of evidence.
  */
-export function stubGh(prefix: string, options: { slug: string; number: number; headSHA: string; body: string }): StubGh {
+export function stubGh(
+  prefix: string,
+  options: {
+    slug: string;
+    number: number;
+    headSHA: string;
+    body: string;
+    /** Comments already on the pull request, from whoever put them there. */
+    comments?: readonly { id: number; body: string; user?: { login: string } }[];
+  },
+): StubGh {
   const dir = tempDir(`${prefix}-gh`);
   const store = join(dir, 'store.json');
-  writeFileSync(store, JSON.stringify({ ...options, comments: [], nextId: 1000 }));
+  const seeded = (options.comments ?? []).map((comment) => ({
+    html_url: `https://example.invalid/c/${comment.id}`,
+    user: { login: 'somebody-else' },
+    ...comment,
+  }));
+  const nextId = seeded.reduce((highest, comment) => Math.max(highest, comment.id + 1), 1000);
+  writeFileSync(store, JSON.stringify({ ...options, comments: seeded, nextId }));
   writeFileSync(
     join(dir, 'gh'),
     `#!/usr/bin/env node
@@ -305,8 +321,12 @@ process.exit(1);
         return [];
       }
     },
-    comments(): { id: number; body: string }[] {
-      return (JSON.parse(readFileSync(store, 'utf8')) as { comments: { id: number; body: string }[] }).comments;
+    comments(): { id: number; body: string; user?: { login: string } }[] {
+      return (
+        JSON.parse(readFileSync(store, 'utf8')) as {
+          comments: { id: number; body: string; user?: { login: string } }[];
+        }
+      ).comments;
     },
     body(): string {
       return (JSON.parse(readFileSync(store, 'utf8')) as { body: string }).body;

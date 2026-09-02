@@ -58,6 +58,12 @@ export function parseHunks(patch: string): Hunk[] {
   let oldPath: string | null = null;
   let newPath: string | null = null;
   let current: Hunk | null = null;
+  // Lines of each side the open hunk's header still promises. Until both are
+  // spent every line is content, whatever it begins with: a removed SQL or Lua
+  // comment reaches this parser as `--- keep this in sync`, and reading that as
+  // a file header would cut the hunk in half and corrupt the path with it.
+  let oldLeft = 0;
+  let newLeft = 0;
   const body: string[] = [];
 
   const flush = (): void => {
@@ -66,10 +72,37 @@ export function parseHunks(patch: string): Hunk[] {
     current.anchor = anchorOf(current, body);
     hunks.push(current);
     current = null;
+    oldLeft = 0;
+    newLeft = 0;
     body.length = 0;
   };
 
   for (const line of patch.split('\n')) {
+    if (current !== null && (oldLeft > 0 || newLeft > 0)) {
+      let ended = false;
+      if (line.startsWith('+')) {
+        current.added += 1;
+        newLeft -= 1;
+      } else if (line.startsWith('-')) {
+        current.removed += 1;
+        oldLeft -= 1;
+      } else if (line.startsWith('\\')) {
+        // "\ No newline at end of file" annotates the line before it and is a
+        // line of neither side.
+      } else if (line.startsWith(' ') || line.length === 0) {
+        oldLeft -= 1;
+        newLeft -= 1;
+      } else {
+        // The patch promised more lines than it carries, so this is the next
+        // file's header rather than content. End the hunk and read it as one.
+        flush();
+        ended = true;
+      }
+      if (!ended) {
+        body.push(line);
+        continue;
+      }
+    }
     if (line.startsWith('diff --git ')) {
       flush();
       oldPath = null;
@@ -107,20 +140,14 @@ export function parseHunks(patch: string): Hunk[] {
         removed: 0,
         text: '',
       };
+      oldLeft = current.oldCount;
+      newLeft = current.newCount;
       body.push(line);
       continue;
     }
-    if (!current) continue;
-    if (line.startsWith('+')) current.added += 1;
-    else if (line.startsWith('-')) current.removed += 1;
-    else if (!line.startsWith(' ') && line.length > 0 && !line.startsWith('\\')) {
-      // Anything else at hunk level ends it: `diff --git` is handled above, and
-      // a stray line is the start of the next file's header in a patch git
-      // wrote differently than expected.
-      flush();
-      continue;
-    }
-    body.push(line);
+    // Outside a hunk's promised extent there is nothing to attribute a line to:
+    // an index line, a mode change, a `Binary files ... differ`, or the blank
+    // line a patch ends with.
   }
   flush();
   return hunks;

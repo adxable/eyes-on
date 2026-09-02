@@ -83,6 +83,13 @@ test('the marker is one line, carries the machine contract, and finds its own co
   const comments = [{ body: 'someone else' }, { body: `${line}\n**eyes-on**` }, { body: 'and another' }];
   assert.equal(findMarked(comments)?.body.includes('eyes-on'), true);
   assert.equal(findMarked([{ body: 'nothing here' }]), null);
+
+  // GitHub's "Quote reply" copies the body verbatim behind a `> `, marker and
+  // all. That comment belongs to whoever quoted it, so it is not the one to
+  // update - even when the eyes-on comment it quoted is gone.
+  const quoted = { body: `${line.split('\n').map((entry) => `> ${entry}`).join('\n')}\n\nis this right?` };
+  assert.equal(findMarked([quoted]), null);
+  assert.equal(findMarked([quoted, { body: `${line}\nthe real one` }])?.body.includes('the real one'), true);
 });
 
 test('a paginated comment listing is several arrays, and all of them are read', () => {
@@ -244,17 +251,73 @@ test('a comment already on the pull request from somebody else is left alone', a
   const agent = stubAgent('comment-others', [SPOTLIGHT_ANSWER]);
   const repo = repoWith(agent);
   const head = repo.git(['rev-parse', 'HEAD']).trim();
-  const gh = stubGh('comment-others', { slug: SLUG, number: PR, headSHA: head, body: BODY });
+
+  // Two comments nobody here wrote. The second is what GitHub's "Quote reply"
+  // produces from an eyes-on comment: the marker verbatim, behind a `> `. It is
+  // the dangerous one, because it carries the string the sticky comment is
+  // found by while belonging to the reviewer who quoted it.
+  const plain = { id: 501, body: 'Looks fine to me, but check the replica count.' };
+  const quoting = {
+    id: 502,
+    body: [`> ${marker({
+      head_sha: head,
+      score: 58,
+      score_max: 120,
+      band: 'wskazane',
+      decision: null,
+      check_id: 'somebody-elses-run',
+    })}`, '> **eyes-on - 58 of at most 120**', '', 'Why does it say that?'].join('\n'),
+  };
+
+  const gh = stubGh('comment-others', {
+    slug: SLUG,
+    number: PR,
+    headSHA: head,
+    body: BODY,
+    comments: [plain, quoting],
+  });
   const env = { ...sandboxEnv('comment-others'), PATH: gh.path };
   await initRepo(t, repo, env);
 
   await captureCli(['check'], { cwd: repo.path, env });
   await captureCli(['spotlight', '--no-model'], { cwd: repo.path, env });
-  await captureCli(['comment', '--pr', String(PR)], { cwd: repo.path, env });
-  await captureCli(['comment', '--pr', String(PR)], { cwd: repo.path, env });
+  const created = JSON.parse(
+    (await captureCli(['comment', '--pr', String(PR), '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as CommentDoc;
+  const updated = JSON.parse(
+    (await captureCli(['comment', '--pr', String(PR), '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as CommentDoc;
+
+  // The quoted marker was not mistaken for eyes-on's own comment: the first run
+  // added one, and the second edited that one rather than the reviewer's.
+  assert.equal(created.action, 'created');
+  assert.equal(updated.action, 'updated');
+  assert.equal(updated.eyes_on_comments_found, 1);
 
   const comments = gh.comments();
-  assert.equal(comments.length, 1);
+  assert.equal(comments.length, 3, 'the two that were there, plus exactly one from eyes-on');
+  for (const before of [plain, quoting]) {
+    const after = comments.find((comment) => comment.id === before.id);
+    assert.ok(after, `comment ${before.id} is still there`);
+    assert.equal(after.body, before.body, `comment ${before.id} was not rewritten`);
+    assert.equal(after.user?.login, 'somebody-else', 'and still belongs to whoever wrote it');
+  }
+
+  const ours = comments.filter((comment) => comment.body.startsWith(MARKER_PREFIX));
+  assert.equal(ours.length, 1);
+  assert.ok(ours[0] && ours[0].id !== plain.id && ours[0].id !== quoting.id);
+
+  // Every write went to the comment eyes-on created, and none to either of the
+  // two it found.
+  const patched = gh
+    .calls()
+    .filter((argv) => argv[argv.indexOf('--method') + 1] === 'PATCH')
+    .map((argv) => argv.find((arg) => /^repos\/.+\/issues\/comments\/\d+$/.test(arg)) ?? '');
+  assert.ok(patched.length > 0);
+  for (const endpoint of patched) {
+    assert.equal(endpoint, `repos/${SLUG}/issues/comments/${ours[0]?.id ?? 0}`);
+  }
+
   assert.equal(gh.body(), BODY);
 });
 

@@ -84,8 +84,12 @@ what kind of thing it found.
 `drift` is two model calls against anchoring: the first describes the diff
 **without being shown the intent**, the second compares that description with the
 intent and never sees the code. The grade is 1 (the change does what it said) to
-5 (they are about different things), and it is shown rather than enforced - it
-raises the score through S7 and changes no exit code.
+5 (they are about different things), and it is shown rather than enforced: the
+`drift` command exits 0 at every grade. It does raise the risk score through S7,
+and the band follows the score, so under `eyes-on check --strict` - a caller
+explicitly asking for a non-zero exit on a `pelna` band - drift can carry a
+change over the threshold like any other signal. Without `--strict` no grade
+changes an exit code.
 
 ## When a hard rule fires
 

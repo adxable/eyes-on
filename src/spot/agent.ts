@@ -155,10 +155,29 @@ export function askModel(prompt: string, options: ModelOptions): ModelOutcome {
  * a "Here you go:" would fall back to stage one for a reason that has nothing
  * to do with the model. Braces are counted rather than matched by a regular
  * expression, because the payload contains diff text with braces in it.
+ *
+ * The prose ahead of the answer can itself hold a balanced brace group - it is
+ * quoting code, and the code the spotlight was given is full of braces - so a
+ * group that is not JSON moves the scan on to the next opening brace instead of
+ * ending it. Giving up on the first one would throw away a correct answer and
+ * lose the whole of the second stage for that run.
  */
 export function extractJson(text: string): unknown | null {
-  const start = text.indexOf('{');
-  if (start < 0) return null;
+  for (let start = text.indexOf('{'); start >= 0; start = text.indexOf('{', start + 1)) {
+    const end = balancedEnd(text, start);
+    if (end < 0) continue;
+    try {
+      return JSON.parse(text.slice(start, end + 1));
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+/** The index of the brace closing the group that opens at `start`, or -1 when
+ *  nothing closes it. Strings are skipped, so a brace inside one is text. */
+function balancedEnd(text: string, start: number): number {
   let depth = 0;
   let inString = false;
   let escaped = false;
@@ -174,16 +193,10 @@ export function extractJson(text: string): unknown | null {
     else if (char === '{') depth += 1;
     else if (char === '}') {
       depth -= 1;
-      if (depth === 0) {
-        try {
-          return JSON.parse(text.slice(start, index + 1));
-        } catch {
-          return null;
-        }
-      }
+      if (depth === 0) return index;
     }
   }
-  return null;
+  return -1;
 }
 
 function firstLine(text: string): string {

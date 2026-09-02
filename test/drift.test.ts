@@ -2,7 +2,7 @@ import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { captureCli, sandboxEnv, stubAgent, tempRepo, type StubAgent, type TempRepo } from './helpers.js';
-import { EXIT_OK, EXIT_USAGE } from '../src/cli/output.js';
+import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/output.js';
 import { driftSignalValue, measureDrift, parseComparison, parseDescription } from '../src/spot/drift.js';
 import { driftComparePrompt, driftDescribePrompt } from '../src/spot/prompt.js';
 import { Database } from '../src/db/db.js';
@@ -10,12 +10,21 @@ import { Database } from '../src/db/db.js';
 /**
  * Intent against diff.
  *
- * Two acceptance conditions live here. **Drift never gates**: the exit code is
- * 0 for a grade of 5 exactly as it is for a grade of 1, and no other command's
- * exit code moves either. And the mechanism is two passes rather than one,
- * which is checked the only way it can be - by reading the prompts the model
- * was actually given and asserting that the first never contained the intent
- * and the second never contained the diff.
+ * Two acceptance conditions live here.
+ *
+ * **Drift is shown rather than enforced.** `eyes-on drift` exits 0 for a grade
+ * of 5 exactly as it does for a grade of 1, with `--strict` or without it,
+ * because that command computes no band. `eyes-on check` without `--strict`
+ * exits 0 at every grade too. The one exception is stated rather than implied:
+ * S7 is part of the score and the band is a function of the score, so under
+ * `check --strict` a drift grade gates through the band exactly like every
+ * other signal. Both halves are asserted, so neither can regress into the
+ * other.
+ *
+ * **The mechanism is two passes rather than one**, which is checked the only
+ * way it can be - by reading the prompts the model was actually given and
+ * asserting that the first never contained the intent and the second never
+ * contained the diff.
  */
 
 const INTENT = 'Stop the mailbox poller retrying forever when the upstream returns 429.';
@@ -188,13 +197,91 @@ test('acceptance: drift is shown and changes no exit code, at any grade', async 
     assert.equal(result.code, EXIT_OK, `a drift of ${grade} still exits 0`);
     assert.equal(doc.exit_code, EXIT_OK);
 
-    // Not even --strict turns drift into a gate: --strict is about the band.
+    // `--strict` does not turn this command into a gate either: it computes no
+    // band, so there is nothing here for `--strict` to act on. What `check
+    // --strict` does with the same grade is a different question, asserted by
+    // the test below.
     const strict = await captureCli(['drift', '--intent', INTENT, '--strict', '--format', 'json'], {
       cwd: repo.path,
       env,
     });
     assert.equal(strict.code, EXIT_OK);
   }
+});
+
+test('acceptance: the drift grade gates only through the band, and only when --strict asks it to', async (t) => {
+  // Three describe/compare pairs, because each `check --intent` measures drift
+  // with two calls and the stub answers in order.
+  const agent = stubAgent('drift-strict', [
+    describeAnswer(),
+    compareAnswer(5),
+    describeAnswer(),
+    compareAnswer(5),
+    describeAnswer(),
+    compareAnswer(5),
+  ]);
+  const repo = repoWith(agent);
+  const env = sandboxEnv('drift-strict');
+  await initRepo(t, repo, env);
+
+  interface CheckDoc {
+    score: number;
+    band: string;
+    drift: number | null;
+    exit_code: number;
+    signals: { name: string; points: number }[];
+  }
+  const check = async (argv: string[]): Promise<{ doc: CheckDoc; code: number }> => {
+    const result = await captureCli(['check', ...argv, '--format', 'json'], { cwd: repo.path, env });
+    return { doc: JSON.parse(result.out) as CheckDoc, code: result.code };
+  };
+
+  // What the change scores without drift, and what it scores with a grade of 5.
+  const withoutDrift = (await check(['--no-model'])).doc;
+  const withDrift = (await check(['--intent', INTENT])).doc;
+  assert.equal(withDrift.drift, 5);
+  assert.ok(
+    withDrift.score > withoutDrift.score,
+    `a drift of 5 raises the score (${withoutDrift.score} -> ${withDrift.score})`,
+  );
+
+  // Put `full_review` between the two, on the default branch, so the drift
+  // grade is the only thing in this change that can cross it. The threshold is
+  // a repository configuration field; nothing about the scoring moves.
+  const full = Math.max(2, withoutDrift.score + 1);
+  assert.ok(withDrift.score >= full, 'the grade alone carries the change over the threshold');
+  repo.git(['checkout', '-q', 'main']);
+  repo.commitFiles('chore: narrow the full-review threshold', {
+    '.eyes-on.yml': [
+      'schema: eyes-on/v1',
+      'model:',
+      `  command: ["${agent.command[0] as string}"]`,
+      `thresholds: { read_fragments: ${full - 1}, full_review: ${full} }`,
+      '',
+    ].join('\n'),
+  });
+  repo.git(['checkout', '-q', 'work']);
+
+  // Without --strict the exit code is 0 however far the drift carried the band.
+  const measured = await check(['--intent', INTENT]);
+  assert.equal(measured.doc.drift, 5);
+  assert.equal(measured.doc.band, 'pelna', 'the grade moved the band, which is what a signal does');
+  assert.equal(measured.code, EXIT_OK, 'a drift-driven `pelna` still exits 0 without --strict');
+  assert.equal(measured.doc.exit_code, EXIT_OK);
+
+  // With --strict the band decides, and drift reached it like any other signal.
+  const strict = await check(['--intent', INTENT, '--strict']);
+  assert.equal(strict.doc.band, 'pelna');
+  assert.equal(strict.code, EXIT_ERROR, '--strict is the caller asking to gate on a `pelna` band');
+  assert.equal(strict.doc.exit_code, EXIT_ERROR);
+
+  // And the same change with no drift measured stays below the threshold, which
+  // is what makes the line above evidence about drift rather than about the
+  // threshold being low.
+  const unmeasured = await check(['--intent', INTENT, '--no-model', '--strict']);
+  assert.equal(unmeasured.doc.drift, null);
+  assert.notEqual(unmeasured.doc.band, 'pelna');
+  assert.equal(unmeasured.code, EXIT_OK);
 });
 
 test('the grade and both lists are recorded against the check, as rows rather than as one string', async (t) => {
@@ -254,7 +341,8 @@ test('check --intent scores the drift as S7, and the same change without an inte
   assert.equal(s7?.raw, 4, 'the grade above an aligned 1');
   assert.ok((s7?.points ?? 0) > 0);
   assert.equal(withIntent.score, without.score + (s7?.points ?? 0));
-  // Raising the score is not blocking: the exit code is unchanged.
+  // Raising the score is not blocking here: without --strict the exit code is
+  // unchanged whatever the band became.
   assert.equal(withIntent.exit_code, EXIT_OK);
 });
 

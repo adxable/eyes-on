@@ -43,11 +43,18 @@ export function marker(payload: MarkerPayload): string {
   return `${MARKER_PREFIX}${JSON.stringify(payload)}${MARKER_SUFFIX}`;
 }
 
-/** The eyes-on comment among a pull request's comments, or null. Matched on the
- *  marker prefix alone: the payload changes on every recomputation and matching
- *  it whole would post a second comment each time. */
+/**
+ * The eyes-on comment among a pull request's comments, or null.
+ *
+ * Matched on the marker prefix alone, because the payload changes on every
+ * recomputation and matching it whole would post a second comment each time.
+ * And matched at the **start of the body**, where `renderComment` always writes
+ * it, because GitHub's "Quote reply" copies a body verbatim behind a `> `: a
+ * reviewer quoting this comment leaves a second body carrying the marker, and
+ * updating that one would be a write to somebody else's comment.
+ */
 export function findMarked<T extends { body: string }>(comments: readonly T[]): T | null {
-  return comments.find((comment) => comment.body.includes(MARKER_PREFIX)) ?? null;
+  return comments.find((comment) => comment.body.startsWith(MARKER_PREFIX)) ?? null;
 }
 
 export interface CommentInput {

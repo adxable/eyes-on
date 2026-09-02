@@ -37,6 +37,13 @@ import { loadConfig } from '../core/config.js';
  * signal of the risk score, so it has to be known before the score is computed.
  * `--no-model` and a missing intent both leave it unmeasured, contributing zero
  * rather than an assumed agreement.
+ *
+ * Being a signal is the whole of what S7 is, and that has one consequence worth
+ * stating rather than discovering: the band is a function of the score, so a
+ * drift grade can carry a change over `full_review` exactly as churn or size
+ * can, and `--strict` will then exit 1 on it. Without `--strict` no drift grade
+ * changes any exit code. Excluding S7 from the band was rejected - it would
+ * leave `check` reporting a score and a band that disagree about one change.
  */
 export async function checkCommand(context: Context): Promise<number> {
   assertMayMutate(context, 'check');
@@ -281,7 +288,9 @@ function helpLines(assessment: Assessment, options: RenderOptions, gate: 'must_r
     lines.push('Pass --intent "..." to measure intent-versus-diff drift; without it signal S7 is zero');
   }
   if (options.drift?.grade !== null && options.drift !== null) {
-    lines.push('The drift grade is shown and scored as S7; it never changes the exit code');
+    lines.push(
+      'The drift grade is shown and scored as S7, so it moves the band like any other signal: without --strict it changes no exit code, and with --strict it can',
+    );
   }
   lines.push(
     exitCodeFor(assessment, options.strict) === EXIT_OK

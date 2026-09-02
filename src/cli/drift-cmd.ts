@@ -18,16 +18,24 @@ import { detailOf, driftSentence, measureDrift, type DriftResult } from '../spot
  * through the intent and report an agreement it never checked - which is a
  * command that runs, costs money and means nothing.
  *
- * The result is **shown and never a gate**. This command exits 0 for a drift of
- * 5 exactly as it does for a drift of 1, and `--strict` does not change that:
- * `--strict` is about the band, and drift does not set a band. The research
+ * **This command never gates.** It exits 0 for a drift of 5 exactly as it does
+ * for a drift of 1, with `--strict` or without it, because it computes no band
+ * at all - there is nothing here for `--strict` to act on. The research
  * report's own finding is that showing an author the grade lowered drift by a
  * further 5.76 points on its own; the value is in the feedback, not in a veto.
  *
+ * `eyes-on check` is a different sentence, and the honest one is: the grade
+ * feeds S7 at weight 0.20, S7 is part of the score, and the band is a function
+ * of the score. So under `check --strict` - which is the caller explicitly
+ * asking for a non-zero exit on a `pelna` band - drift can carry a change over
+ * the threshold exactly as any other signal can. Without `--strict` no drift
+ * grade changes any exit code. Keeping S7 out of the band was rejected: it
+ * would leave the score and the band disagreeing about the same change.
+ *
  * The grade is recorded against the change so `comment` can show it, but the
- * score it feeds - S7 at weight 0.20 - is computed by `check`, which is where
- * the score lives. This command says so rather than reporting a score that
- * would disagree with the recorded one.
+ * score it feeds is computed by `check`, which is where the score lives. This
+ * command says so rather than reporting a score that would disagree with the
+ * recorded one.
  */
 export async function driftCommand(context: Context): Promise<number> {
   assertMayMutate(context, 'drift');
@@ -81,7 +89,9 @@ export async function driftCommand(context: Context): Promise<number> {
     noModel: flagBool(context.args, 'no-model'),
   });
   emitDoc(context.writers, context.format, doc, () => renderMarkdown(result, doc));
-  // Never a gate. Not even with --strict: drift does not set a band.
+  // This command computes no band, so it has nothing for --strict to act on and
+  // exits 0 at every grade. `check --strict` is the one that can exit non-zero,
+  // and it does that from the band the score produces.
   return EXIT_OK;
 }
 
@@ -139,8 +149,9 @@ function helpLines(result: DriftResult, options: DocOptions): string[] {
   if (options.checkId === null) {
     lines.push('Nothing was recorded: run `eyes-on check` on this change first, and the grade will be stored against it');
   }
-  lines.push('Drift is shown, never a gate: this command exits 0 for a 5 exactly as it does for a 1');
+  lines.push('This command exits 0 for a 5 exactly as it does for a 1, with --strict or without it: it computes no band');
   lines.push('The grade enters the risk score as signal S7 at weight 0.20 when you run `eyes-on check --intent "..."`');
+  lines.push('There it can raise the band like any other signal, so `check --strict` can exit 1 on it; `check` without --strict never does');
   return lines;
 }
 
@@ -175,7 +186,7 @@ export function renderMarkdown(result: DriftResult, doc: ToonObject): string {
     '',
     '---',
     '',
-    'Drift is shown, never a gate: this command exits 0 whatever the grade is. It enters the score as S7 (weight 0.20) when `eyes-on check --intent "..."` runs.',
+    'This command exits 0 whatever the grade is, with `--strict` or without it, because it computes no band. The grade enters the score as S7 (weight 0.20) when `eyes-on check --intent "..."` runs, and there it raises the band like any other signal - so `check --strict` can exit 1 on it, and `check` without `--strict` never does.',
   );
   return lines.join('\n');
 }

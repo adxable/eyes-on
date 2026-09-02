@@ -127,6 +127,67 @@ test('a binary file contributes no hunk rather than a hunk with no lines', () =>
   );
 });
 
+test('a removed line that looks like a file header is content, not the end of the hunk', () => {
+  // `-- keep this in sync` is an ordinary comment in SQL, Lua and Haskell.
+  // Removed, git writes it as `--- keep this in sync`, and a parser that reads
+  // every `--- ` as a file header cuts the hunk in half at exactly the line a
+  // reviewer most needs - and takes the path with it.
+  const hunks = parseHunks(
+    [
+      'diff --git a/db/schema.sql b/db/schema.sql',
+      '--- a/db/schema.sql',
+      '+++ b/db/schema.sql',
+      '@@ -1,5 +1,5 @@',
+      ' create table runs (',
+      '-- keep this in sync with src/db/schema.ts',
+      '+++ generated: do not edit',
+      '   id text primary key',
+      ' );',
+      ' ',
+      '',
+    ].join('\n'),
+  );
+
+  assert.equal(hunks.length, 1, 'one hunk, not one hunk cut in two');
+  const hunk = hunks[0];
+  assert.ok(hunk);
+  assert.equal(hunk.path, 'db/schema.sql', 'the path is the file, not the text of a comment');
+  assert.equal(hunk.removed, 1);
+  assert.equal(hunk.added, 1);
+  assert.equal(hunkSize(hunk), 2, 'a hunk of size 0 would be dropped from the candidate set entirely');
+  assert.match(hunk.text, /keep this in sync/);
+  assert.match(hunk.text, /generated: do not edit/);
+});
+
+test('a hunk ends where its header said it would, and the next file still parses', () => {
+  const hunks = parseHunks(
+    [
+      'diff --git a/src/a.lua b/src/a.lua',
+      '--- a/src/a.lua',
+      '+++ b/src/a.lua',
+      '@@ -1,2 +1,2 @@',
+      '-- an old note',
+      '+-- a new note',
+      ' local x = 1',
+      'diff --git a/src/b.ts b/src/b.ts',
+      '--- a/src/b.ts',
+      '+++ b/src/b.ts',
+      '@@ -7 +7 @@',
+      '-const b = 1;',
+      '+const b = 2;',
+      '',
+    ].join('\n'),
+  );
+
+  assert.deepEqual(
+    hunks.map((hunk) => hunk.path),
+    ['src/a.lua', 'src/b.ts'],
+  );
+  assert.equal(hunks[0]?.removed, 1);
+  assert.equal(hunks[0]?.added, 1);
+  assert.equal(hunks[1]?.oldStart, 7);
+});
+
 test('an empty diff parses to nothing rather than failing', () => {
   assert.deepEqual(parseHunks(''), []);
   assert.deepEqual(parseHunks('\n\n'), []);
