@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
-import { basename, delimiter, isAbsolute, join } from 'node:path';
+import { delimiter, isAbsolute, join, resolve } from 'node:path';
 
 /**
  * The single door to a local coding agent.
@@ -13,14 +13,17 @@ import { basename, delimiter, isAbsolute, join } from 'node:path';
  * than an argument vector should be, and passing it as an argument would put
  * the change's source into the process table.
  *
- * **The command is allow-listed by name.** `model.command` is read from the
- * default branch of the repository being assessed (`rules/trusted.ts`), which
- * makes it repository content - and this is the one config field eyes-on
- * *executes*. Trusting the default branch is right for deciding which paths
- * need a reviewer; it is not by itself a reason to run an arbitrary program
- * from a repository somebody cloned. So the executable's name must be one of
- * the agents this product knows, unless the machine's own configuration -
- * `~/.eyes-on/config.yaml`, which no branch can write - says otherwise.
+ * **The command must be a bare name this product knows, resolved through
+ * PATH.** `model.command` is read from the default branch of the repository
+ * being assessed (`rules/trusted.ts`), which makes it repository content - and
+ * this is the one config field eyes-on *executes*. Trusting the default branch
+ * is right for deciding which paths need a reviewer; it is not by itself a
+ * reason to run an arbitrary program from a repository somebody cloned. A
+ * name carrying a path separator is refused outright, whatever its basename
+ * says: `tools/claude` would otherwise be a program the repository ships and
+ * eyes-on runs. What is left is a name PATH resolves, which the machine owns.
+ * Only the machine's own configuration - `~/.eyes-on/config.yaml`, which no
+ * branch can write - can lift either rule.
  *
  * **Nothing here throws.** Every failure is a value the caller reports: a
  * model that is missing, refused, slow or incoherent leaves stage one standing
@@ -88,7 +91,19 @@ export function resolveModelCommand(options: ModelOptions): { command: string[] 
   const command = configured !== null && configured.length > 0 ? [...configured] : [...DEFAULT_MODEL_COMMAND];
   const name = command[0] as string;
 
-  if (!options.allowAnyCommand && !KNOWN_AGENTS.includes(basename(name))) {
+  if (!options.allowAnyCommand && hasPathSeparator(name)) {
+    return {
+      refusal: {
+        state: 'refused',
+        detail:
+          `model.command names the path ${name} rather than a bare command name; it comes from the repository, and a ` +
+          'path lets the repository choose the program as well as the name, so eyes-on will not execute it. Name one ' +
+          `of the agents eyes-on knows (${KNOWN_AGENTS.join(', ')}) and let PATH resolve it, or set ` +
+          'model.allow_any_command: true in ~/.eyes-on/config.yaml to lift this',
+      },
+    };
+  }
+  if (!options.allowAnyCommand && !KNOWN_AGENTS.includes(name)) {
     return {
       refusal: {
         state: 'refused',
@@ -98,11 +113,13 @@ export function resolveModelCommand(options: ModelOptions): { command: string[] 
       },
     };
   }
-  if (!isExecutable(name, options.env ?? process.env)) {
+  if (!isExecutable(name, options.env ?? process.env, options.cwd)) {
     return {
       refusal: {
         state: 'unavailable',
-        detail: `${name} is not on PATH, so the second stage could not run; the ranking below is stage one`,
+        detail: hasPathSeparator(name)
+          ? `${name} is not an executable file relative to ${options.cwd ?? process.cwd()}, so the second stage could not run; the ranking below is stage one`
+          : `${name} is not on PATH, so the second stage could not run; the ranking below is stage one`,
       },
     };
   }
@@ -204,10 +221,23 @@ function firstLine(text: string): string {
   return (line ?? 'no output on stderr').trim().slice(0, 300);
 }
 
-/** Whether a command name resolves to something executable, without running it. */
-export function isExecutable(name: string, env: NodeJS.ProcessEnv): boolean {
-  if (name.includes('/')) {
-    return canExecute(isAbsolute(name) ? name : join(process.cwd(), name));
+/** Whether a name is a path rather than something PATH can resolve. */
+export function hasPathSeparator(name: string): boolean {
+  return /[/\\]/.test(name);
+}
+
+/**
+ * Whether a command name resolves to something executable, without running it.
+ *
+ * `cwd` is the directory a relative name is resolved against, and it is the
+ * same one `askModel` spawns in. Passing it here rather than reading
+ * `process.cwd()` is what keeps the check and the spawn looking at one file:
+ * eyes-on runs from anywhere inside the clone, so the two would otherwise
+ * disagree the moment somebody runs it from a subdirectory.
+ */
+export function isExecutable(name: string, env: NodeJS.ProcessEnv, cwd?: string): boolean {
+  if (hasPathSeparator(name)) {
+    return canExecute(isAbsolute(name) ? name : resolve(cwd ?? process.cwd(), name));
   }
   for (const dir of (env.PATH ?? '').split(delimiter)) {
     if (dir.length > 0 && canExecute(join(dir, name))) return true;

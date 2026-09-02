@@ -115,9 +115,14 @@ first) · `npm run genskill`.
 - **`model.command` is the one config field eyes-on executes.** It comes from
   the default branch like every other trusted field, which is the right trust
   level for deciding which paths need a reviewer and not by itself a reason to
-  run an arbitrary program a cloned repository names. The executable's basename
-  must be in `KNOWN_AGENTS`; only `~/.eyes-on/config.yaml`, which no branch can
-  write, can lift that.
+  run an arbitrary program a cloned repository names. It must be a **bare name
+  in `KNOWN_AGENTS`, resolved through PATH**: a name carrying a path separator
+  is refused whatever its basename says, because `tools/claude` would otherwise
+  be a program the repository ships and eyes-on runs. Only
+  `~/.eyes-on/config.yaml`, which no branch can write, can lift either rule.
+  `resolveModelCommand` and `isExecutable` (`src/spot/agent.ts`) resolve a name
+  the same way, against the directory `askModel` spawns in, so the check and the
+  spawn cannot look at two different files.
 - **A prompt the model cannot see the edge of produces a wrong answer, not a
   missing one.** The drift description's diff is cut at a size limit and git
   orders its output by path, so an unmarked cut described a three-thousand-line

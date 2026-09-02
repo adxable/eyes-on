@@ -91,6 +91,10 @@ export async function commentCommand(context: Context): Promise<number> {
 
   const action = existingId === null ? 'create' : 'update';
   let url = existingUrl;
+  // The comment this run ended up pointing at, which on a create is the one it
+  // just made. Reporting `existingId` here would leave the first publish with
+  // no id at all, so an agent could not address the comment it just wrote.
+  let commentId = existingId;
 
   if (dryRun) {
     progress(context.writers, `dry run: would ${action} the eyes-on comment on #${number}`);
@@ -104,6 +108,7 @@ export async function commentCommand(context: Context): Promise<number> {
       ? createComment(risk.clonePath, slug, number, finalBody)
       : updateComment(risk.clonePath, slug, existingId, finalBody);
     url = written?.html_url ?? existingUrl;
+    commentId = written?.id ?? existingId;
     recordComment(db, { repoId: risk.repoId, number, url, headSHA: check.head_sha });
     progress(context.writers, `${action === 'create' ? 'posted' : 'updated'} the eyes-on comment on #${number}`);
   }
@@ -113,7 +118,7 @@ export async function commentCommand(context: Context): Promise<number> {
     repo: slug,
     action: dryRun ? `would ${action}` : `${action}d`,
     dry_run: dryRun,
-    comment_id: existingId,
+    comment_id: commentId,
     comment_url: url,
     marker: MARKER_PREFIX.trim(),
     // How many eyes-on comments were on the pull request *before* this run.

@@ -180,10 +180,13 @@ reported `unverified`, carrying the parse error, because a rule that cannot be
 read is not the same as a rule nobody wrote.
 
 `model.command` is the one field eyes-on **executes**, so it is treated more
-narrowly than the rest: the executable's name must be an agent eyes-on knows
-(`claude`, `codex`, `copilot`, `cursor-agent`, `opencode`, `pi`, `rovodev`).
-Reading a repository's configuration to decide which paths need a reviewer is
-not by itself a reason to run an arbitrary program a cloned repository names.
+narrowly than the rest: it must be a bare command name that is an agent eyes-on
+knows (`claude`, `codex`, `copilot`, `cursor-agent`, `opencode`, `pi`,
+`rovodev`), resolved through PATH. A name containing a path separator is refused
+however it ends, because `tools/claude` names a program the repository itself
+ships. Reading a repository's configuration to decide which paths need a
+reviewer is not by itself a reason to run an arbitrary program a cloned
+repository names.
 Set `model: { allow_any_command: true }` in `~/.eyes-on/config.yaml` - the
 machine's own file, which no branch can write - to lift that.
 

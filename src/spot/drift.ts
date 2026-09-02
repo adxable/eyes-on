@@ -13,11 +13,14 @@ import { driftComparePrompt, driftDescribePrompt, type ChangedFileLine } from '.
  * collapsing it into one call would leave the command running and the answer
  * meaningless.
  *
- * The result is **shown, never a gate** (report section 5, P4). It does not
- * change an exit code, and the command that computes it exits 0 whatever the
- * grade is. It does raise the risk score through S7, at the report's weight of
+ * The result is **shown rather than enforced** (report section 5, P4). The
+ * `drift` command exits 0 whatever the grade is, because it computes no band.
+ * The grade does raise the risk score through S7, at the report's weight of
  * 0.20 - a change that is not doing what it says is a change worth reading, and
- * the score is where "worth reading" is expressed.
+ * the score is where "worth reading" is expressed - and the band is a function
+ * of the score. So it changes no exit code except under `check --strict`, the
+ * caller's explicit consent to gate on the band, where it counts exactly like
+ * every other signal.
  */
 
 /** 1 means the change does what the intent says; 5 means they are about

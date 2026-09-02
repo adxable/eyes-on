@@ -1,5 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+import { delimiter } from 'node:path';
 import { captureCli, sandboxEnv, stubAgent, stubGh, tempRepo, type StubAgent, type TempRepo } from './helpers.js';
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/output.js';
 import { findMarked, marker, MARKER_PREFIX, renderComment } from '../src/gh/comment.js';
@@ -110,6 +111,7 @@ test('the comment says what to read and never becomes a second pull-request body
       base_sha: 'b'.repeat(40),
       head_sha: 'h'.repeat(40),
       score: 58,
+      score_max: 120,
       band: 'wskazane',
       drift: 2,
       intent: 'why',
@@ -201,7 +203,7 @@ test('acceptance: publishing leaves the pull-request body byte for byte, and lea
   const repo = repoWith(agent);
   const head = repo.git(['rev-parse', 'HEAD']).trim();
   const gh = stubGh('comment-sticky', { slug: SLUG, number: PR, headSHA: head, body: BODY });
-  const env = { ...sandboxEnv('comment-sticky'), PATH: gh.path };
+  const env: Record<string, string> = { ...sandboxEnv('comment-sticky'), PATH: `${agent.dir}${delimiter}${gh.path}` };
   await initRepo(t, repo, env);
 
   await captureCli(['check', '--format', 'json'], { cwd: repo.path, env });
@@ -212,6 +214,10 @@ test('acceptance: publishing leaves the pull-request body byte for byte, and lea
   ) as CommentDoc;
   assert.equal(first.action, 'created');
   assert.equal(gh.comments().length, 1);
+  // The run that creates the comment names it. An agent that publishes and then
+  // wants to address what it just wrote has the id on the first run, not only
+  // on the second.
+  assert.equal(first.comment_id, gh.comments()[0]?.id);
 
   // Recompute and republish twice more: the same comment is edited in place.
   for (const round of [1, 2]) {
@@ -221,6 +227,7 @@ test('acceptance: publishing leaves the pull-request body byte for byte, and lea
     ) as CommentDoc;
     assert.equal(again.action, 'updated', `round ${round} updates rather than adds`);
     assert.equal(again.eyes_on_comments_found, 1);
+    assert.equal(again.comment_id, first.comment_id, `round ${round} names the same comment`);
   }
 
   const comments = gh.comments();
@@ -276,7 +283,7 @@ test('a comment already on the pull request from somebody else is left alone', a
     body: BODY,
     comments: [plain, quoting],
   });
-  const env = { ...sandboxEnv('comment-others'), PATH: gh.path };
+  const env: Record<string, string> = { ...sandboxEnv('comment-others'), PATH: `${agent.dir}${delimiter}${gh.path}` };
   await initRepo(t, repo, env);
 
   await captureCli(['check'], { cwd: repo.path, env });
@@ -326,7 +333,7 @@ test('--dry-run prints the comment and calls no writing endpoint', async (t) => 
   const repo = repoWith(agent);
   const head = repo.git(['rev-parse', 'HEAD']).trim();
   const gh = stubGh('comment-dry', { slug: SLUG, number: PR, headSHA: head, body: BODY });
-  const env = { ...sandboxEnv('comment-dry'), PATH: gh.path };
+  const env: Record<string, string> = { ...sandboxEnv('comment-dry'), PATH: `${agent.dir}${delimiter}${gh.path}` };
   await initRepo(t, repo, env);
 
   await captureCli(['check'], { cwd: repo.path, env });
@@ -352,7 +359,7 @@ test('the comment carries the gate and the decision, and says which is which', a
   const repo = repoWith(agent);
   const head = repo.git(['rev-parse', 'HEAD']).trim();
   const gh = stubGh('comment-gate', { slug: SLUG, number: PR, headSHA: head, body: BODY });
-  const env = { ...sandboxEnv('comment-gate'), PATH: gh.path };
+  const env: Record<string, string> = { ...sandboxEnv('comment-gate'), PATH: `${agent.dir}${delimiter}${gh.path}` };
   await initRepo(t, repo, env);
 
   await captureCli(['check'], { cwd: repo.path, env });
@@ -382,7 +389,7 @@ test('a pull request that has moved on is described as such rather than silently
   const agent = stubAgent('comment-stale', [SPOTLIGHT_ANSWER]);
   const repo = repoWith(agent);
   const gh = stubGh('comment-stale', { slug: SLUG, number: PR, headSHA: 'f'.repeat(40), body: BODY });
-  const env = { ...sandboxEnv('comment-stale'), PATH: gh.path };
+  const env: Record<string, string> = { ...sandboxEnv('comment-stale'), PATH: `${agent.dir}${delimiter}${gh.path}` };
   await initRepo(t, repo, env);
 
   await captureCli(['check'], { cwd: repo.path, env });
@@ -402,7 +409,7 @@ test('publishing an assessment nobody made says so instead of inventing one', as
   const repo = repoWith(agent);
   const head = repo.git(['rev-parse', 'HEAD']).trim();
   const gh = stubGh('comment-nocheck', { slug: SLUG, number: PR, headSHA: head, body: BODY });
-  const env = { ...sandboxEnv('comment-nocheck'), PATH: gh.path };
+  const env: Record<string, string> = { ...sandboxEnv('comment-nocheck'), PATH: `${agent.dir}${delimiter}${gh.path}` };
   await initRepo(t, repo, env);
 
   const result = await captureCli(['comment', '--pr', String(PR), '--format', 'json'], { cwd: repo.path, env });

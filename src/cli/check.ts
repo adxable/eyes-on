@@ -333,7 +333,12 @@ export function renderMarkdown(assessment: Assessment, doc: ToonObject): string 
   }
 
   if (doc.drift !== null && doc.drift !== undefined) {
-    lines.push('', '## Intent versus diff', '', `Drift **${String(doc.drift)}/5**. Shown, never a gate.`);
+    lines.push(
+      '',
+      '## Intent versus diff',
+      '',
+      `Drift **${String(doc.drift)}/5**. It is scored as S7, so it moves the band like every other signal: it changes no exit code except under the explicitly opted-in \`--strict\`.`,
+    );
     for (const item of (doc.drift_missing_from_diff as string[]) ?? []) {
       lines.push(`- asked for and not visible in the change: ${item}`);
     }

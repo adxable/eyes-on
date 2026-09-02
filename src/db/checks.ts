@@ -31,6 +31,9 @@ export interface CheckRow {
   base_sha: string;
   head_sha: string;
   score: number | null;
+  /** The maximum `score` could have reached under the weights it was computed
+   *  with. Null on a row written before eyes-on recorded it. */
+  score_max: number | null;
   band: string | null;
   drift: number | null;
   intent: string | null;
@@ -81,12 +84,13 @@ export function recordCheck(db: Database, options: RecordOptions): string {
   const status = statusFor(db, id, assessment);
 
   db.run(
-    `INSERT INTO checks (id, repo_id, branch, base_sha, head_sha, score, band, drift, intent, intent_source,
+    `INSERT INTO checks (id, repo_id, branch, base_sha, head_sha, score, score_max, band, drift, intent, intent_source,
                          status, trusted_config_sha, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        branch = excluded.branch,
        score = excluded.score,
+       score_max = excluded.score_max,
        band = excluded.band,
        drift = excluded.drift,
        intent = excluded.intent,
@@ -100,6 +104,7 @@ export function recordCheck(db: Database, options: RecordOptions): string {
     assessment.base_sha,
     assessment.head_sha,
     assessment.score,
+    assessment.score_max,
     assessment.band,
     options.drift ?? null,
     options.intent,

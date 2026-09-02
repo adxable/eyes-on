@@ -94,7 +94,7 @@ test('the two passes are two calls, and the second is given the first one\'s ans
   const result = measureDrift({
     diff: '@@ -1 +1 @@\n-const retries = Infinity;\n+const retries = 5;',
     intent: INTENT,
-    model: { command: agent.command, allowAnyCommand: false },
+    model: { command: agent.command, allowAnyCommand: false, env: { ...process.env, PATH: agent.path } },
   });
 
   assert.equal(result.grade, 3);
@@ -114,7 +114,7 @@ test('a first pass that answers with nothing readable stops before the second ca
   const result = measureDrift({
     diff: '@@ -1 +1 @@\n-a\n+b',
     intent: INTENT,
-    model: { command: agent.command, allowAnyCommand: false },
+    model: { command: agent.command, allowAnyCommand: false, env: { ...process.env, PATH: agent.path } },
   });
   assert.equal(result.grade, null);
   assert.deepEqual(result.passes, { describe: 'failed', compare: 'skipped' });
@@ -186,7 +186,7 @@ test('acceptance: drift is shown and changes no exit code, at any grade', async 
   for (const grade of [1, 5]) {
     const agent = stubAgent(`drift-exit-${grade}`, [describeAnswer(), compareAnswer(grade)]);
     const repo = repoWith(agent);
-    const env = sandboxEnv(`drift-exit-${grade}`);
+    const env: Record<string, string> = { ...sandboxEnv(`drift-exit-${grade}`), PATH: agent.path };
     await initRepo(t, repo, env);
 
     await captureCli(['check', '--format', 'json'], { cwd: repo.path, env });
@@ -221,7 +221,7 @@ test('acceptance: the drift grade gates only through the band, and only when --s
     compareAnswer(5),
   ]);
   const repo = repoWith(agent);
-  const env = sandboxEnv('drift-strict');
+  const env: Record<string, string> = { ...sandboxEnv('drift-strict'), PATH: agent.path };
   await initRepo(t, repo, env);
 
   interface CheckDoc {
@@ -287,7 +287,7 @@ test('acceptance: the drift grade gates only through the band, and only when --s
 test('the grade and both lists are recorded against the check, as rows rather than as one string', async (t) => {
   const agent = stubAgent('drift-record', [describeAnswer(), compareAnswer(3)]);
   const repo = repoWith(agent);
-  const env = sandboxEnv('drift-record');
+  const env: Record<string, string> = { ...sandboxEnv('drift-record'), PATH: agent.path };
   await initRepo(t, repo, env);
 
   await captureCli(['check', '--format', 'json'], { cwd: repo.path, env });
@@ -315,7 +315,7 @@ test('the grade and both lists are recorded against the check, as rows rather th
 test('check --intent scores the drift as S7, and the same change without an intent does not', async (t) => {
   const agent = stubAgent('drift-s7', [describeAnswer(), compareAnswer(5)]);
   const repo = repoWith(agent);
-  const env = sandboxEnv('drift-s7');
+  const env: Record<string, string> = { ...sandboxEnv('drift-s7'), PATH: agent.path };
   await initRepo(t, repo, env);
 
   interface CheckDoc {
@@ -346,10 +346,61 @@ test('check --intent scores the drift as S7, and the same change without an inte
   assert.equal(withIntent.exit_code, EXIT_OK);
 });
 
+test('status shows a drift-inflated score against the maximum it was computed under, not against 100', async (t) => {
+  // Drift is weighted 0.20 on top of six signals that already total 1.00, so a
+  // score can pass 100 and `n/100` would be a rendering of a number that does
+  // not exist. The denominator is recorded with the score rather than
+  // recomputed at display time, so it cannot drift away from what it describes.
+  const agent = stubAgent('drift-status', [describeAnswer(), compareAnswer(5)]);
+  const repo = repoWith(agent);
+  const env: Record<string, string> = { ...sandboxEnv('drift-status'), PATH: agent.path };
+  await initRepo(t, repo, env);
+
+  const check = JSON.parse(
+    (await captureCli(['check', '--intent', INTENT, '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as { score: number; score_max: number; drift: number };
+  assert.equal(check.drift, 5);
+  assert.equal(check.score_max, 120, 'the six history signals plus drift at 0.20');
+
+  const doc = JSON.parse((await captureCli(['status', '--format', 'json'], { cwd: repo.path, env })).out) as {
+    last_check: { score: number; score_max: number | null } | null;
+  };
+  assert.equal(doc.last_check?.score, check.score);
+  assert.equal(doc.last_check?.score_max, check.score_max, 'the payload carries a denominator an agent can read');
+
+  const markdown = (await captureCli(['status', '--format', 'md'], { cwd: repo.path, env })).out;
+  assert.match(markdown, new RegExp(`\\*\\*${check.score}/${check.score_max} - `));
+  assert.doesNotMatch(markdown, /\/100 - /, 'the literal hundred is not the maximum any more');
+});
+
+test('a check recorded before the maximum was stored says so rather than assuming 100', async (t) => {
+  const agent = stubAgent('drift-nomax', [describeAnswer(), compareAnswer(5)]);
+  const repo = repoWith(agent);
+  const env: Record<string, string> = { ...sandboxEnv('drift-nomax'), PATH: agent.path };
+  await initRepo(t, repo, env);
+
+  await captureCli(['check', '--intent', INTENT, '--format', 'json'], { cwd: repo.path, env });
+
+  // What a row written by an earlier version looks like: a score, and no
+  // maximum beside it.
+  const db = Database.open(join(env.EYES_HOME as string, 'state.sqlite'));
+  db.run('UPDATE checks SET score_max = NULL');
+  db.close();
+
+  const doc = JSON.parse((await captureCli(['status', '--format', 'json'], { cwd: repo.path, env })).out) as {
+    last_check: { score_max: number | null } | null;
+  };
+  assert.equal(doc.last_check?.score_max, null);
+
+  const markdown = (await captureCli(['status', '--format', 'md'], { cwd: repo.path, env })).out;
+  assert.doesNotMatch(markdown, /\/100/, 'a denominator nobody recorded is not invented');
+  assert.match(markdown, /before eyes-on stored the maximum/);
+});
+
 test('check --no-model with an intent measures no drift and calls no model', async (t) => {
   const agent = stubAgent('drift-nomodel', [describeAnswer(), compareAnswer(4)]);
   const repo = repoWith(agent);
-  const env = sandboxEnv('drift-nomodel');
+  const env: Record<string, string> = { ...sandboxEnv('drift-nomodel'), PATH: agent.path };
   await initRepo(t, repo, env);
 
   const doc = JSON.parse(
@@ -364,7 +415,7 @@ test('check --no-model with an intent measures no drift and calls no model', asy
 test('drift with no intent anywhere is a usage error naming the flag, not an empty answer', async (t) => {
   const agent = stubAgent('drift-nointent', [describeAnswer(), compareAnswer(2)]);
   const repo = repoWith(agent);
-  const env = sandboxEnv('drift-nointent');
+  const env: Record<string, string> = { ...sandboxEnv('drift-nointent'), PATH: agent.path };
   await initRepo(t, repo, env);
 
   const result = await captureCli(['drift', '--format', 'json'], { cwd: repo.path, env });
@@ -376,7 +427,7 @@ test('drift with no intent anywhere is a usage error naming the flag, not an emp
 test('drift reuses the intent recorded by check rather than asking for it twice', async (t) => {
   const agent = stubAgent('drift-reuse', [describeAnswer(), compareAnswer(2), describeAnswer(), compareAnswer(2)]);
   const repo = repoWith(agent);
-  const env = sandboxEnv('drift-reuse');
+  const env: Record<string, string> = { ...sandboxEnv('drift-reuse'), PATH: agent.path };
   await initRepo(t, repo, env);
 
   await captureCli(['check', '--intent', INTENT, '--no-model', '--format', 'json'], { cwd: repo.path, env });

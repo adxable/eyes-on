@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 /** A temporary directory removed when the test process exits. */
@@ -162,8 +162,13 @@ export function sandboxEnv(prefix: string): Record<string, string> {
 }
 
 export interface StubAgent {
-  /** `model.command` naming this stub, for a `.eyes-on.yml`. */
+  /** `model.command` naming this stub, for a `.eyes-on.yml`. A bare name, so
+   *  only a PATH carrying `dir` reaches it. */
   command: string[];
+  /** The directory holding the stub, to put in front of a PATH. */
+  dir: string;
+  /** PATH with the stub in front of it. */
+  path: string;
   /** Every prompt the stub was given, in order. */
   prompts(): string[];
   /** Whether the stub was invoked at all. The `--no-model` acceptance condition
@@ -174,10 +179,12 @@ export interface StubAgent {
 /**
  * A fake local agent on disk.
  *
- * Named `claude` on purpose: `model.command` is repository content and eyes-on
- * only executes an agent it knows by name, so a stub called `stub.js` would be
- * refused by the very guard these tests exist alongside. Naming it `claude`
- * exercises the real path rather than an escape hatch.
+ * Named `claude` and reached **only through PATH**, both on purpose.
+ * `model.command` is repository content, so eyes-on refuses a name that is not
+ * one it knows and refuses any name carrying a path separator - a repository
+ * that could name `tools/claude` could ship the program as well as the name. A
+ * stub handed over as an absolute path would be testing around that guard
+ * rather than through it, so the stub goes on PATH the way a real agent does.
  */
 export function stubAgent(prefix: string, responses: readonly string[]): StubAgent {
   const dir = tempDir(`${prefix}-agent`);
@@ -199,7 +206,9 @@ process.stdout.write(String(responses[Math.min(before, responses.length - 1)] ??
     { mode: 0o755 },
   );
   return {
-    command: [script],
+    command: ['claude'],
+    dir,
+    path: `${dir}${delimiter}${process.env.PATH ?? ''}`,
     prompts(): string[] {
       try {
         return readFileSync(join(dir, 'prompts.jsonl'), 'utf8')

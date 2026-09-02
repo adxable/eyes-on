@@ -51,6 +51,10 @@ export async function statusCommand(context: Context): Promise<number> {
           branch: assessment.branch,
           head: assessment.head_sha.slice(0, 12),
           score: assessment.score,
+          // The denominator the score was computed under, recorded beside it.
+          // Null on a row written before eyes-on stored it, which is not the
+          // same as 100 and must not be reported as it.
+          score_max: assessment.score_max,
           band: assessment.band,
           status: assessment.status,
           when: new Date(assessment.updated_at * 1000).toISOString(),
@@ -120,9 +124,18 @@ function renderMarkdown(doc: ToonObject, assessment: CheckRow | null): string {
   if (assessment) {
     const head = assessment.head_sha.slice(0, 12);
     const current = String(doc.head) === head ? '' : ' (the head has moved since)';
+    const outOf = assessment.score_max === null ? '' : `/${assessment.score_max}`;
     lines.push(
-      `**${assessment.score ?? 0}/100 - ${bandLabel((assessment.band ?? 'auto') as Band)}** at \`${head}\`${current}.`,
+      `**${assessment.score ?? 0}${outOf} - ${bandLabel((assessment.band ?? 'auto') as Band)}** at \`${head}\`${current}.`,
       '',
+    );
+    if (assessment.score_max === null) {
+      lines.push(
+        'This assessment was recorded before eyes-on stored the maximum a score can reach, so the number above has no denominator here. Re-run `eyes-on check` to record one.',
+        '',
+      );
+    }
+    lines.push(
       assessment.status === 'unverified'
         ? 'Recorded as `unverified`: the trusted configuration could not be read, so the hard rules were not evaluated.'
         : 'Run `eyes-on check` to assess the current head.',

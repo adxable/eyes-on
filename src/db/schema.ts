@@ -116,6 +116,12 @@ export const COLUMN_ADDITIONS: readonly ColumnAddition[] = [
   // arithmetic picked carries no category, and a reader must be able to tell
   // that from one the model categorised.
   { table: 'spots', column: 'source', definition: "TEXT NOT NULL DEFAULT 'rank'" },
+  // Stage 2. The weights sum to 1.20 once drift is scored, so a score is only
+  // meaningful beside the maximum it was computed under. Recomputing that
+  // denominator when the row is read would let it disagree with the number it
+  // describes, so it is stored with the score. A row written before this column
+  // existed has no value, and a reader must say so rather than assume 100.
+  { table: 'checks', column: 'score_max', definition: 'INTEGER' },
 ];
 
 /** Schema version recorded in schema_meta, for diagnostics only: the

@@ -1,7 +1,8 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { join } from 'node:path';
-import { captureCli, sandboxEnv, stubAgent, tempDir, tempRepo, type StubAgent, type TempRepo } from './helpers.js';
+import { chmodSync, existsSync, symlinkSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
+import { captureCli, sandboxEnv, stubAgent, tempDir, tempRepo, type TempRepo } from './helpers.js';
 import { EXIT_OK } from '../src/cli/output.js';
 import { parseHunks, type Hunk } from '../src/spot/hunks.js';
 import {
@@ -284,7 +285,7 @@ test('an empty model.command is the repository asking for stage one, not a failu
 // --- end to end, through the CLI -------------------------------------------
 
 /** A repository with a hot file, a quiet one, and a config naming the stub. */
-function repoWithModel(agent: StubAgent | null): TempRepo {
+function repoWithModel(agent: { command: readonly string[] } | null): TempRepo {
   const repo = tempRepo('spotlight');
   const config = [
     'schema: eyes-on/v1',
@@ -332,7 +333,7 @@ interface SpotlightDoc {
 test('acceptance: --no-model returns stage 1 and does not call a model once', async (t) => {
   const agent = stubAgent('spot-nomodel', ['{"spotlight":[]}']);
   const repo = repoWithModel(agent);
-  const env = sandboxEnv('spot-nomodel');
+  const env: Record<string, string> = { ...sandboxEnv('spot-nomodel'), PATH: agent.path };
   await initRepo(t, repo, env);
 
   const result = await captureCli(['spotlight', '--no-model', '--format', 'json'], { cwd: repo.path, env });
@@ -363,7 +364,7 @@ test('stage 2 picks fragments from stage 1 and each one carries a category and a
   });
   const agent = stubAgent('spot-stage2', [answer]);
   const repo = repoWithModel(agent);
-  const env = sandboxEnv('spot-stage2');
+  const env: Record<string, string> = { ...sandboxEnv('spot-stage2'), PATH: agent.path };
   await initRepo(t, repo, env);
 
   const result = await captureCli(['spotlight', '--format', 'json'], { cwd: repo.path, env });
@@ -399,7 +400,7 @@ test('stage 2 picks fragments from stage 1 and each one carries a category and a
 test('a model that answers with nonsense leaves stage 1 standing and still exits 0', async (t) => {
   const agent = stubAgent('spot-garbage', ['I am afraid I cannot help with that.']);
   const repo = repoWithModel(agent);
-  const env = sandboxEnv('spot-garbage');
+  const env: Record<string, string> = { ...sandboxEnv('spot-garbage'), PATH: agent.path };
   await initRepo(t, repo, env);
 
   const result = await captureCli(['spotlight', '--format', 'json'], { cwd: repo.path, env });
@@ -423,7 +424,7 @@ test('a fragment naming a file outside the change is dropped and counted, not pu
     }),
   ]);
   const repo = repoWithModel(agent);
-  const env = sandboxEnv('spot-invented');
+  const env: Record<string, string> = { ...sandboxEnv('spot-invented'), PATH: agent.path };
   await initRepo(t, repo, env);
 
   const doc = JSON.parse(
@@ -439,12 +440,24 @@ test('a fragment naming a file outside the change is dropped and counted, not pu
   assert.ok(doc.spotlight.slice(1).every((spot) => spot.source === 'rank'));
 });
 
+/** A PATH carrying git and nothing else, so "not installed" is a fact about the
+ *  test rather than about the machine it runs on. */
+function pathWithGitOnly(prefix: string): string {
+  const dir = tempDir(prefix);
+  const git = (process.env.PATH ?? '')
+    .split(delimiter)
+    .map((entry) => join(entry, 'git'))
+    .find((candidate) => existsSync(candidate));
+  assert.ok(git, 'the suite needs git on PATH');
+  symlinkSync(git, join(dir, 'git'));
+  return dir;
+}
+
 test('an agent that is named and not installed gets stage 1 and a reason, not a failure', async (t) => {
-  // A path whose basename is a known agent, so the name allow-list passes and
-  // the failure is the one under test: the executable is not there.
-  const missing = { command: [join(tempDir('spot-missing'), 'nowhere', 'claude')], prompts: () => [], called: () => false };
-  const repo = repoWithModel(missing);
-  const env = sandboxEnv('spot-missing');
+  // A known agent, so the name allow-list passes and the failure is the one
+  // under test: PATH does not resolve it.
+  const repo = repoWithModel({ command: ['codex'] });
+  const env: Record<string, string> = { ...sandboxEnv('spot-missing'), PATH: pathWithGitOnly('spot-missing-path') };
   await initRepo(t, repo, env);
 
   const doc = JSON.parse(
@@ -461,7 +474,7 @@ test('a model.command the repository chose but eyes-on does not know is refused,
   // `.eyes-on.yml` comes from the default branch, which is the right trust
   // level for deciding which paths need a reviewer and not by itself a reason
   // to execute an arbitrary program a cloned repository names.
-  const repo = repoWithModel({ command: ['/bin/sh'], prompts: () => [], called: () => false });
+  const repo = repoWithModel({ command: ['sh'] });
   const env = sandboxEnv('spot-refused');
   await initRepo(t, repo, env);
 
@@ -473,4 +486,31 @@ test('a model.command the repository chose but eyes-on does not know is refused,
   assert.equal(doc.model_state, 'refused');
   assert.match(doc.model_detail, /not one of the agents eyes-on knows/);
   assert.match(doc.model_detail, /allow_any_command/);
+});
+
+test('a program the repository ships under a known name is refused, not executed', async (t) => {
+  // The allow-list used to match the basename alone, so a repository could put
+  // an executable at `tools/claude`, name it in the `.eyes-on.yml` on its own
+  // default branch, and have eyes-on run it. `model.command` is the one config
+  // field this product executes, so a name that carries a path is refused
+  // however it ends: what is left is a name the machine's PATH resolves.
+  const repo = repoWithModel({ command: ['tools/claude'] });
+  const marker = join(tempDir('spot-planted'), 'it-ran');
+  repo.commitFiles('chore: ship a tool', {
+    'tools/claude': `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ran');\nprocess.stdout.write('{"spotlight":[]}');\n`,
+  });
+  chmodSync(join(repo.path, 'tools/claude'), 0o755);
+  const env = sandboxEnv('spot-planted');
+  await initRepo(t, repo, env);
+
+  const result = await captureCli(['spotlight', '--format', 'json'], { cwd: repo.path, env });
+  const doc = JSON.parse(result.out) as SpotlightDoc;
+
+  assert.equal(result.code, EXIT_OK);
+  assert.equal(doc.stage, 1, 'the ranking is still a complete answer');
+  assert.equal(doc.model_state, 'refused');
+  assert.match(doc.model_detail, /allow_any_command/);
+  // Not "the log did not mention it": the planted program writes a file when it
+  // runs, and that file is not there.
+  assert.equal(existsSync(marker), false, 'the program the repository shipped was never executed');
 });
