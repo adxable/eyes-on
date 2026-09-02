@@ -81,6 +81,7 @@ export async function checkCommand(context: Context): Promise<number> {
     intent,
     recordedGrade: existing?.drift ?? null,
     recordedIntent: existing?.drift_intent ?? null,
+    recordedRowIntent: existing?.intent ?? null,
   });
   if (carry.provenance === 'carried') {
     progress(context.writers, `keeping the drift grade of ${String(carry.grade)}/5 already measured for this intent`);

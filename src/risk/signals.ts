@@ -282,6 +282,11 @@ export interface CarryInput {
   /** The grade on the recorded row, and the intent it was measured against. */
   recordedGrade: number | null;
   recordedIntent: string | null;
+  /** The row's own `intent` column, which is not always the grade's: a row
+   *  written before eyes-on recorded `drift_intent` has one and not the other,
+   *  and a run that states no intent must keep what the row already says rather
+   *  than blanking it because the grade named nothing. */
+  recordedRowIntent: string | null;
 }
 
 export interface CarryDecision extends DriftEvidence {
@@ -311,7 +316,7 @@ export function carryDrift(input: CarryInput): CarryDecision {
       provenance: input.recordedGrade === null ? 'none' : 'carried',
       grade: input.recordedGrade,
       intent: input.recordedIntent,
-      rowIntent: input.recordedIntent,
+      rowIntent: input.recordedRowIntent,
       supersede: false,
     };
   }

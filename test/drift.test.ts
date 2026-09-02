@@ -774,9 +774,107 @@ test('acceptance: a drift run that measures nothing moves nothing it found recor
   // not happen above a heading that says nothing was measured.
   const markdown = (await captureCli(['drift', '--intent', INTENT, '--no-model', '--format', 'md'], { cwd: repo.path, env })).out;
   assert.match(markdown, /\*\*Not measured\.\*\*/);
-  assert.match(markdown, /The recorded assessment is untouched/);
-  assert.doesNotMatch(markdown, /the check was rescored/);
+  assert.match(markdown, /Nothing on the recorded check moved/);
+  assert.match(markdown, /answers this same intent/);
+  assert.doesNotMatch(markdown, /rescored/);
   assert.deepEqual(readRow(), before);
+});
+
+test('acceptance: drift against a changed intent drops the grade, and says that rather than that nothing moved', async (t) => {
+  // The supersede path, which the rule was written for and no test reached.
+  // Every sentence about the record has to describe what this run actually did:
+  // it lowered the score by dropping a grade that answers another question and
+  // deleted that measurement's lists, which is not "nothing moved".
+  const OTHER = 'Add the health endpoint the panel needs, and nothing else.';
+  const agent = stubAgent('drift-superseded', [describeAnswer(), compareAnswer(5)]);
+  const repo = repoWith(agent);
+  const env: Record<string, string> = { ...sandboxEnv('drift-superseded'), PATH: agent.path };
+  await initRepo(t, repo, env);
+
+  const measured = JSON.parse(
+    (await captureCli(['check', '--intent', INTENT, '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as { check_id: string; score: number; band: string; drift: number };
+  assert.equal(measured.drift, 5);
+
+  const dbPath = join(env.EYES_HOME as string, 'state.sqlite');
+  const items = (): unknown[] => {
+    const db = Database.open(dbPath);
+    const rows = db.all('SELECT kind, item FROM drift_items WHERE check_id = ?', measured.check_id);
+    db.close();
+    return rows;
+  };
+  assert.equal(items().length, 1);
+
+  const doc = JSON.parse(
+    (await captureCli(['drift', '--intent', OTHER, '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as {
+    drift: number | null;
+    score: number;
+    band: string;
+    recorded_drift: number | null;
+    record_outcome: string;
+    rescored: boolean;
+    recorded_changed: boolean;
+    record_sentence: string;
+    help: string[];
+  };
+
+  assert.equal(doc.drift, null, 'this run measured nothing');
+  assert.equal(doc.record_outcome, 'superseded');
+  assert.equal(doc.rescored, false, 'no grade was folded in');
+  assert.equal(doc.recorded_changed, true, 'but the four numbers did move');
+  assert.equal(doc.recorded_drift, null, 'the grade that answered the old intent is gone');
+  assert.ok(doc.score < measured.score, `the score fell from ${measured.score} to ${doc.score}`);
+  assert.equal(items().length, 0, 'and that measurement lists went with it');
+
+  // The sentence describes the state the code is actually in, in the payload,
+  // the help lines and the Markdown alike - one source, so they cannot disagree.
+  assert.match(doc.record_sentence, /was measured against a different intent, so it was dropped/);
+  assert.ok(doc.help.includes(doc.record_sentence), 'the help lines print the same sentence');
+  assert.doesNotMatch(doc.record_sentence, /Nothing on the recorded check moved/);
+
+  const markdown = (await captureCli(['drift', '--intent', OTHER, '--no-model', '--format', 'md'], { cwd: repo.path, env })).out;
+  assert.match(markdown, /\*\*Not measured\.\*\*/);
+  assert.doesNotMatch(markdown, /untouched/);
+  assert.doesNotMatch(markdown, /A run that measured nothing moves none of those numbers/);
+});
+
+test('a row recorded before eyes-on stored the grade intent keeps its own intent', async (t) => {
+  // Every check written before this branch looks like this: an `intent`, and no
+  // `drift_intent` because the column did not exist. A bare `eyes-on check` on
+  // the same base..head must keep the intent the row already holds - taking the
+  // grade's intent for it would blank the column, and `eyes-on drift` would then
+  // refuse with "run check --intent first", which is what the user already did.
+  const agent = stubAgent('drift-migrated', [describeAnswer(), compareAnswer(3)]);
+  const repo = repoWith(agent);
+  const env: Record<string, string> = { ...sandboxEnv('drift-migrated'), PATH: agent.path };
+  await initRepo(t, repo, env);
+
+  const measured = JSON.parse(
+    (await captureCli(['check', '--intent', INTENT, '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as { check_id: string };
+
+  // Back to what the older schema left behind: the grade's intent unrecorded.
+  const dbPath = join(env.EYES_HOME as string, 'state.sqlite');
+  const write = Database.open(dbPath);
+  write.run('UPDATE checks SET drift_intent = NULL WHERE id = ?', measured.check_id);
+  write.close();
+
+  await captureCli(['check', '--format', 'json'], { cwd: repo.path, env });
+
+  const db = Database.open(dbPath);
+  const row = db.get<{ intent: string | null; drift: number | null }>(
+    'SELECT intent, drift FROM checks WHERE id = ?',
+    measured.check_id,
+  );
+  db.close();
+  assert.equal(row?.intent, INTENT, 'the row kept the intent it already had');
+
+  // And the remedy the refusal names is not needed, because there is no refusal.
+  const reused = JSON.parse(
+    (await captureCli(['drift', '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as { intent: string };
+  assert.equal(reused.intent, INTENT);
 });
 
 test('check --no-model with an intent measures no drift and calls no model', async (t) => {

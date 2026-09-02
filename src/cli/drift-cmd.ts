@@ -44,12 +44,18 @@ import { detailOf, driftSentence, measureDrift, type DriftResult } from '../spot
  * agreeing wherever they are read.
  *
  * The converse costs more and is the same rule read backwards: not measuring is
- * not changing. When the model is rate-limited, or `--no-model` is passed, this
- * command records the intent and leaves the score, the maximum, the band, the
- * signal rows, the grade and every drift item exactly as it found them.
- * Rescoring with a null grade would delete a measurement taken of this very
- * base..head and lower the risk published on the pull request because a later
- * run measured nothing.
+ * not changing. When the model is rate-limited, or `--no-model` is passed, and
+ * the intent is the one the recorded grade answers, this command records the
+ * intent and leaves the score, the maximum, the band, the signal rows, the grade
+ * and every drift item exactly as it found them. Rescoring with a null grade
+ * would delete a measurement taken of this very base..head and lower the risk
+ * published on the pull request because a later run measured nothing.
+ *
+ * A run that states a **different** intent is not that case: the recorded grade
+ * answers a question nobody is asking now, so it is dropped and the check is
+ * rescored without it. That does move the four numbers, and every sentence this
+ * command prints about them comes from `recordSentence` - one source, four
+ * outcomes - so none of them can describe a state the code is not in.
  */
 export async function driftCommand(context: Context): Promise<number> {
   assertMayMutate(context, 'drift');
@@ -83,8 +89,13 @@ export async function driftCommand(context: Context): Promise<number> {
 
   let checkId: string | null = null;
   let recorded: CheckRow | null = null;
-  let rescored = false;
-  let carry: CarryDecision = carryDrift({ measured: result.grade, intent, recordedGrade: null, recordedIntent: null });
+  let carry: CarryDecision = carryDrift({
+    measured: result.grade,
+    intent,
+    recordedGrade: null,
+    recordedIntent: null,
+    recordedRowIntent: null,
+  });
   if (risk.db) {
     // Only against a check that exists. A drift grade with no assessment behind
     // it would be a row nothing points at, and `comment` reads the assessment.
@@ -96,13 +107,16 @@ export async function driftCommand(context: Context): Promise<number> {
         intent,
         recordedGrade: existing.drift ?? null,
         recordedIntent: existing.drift_intent ?? null,
+        recordedRowIntent: existing.intent ?? null,
       });
-      if (carry.provenance === 'carried') {
-        // Nothing was measured and the question has not changed, so nothing
-        // moves. Rescoring here would write a score computed with S7 at zero
-        // over one that contains a grade taken of this very base..head, and
-        // delete that grade's items with it: the published risk would drop
-        // because a later run measured nothing.
+      if (carry.provenance !== 'measured' && !carry.supersede) {
+        // Nothing was measured and the recorded grade - if there is one -
+        // answers the same question, so nothing about the assessment moves.
+        // Reassessing here would rewrite a score from a history window and a
+        // trusted config that may have moved since, under a sentence saying
+        // this run changed nothing; and where a grade exists it would write a
+        // score computed with S7 at zero over one that contains a measurement
+        // of this very base..head.
         risk.db.run(
           'UPDATE checks SET intent = ?, intent_source = ?, updated_at = ? WHERE id = ?',
           intent,
@@ -113,7 +127,7 @@ export async function driftCommand(context: Context): Promise<number> {
       } else {
         if (carry.provenance === 'measured') {
           progress(context.writers, `rescoring the recorded check with the grade just measured: ${String(carry.grade)}/5`);
-        } else if (carry.supersede) {
+        } else {
           progress(
             context.writers,
             `dropping the recorded drift grade of ${String(carry.superseded?.grade)}/5: it was measured against a different intent`,
@@ -138,8 +152,7 @@ export async function driftCommand(context: Context): Promise<number> {
           driftIntent: carry.intent,
         });
         if (result.grade !== null) recordDrift(risk.db, checkId, result, intent);
-        else if (carry.supersede) supersedeDrift(risk.db, checkId, intent);
-        rescored = carry.provenance === 'measured' || carry.supersede;
+        else supersedeDrift(risk.db, checkId, intent);
       }
       // Read back rather than reported from the assessment: the row is the one
       // source every other surface renders these four numbers from.
@@ -153,7 +166,6 @@ export async function driftCommand(context: Context): Promise<number> {
     head: risk.headSHA,
     checkId,
     recorded,
-    rescored,
     carry,
     driftWeight: risk.trusted.config.weights.drift,
     noModel: flagBool(context.args, 'no-model'),
@@ -185,12 +197,9 @@ interface DocOptions {
    *  is no check for this change. Read back rather than recomputed, so the four
    *  numbers this command reports are the ones every other surface reads. */
   recorded: CheckRow | null;
-  /** Whether this run moved those numbers. A run that measured no grade and
-   *  asks the same question moves nothing, and must not describe itself as if
-   *  it had. */
-  rescored: boolean;
   /** Which grade the recorded score now carries, where it came from, and the
-   *  intent it answers. */
+   *  intent it answers. Every sentence about what this run did to the record is
+   *  derived from it, so no surface can describe a state the code is not in. */
   carry: CarryDecision;
   /** S7's weight from the trusted config, not a literal: `weights` is a
    *  repository field, so a payload naming 0.20 beside a score computed with
@@ -218,7 +227,14 @@ export function renderDoc(result: DriftResult, options: DocOptions): ToonObject 
     recorded_drift_intent: options.recorded?.drift_intent ?? null,
     drift_provenance: options.carry.provenance,
     drift_sentence: driftProvenanceSentence(options.carry),
-    rescored: options.rescored,
+    // What this run did to the recorded assessment, in the four states the
+    // carry decision distinguishes. `rescored` is the narrow claim - a grade was
+    // folded in - and is false for a run that dropped one; `recorded_changed`
+    // is the wider one, true whenever the four numbers moved.
+    record_outcome: recordOutcome(options),
+    rescored: recordOutcome(options) === 'rescored',
+    recorded_changed: recordOutcome(options) === 'rescored' || recordOutcome(options) === 'superseded',
+    record_sentence: recordSentence(options),
     intent: options.intent,
     pass_describe: result.passes.describe,
     pass_compare: result.passes.compare,
@@ -234,29 +250,58 @@ export function renderDoc(result: DriftResult, options: DocOptions): ToonObject 
   };
 }
 
+/**
+ * What this run did to the recorded assessment.
+ *
+ * Read from the carry decision rather than from a null grade plus a boolean,
+ * because the four states differ in what actually moved and each one has to be
+ * described as itself: a run that drops a superseded grade lowers the score and
+ * deletes a measurement's lists, and calling that "nothing moved" is a sentence
+ * about a state the code is not in.
+ */
+type RecordOutcome = 'none' | 'rescored' | 'superseded' | 'kept';
+
+function recordOutcome(options: DocOptions): RecordOutcome {
+  if (options.checkId === null || options.recorded === null) return 'none';
+  if (options.carry.provenance === 'measured') return 'rescored';
+  return options.carry.supersede ? 'superseded' : 'kept';
+}
+
+/** The one sentence describing that outcome, printed by the help lines, the
+ *  Markdown body and its footer alike. */
+function recordSentence(options: DocOptions): string {
+  const recorded = options.recorded;
+  const outcome = recordOutcome(options);
+  if (outcome === 'none' || recorded === null) {
+    return 'Nothing was recorded: run `eyes-on check` on this change first, and the grade will be stored against it.';
+  }
+  const numbers = `${String(recorded.score)} of at most ${String(recorded.score_max)}, band \`${String(recorded.band)}\``;
+  if (outcome === 'rescored') {
+    return `The check was rescored with this grade to ${numbers} - so \`status\` and \`comment\` read the same numbers.`;
+  }
+  if (outcome === 'superseded') {
+    return (
+      `The recorded grade of ${String(options.carry.superseded?.grade)}/5 was measured against a different intent, so ` +
+      `it was dropped along with its lists and the check was rescored without a grade to ${numbers}.`
+    );
+  }
+  const held = recorded.drift === null ? 'there was no grade to keep' : `the recorded grade of ${String(recorded.drift)}/5 answers this same intent`;
+  return `Nothing on the recorded check moved: nothing was measured and ${held}, so it still reads ${numbers}. Only the intent was updated.`;
+}
+
 function helpLines(result: DriftResult, options: DocOptions): string[] {
   const lines: string[] = [];
   if (result.grade === null) {
-    lines.push(`No grade: ${detailOf(result.model)}`);
+    lines.push(`No grade from this run: ${detailOf(result.model)}`);
     if (options.noModel) {
       lines.push('Drift is a model measurement; --no-model has nothing to fall back to, unlike `spotlight`');
     }
   }
   const weight = options.driftWeight.toFixed(2);
-  if (options.checkId === null) {
-    lines.push('Nothing was recorded: run `eyes-on check` on this change first, and the grade will be stored against it');
-  } else if (options.rescored && options.recorded) {
-    lines.push(
-      `The check was rescored with this grade: ${String(options.recorded.score)} of at most ${String(options.recorded.score_max)}, band \`${String(options.recorded.band)}\` - so \`status\` and \`comment\` read the same numbers`,
-    );
-  } else if (options.recorded) {
-    lines.push(
-      `Nothing on the recorded check moved, because nothing was measured: it still reads ${String(options.recorded.score)} of at most ${String(options.recorded.score_max)}, band \`${String(options.recorded.band)}\`${options.recorded.drift === null ? ' with no grade' : `, grade ${String(options.recorded.drift)}/5`}. Only the intent was updated`,
-    );
-  }
+  lines.push(recordSentence(options));
   lines.push('This command exits 0 for a 5 exactly as it does for a 1, with --strict or without it: it computes no band');
   lines.push(
-    options.rescored
+    recordOutcome(options) === 'rescored'
       ? `The grade is signal S7 at weight ${weight} of the recorded score, and this command folded it in; there is no second command to run for that`
       : `A grade would be signal S7 at weight ${weight} of the recorded score, and this command folds it in when it measures one`,
   );
@@ -289,30 +334,15 @@ export function renderMarkdown(result: DriftResult, doc: ToonObject): string {
     for (const item of result.unrequested_in_diff) lines.push(`- **in the change, not asked for:** ${item}`);
   } else {
     lines.push('', `**Not measured.** ${detailOf(result.model)}`);
-    if (doc.score !== null) {
-      lines.push(
-        '',
-        `The recorded assessment is untouched: still **${String(doc.score)} of at most ${String(doc.score_max)}**, band \`${String(doc.band)}\`${doc.recorded_drift === null ? ' with no grade' : `, grade **${String(doc.recorded_drift)}/5**`}. A run that measured nothing moves none of those numbers.`,
-      );
-    }
+    lines.push('', String(doc.record_sentence));
   }
 
   lines.push(
     '',
     '---',
     '',
-    `This command exits 0 whatever the grade is, with \`--strict\` or without it, because it computes no band.${rescoreSentence(doc)} In the score a grade raises the band like any other signal, so \`eyes-on check --strict\` can exit 1 on it, and \`check\` without \`--strict\` never does.`,
+    `This command exits 0 whatever the grade is, with \`--strict\` or without it, because it computes no band. ${String(doc.record_sentence)} In the score a grade raises the band like any other signal, so \`eyes-on check --strict\` can exit 1 on it, and \`check\` without \`--strict\` never does.`,
   );
   return lines.join('\n');
 }
 
-/** What this run did to the recorded four numbers, in one clause that matches
- *  what actually happened rather than what usually happens. */
-function rescoreSentence(doc: ToonObject): string {
-  const weight = Number(doc.signal_weight ?? 0).toFixed(2);
-  if (doc.score === null) return ' Nothing was rescored: there is no recorded check for this change yet.';
-  if (doc.rescored !== true) {
-    return ` Nothing was rescored, because nothing was measured: the check still reads ${String(doc.score)} of at most ${String(doc.score_max)}, band \`${String(doc.band)}\`.`;
-  }
-  return ` The grade is signal S7 (weight ${weight}) of the recorded score, and the check was rescored with it to ${String(doc.score)} of at most ${String(doc.score_max)}, band \`${String(doc.band)}\`.`;
-}
