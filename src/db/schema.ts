@@ -122,6 +122,11 @@ export const COLUMN_ADDITIONS: readonly ColumnAddition[] = [
   // describes, so it is stored with the score. A row written before this column
   // existed has no value, and a reader must say so rather than assume 100.
   { table: 'checks', column: 'score_max', definition: 'INTEGER' },
+  // Stage 2. A drift grade measures the pair (diff, intent), and this row is
+  // keyed on (repository, base, head) - the intent is outside the key. Without
+  // the intent recorded beside the grade, a later run that states a different
+  // intent inherits a verdict about a question nobody asked.
+  { table: 'checks', column: 'drift_intent', definition: 'TEXT' },
 ];
 
 /** Schema version recorded in schema_meta, for diagnostics only: the

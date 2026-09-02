@@ -130,7 +130,12 @@ export interface ChangedFileLine {
  */
 export function driftDescribePrompt(diff: string, files: readonly ChangedFileLine[] = []): string {
   const body = clip(diff, MAX_TOTAL_BYTES);
-  const truncated = body.length !== diff.length;
+  // Asked of the budget, not of the two strings: `clip` appends a notice, so
+  // comparing lengths calls a diff complete at the one size where the notice is
+  // exactly as long as what it replaced. A truncation the model cannot see
+  // produces a wrong grade rather than a missing one, which is the whole reason
+  // this sentence exists.
+  const truncated = Buffer.byteLength(diff, 'utf8') > MAX_TOTAL_BYTES;
   return [
     'Describe what the following code change actually does.',
     '',

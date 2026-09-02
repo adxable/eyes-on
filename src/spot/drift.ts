@@ -60,7 +60,7 @@ export function measureDrift(options: DriftOptions): DriftResult {
   if (options.model === null) {
     const outcome: ModelOutcome = {
       state: 'skipped',
-      detail: '--no-model: drift is a model measurement and was not taken; signal S7 stays at zero',
+      detail: '--no-model: drift is a model measurement and this run took none',
     };
     return { ...empty, model: outcome, passes: { describe: 'skipped', compare: 'skipped' } };
   }

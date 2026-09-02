@@ -6,8 +6,9 @@ import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
 import { modelOptionsFor } from './model-context.js';
 import { checkByID, checkID, findCheck, recordCheck, type CheckRow } from '../db/checks.js';
-import { recordDrift } from '../db/gate.js';
+import { recordDrift, supersedeDrift } from '../db/gate.js';
 import { assess } from '../risk/assess.js';
+import { carryDrift, driftProvenanceSentence, type CarryDecision } from '../risk/signals.js';
 import { detailOf, driftSentence, measureDrift, type DriftResult } from '../spot/drift.js';
 
 /**
@@ -83,17 +84,25 @@ export async function driftCommand(context: Context): Promise<number> {
   let checkId: string | null = null;
   let recorded: CheckRow | null = null;
   let rescored = false;
+  let carry: CarryDecision = carryDrift({ measured: result.grade, intent, recordedGrade: null, recordedIntent: null });
   if (risk.db) {
     // Only against a check that exists. A drift grade with no assessment behind
     // it would be a row nothing points at, and `comment` reads the assessment.
     const existing = findCheck(risk.db, risk.repoId, risk.baseSHA, risk.headSHA);
     if (existing) {
       checkId = existing.id;
-      if (result.grade === null) {
-        // Nothing was measured, so nothing moves. Rescoring here would write a
-        // score computed with S7 at zero over one that contains a grade taken
-        // of this very base..head, and delete that grade's items with it: the
-        // published risk would drop because a later run measured nothing.
+      carry = carryDrift({
+        measured: result.grade,
+        intent,
+        recordedGrade: existing.drift ?? null,
+        recordedIntent: existing.drift_intent ?? null,
+      });
+      if (carry.provenance === 'carried') {
+        // Nothing was measured and the question has not changed, so nothing
+        // moves. Rescoring here would write a score computed with S7 at zero
+        // over one that contains a grade taken of this very base..head, and
+        // delete that grade's items with it: the published risk would drop
+        // because a later run measured nothing.
         risk.db.run(
           'UPDATE checks SET intent = ?, intent_source = ?, updated_at = ? WHERE id = ?',
           intent,
@@ -102,7 +111,14 @@ export async function driftCommand(context: Context): Promise<number> {
           checkId,
         );
       } else {
-        progress(context.writers, `rescoring the recorded check with the grade just measured: ${result.grade}/5`);
+        if (carry.provenance === 'measured') {
+          progress(context.writers, `rescoring the recorded check with the grade just measured: ${String(carry.grade)}/5`);
+        } else if (carry.supersede) {
+          progress(
+            context.writers,
+            `dropping the recorded drift grade of ${String(carry.superseded?.grade)}/5: it was measured against a different intent`,
+          );
+        }
         const assessment = assess({
           reader: risk.reader,
           db: risk.db,
@@ -110,7 +126,7 @@ export async function driftCommand(context: Context): Promise<number> {
           baseSHA: risk.baseSHA,
           headSHA: risk.headSHA,
           nowSeconds: Math.floor(Date.now() / 1000),
-          driftGrade: result.grade,
+          driftGrade: carry.grade,
           onProgress: (message) => progress(context.writers, message),
         });
         checkId = recordCheck(risk.db, {
@@ -118,10 +134,12 @@ export async function driftCommand(context: Context): Promise<number> {
           branch: risk.branch,
           intent,
           assessment,
-          drift: result.grade,
+          drift: carry.grade,
+          driftIntent: carry.intent,
         });
-        recordDrift(risk.db, checkId, result);
-        rescored = true;
+        if (result.grade !== null) recordDrift(risk.db, checkId, result, intent);
+        else if (carry.supersede) supersedeDrift(risk.db, checkId, intent);
+        rescored = carry.provenance === 'measured' || carry.supersede;
       }
       // Read back rather than reported from the assessment: the row is the one
       // source every other surface renders these four numbers from.
@@ -136,6 +154,7 @@ export async function driftCommand(context: Context): Promise<number> {
     checkId,
     recorded,
     rescored,
+    carry,
     driftWeight: risk.trusted.config.weights.drift,
     noModel: flagBool(context.args, 'no-model'),
   });
@@ -166,9 +185,13 @@ interface DocOptions {
    *  is no check for this change. Read back rather than recomputed, so the four
    *  numbers this command reports are the ones every other surface reads. */
   recorded: CheckRow | null;
-  /** Whether this run moved those numbers. A run that measured no grade moves
-   *  nothing, and must not describe itself as if it had. */
+  /** Whether this run moved those numbers. A run that measured no grade and
+   *  asks the same question moves nothing, and must not describe itself as if
+   *  it had. */
   rescored: boolean;
+  /** Which grade the recorded score now carries, where it came from, and the
+   *  intent it answers. */
+  carry: CarryDecision;
   /** S7's weight from the trusted config, not a literal: `weights` is a
    *  repository field, so a payload naming 0.20 beside a score computed with
    *  0.50 would be a machine field asserting something untrue. */
@@ -192,6 +215,9 @@ export function renderDoc(result: DriftResult, options: DocOptions): ToonObject 
     score_max: options.recorded?.score_max ?? null,
     band: options.recorded?.band ?? null,
     recorded_drift: options.recorded?.drift ?? null,
+    recorded_drift_intent: options.recorded?.drift_intent ?? null,
+    drift_provenance: options.carry.provenance,
+    drift_sentence: driftProvenanceSentence(options.carry),
     rescored: options.rescored,
     intent: options.intent,
     pass_describe: result.passes.describe,

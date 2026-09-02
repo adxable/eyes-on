@@ -293,9 +293,13 @@ export function rawSignals(
     spread: { value: directories.size, from: null },
     no_test: { value: noTest, from: untested[0]?.path ?? null },
     recency: maxBy((file) => freshness(file.days_since_touched, config.saturation.recency)),
-    // S7. Zero when drift was not measured, which is every run without an
-    // intent and every run with `--no-model`: an unmeasured signal contributes
-    // nothing rather than asserting that the change does what it says.
+    // S7. Zero when no grade belongs to this assessment - nobody has ever
+    // measured one for this base..head against this intent - because an
+    // unmeasured signal contributes nothing rather than asserting that the
+    // change does what it says. A run that measures none of its own is not the
+    // same thing: it carries the grade already recorded for the same question,
+    // so `--no-model` and a bare `check` still score whatever that grade
+    // produced. `carryDrift` decides which of the two a run is in.
     drift: { value: driftSignalValue(driftGrade), from: null },
   };
 }

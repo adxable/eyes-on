@@ -7,7 +7,7 @@ import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
 import { checkByID, checkID, type CheckRow } from '../db/checks.js';
 import { allDecisions, latestDecision, recordDecision, type GateAction } from '../db/gate.js';
-import { bandLabel, type Band } from '../risk/signals.js';
+import { bandLabel, driftProvenanceSentence, type Band } from '../risk/signals.js';
 
 /**
  * `eyes-on axi respond` - the answer to a parked run.
@@ -87,8 +87,20 @@ export async function respondCommand(context: Context): Promise<number> {
     base: check.base_sha.slice(0, 12),
     head: check.head_sha.slice(0, 12),
     score: check.score,
+    // The four facts of one assessment travel together: a score with no
+    // denominator, or beside a grade nobody named, is a number an agent cannot
+    // read. This command measures nothing, so any grade here was carried.
+    score_max: check.score_max,
     band: check.band,
     band_label: check.band ? bandLabel(check.band as Band) : null,
+    drift: check.drift,
+    drift_intent: check.drift_intent,
+    drift_provenance: check.drift === null ? 'none' : 'carried',
+    drift_sentence: driftProvenanceSentence({
+      provenance: check.drift === null ? 'none' : 'carried',
+      grade: check.drift,
+      intent: check.drift_intent,
+    }),
     exit_code: EXIT_OK,
     help: helpLines(check, previous !== undefined) as ToonValue,
   };

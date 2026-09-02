@@ -7,7 +7,7 @@ import { currentBranch, headSHA, toplevel } from '../git/git.js';
 import { canonicalPath, repoID } from '../core/repoid.js';
 import { Database, findRepoByPath } from '../db/db.js';
 import { latestCheck, type CheckRow } from '../db/checks.js';
-import { bandLabel, driftProvenanceSentence, type Band } from '../risk/signals.js';
+import { bandLabel, driftProvenanceSentence, type Band, type DriftEvidence } from '../risk/signals.js';
 
 /**
  * `eyes-on status` - read-only, and required to keep working from inside a
@@ -60,8 +60,9 @@ export async function statusCommand(context: Context): Promise<number> {
           // This command measures nothing, so any grade it shows is one an
           // earlier run took of this same change. Naming that keeps the four
           // facts here saying exactly what they can prove.
+          drift_intent: assessment.drift_intent,
           drift_provenance: assessment.drift === null ? 'none' : 'carried',
-          drift_sentence: driftProvenanceSentence(assessment.drift === null ? 'none' : 'carried', assessment.drift),
+          drift_sentence: driftProvenanceSentence(carriedEvidence(assessment)),
           status: assessment.status,
           when: new Date(assessment.updated_at * 1000).toISOString(),
         } as ToonValue)
@@ -78,6 +79,16 @@ export async function statusCommand(context: Context): Promise<number> {
 
   emitDoc(context.writers, context.format, doc, renderMarkdown(doc, assessment));
   return 0;
+}
+
+/** The recorded grade as this command can honestly describe it: `status`
+ *  measures nothing, so any grade it shows was taken by an earlier run. */
+function carriedEvidence(assessment: CheckRow): DriftEvidence {
+  return {
+    provenance: assessment.drift === null ? 'none' : 'carried',
+    grade: assessment.drift,
+    intent: assessment.drift_intent,
+  };
 }
 
 /** Whether the repository has a row in the state database. */
@@ -142,7 +153,7 @@ function renderMarkdown(doc: ToonObject, assessment: CheckRow | null): string {
       );
     }
     lines.push(
-      driftProvenanceSentence(assessment.drift === null ? 'none' : 'carried', assessment.drift),
+      driftProvenanceSentence(carriedEvidence(assessment)),
       '',
       assessment.status === 'unverified'
         ? 'Recorded as `unverified`: the trusted configuration could not be read, so the hard rules were not evaluated.'

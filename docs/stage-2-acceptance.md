@@ -372,7 +372,10 @@ both hold: "the drift result does not change any exit code", and "S7 at weight
 score, S7 is part of the score, and `--strict` exits 1 on a `pelna` band - so a
 drift grade high enough can carry a change over `full_review` and produce a
 non-zero exit under `check --strict`. The same change with `--no-model`, or
-without `--intent`, exits 0.
+without `--intent`, exits 0 - unless a grade for the same intent is already
+recorded against that base..head, in which case it is carried and scored, and
+the run reaches the same band. Not measuring is not changing, and the surface
+says which of the two happened.
 
 Resolved in favour of coherence: **drift enters the score and therefore the
 band, and `--strict` remains the caller's explicit consent to gate on the band.**

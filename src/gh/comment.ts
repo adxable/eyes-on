@@ -148,7 +148,9 @@ export function renderComment(input: CommentInput): string {
     // Publishing reads the recorded assessment and measures nothing, so the
     // grade above is always one an earlier run took of this same change. The
     // sentence comes from the same place every other surface takes it from.
-    lines.push(`<sub>${driftProvenanceSentence('carried', check.drift)}</sub>`);
+    lines.push(
+      `<sub>${driftProvenanceSentence({ provenance: 'carried', grade: check.drift, intent: check.drift_intent })}</sub>`,
+    );
   }
 
   lines.push(

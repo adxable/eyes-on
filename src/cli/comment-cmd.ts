@@ -144,8 +144,13 @@ export async function commentCommand(context: Context): Promise<number> {
     // This command measures nothing, so a grade it publishes is always one an
     // earlier run took of this same change. Same three states, same sentence,
     // one source - `check` and `status` report it the same way.
+    drift_intent: check.drift_intent,
     drift_provenance: check.drift === null ? 'none' : 'carried',
-    drift_sentence: driftProvenanceSentence(check.drift === null ? 'none' : 'carried', check.drift),
+    drift_sentence: driftProvenanceSentence({
+      provenance: check.drift === null ? 'none' : 'carried',
+      grade: check.drift,
+      intent: check.drift_intent,
+    }),
     body: finalBody,
     exit_code: EXIT_OK,
     help: helpLines(dryRun, stale, spots.length, check, markedFound) as ToonValue,

@@ -88,9 +88,12 @@ export interface RepoConfig {
  * than a hard-coded 100 - renormalising instead would quietly lower every
  * stage 1 score and move every change that sits near a threshold.
  *
- * S7 is only scored when drift was actually measured. A change assessed without
- * an intent, or with `--no-model`, carries S7 = 0 and scores exactly what it
- * would have scored at stage 1.
+ * S7 is only scored when a grade has been measured for this change against the
+ * intent being asked about. A change nobody has ever measured one for carries
+ * S7 = 0 and scores exactly what it would have scored at stage 1. A run that
+ * measures none itself - `--no-model`, a rate-limited model, or a `check` with
+ * no `--intent` - is not that case: it carries the grade already recorded for
+ * the same question, so its score contains S7 and its band can reflect it.
  */
 export const DEFAULT_WEIGHTS: SignalNumbers = {
   fix_history: 0.3,

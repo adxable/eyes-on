@@ -118,9 +118,15 @@ The six signals computed from history total exactly 100 between them. Drift adds
 its 0.20 on top rather than displacing them - the report keeps the thresholds at
 35 and 65 - so a change whose diff does something its intent never mentioned can
 score above 100. Every rendering divides by what the weights actually allow
-rather than by a hard-coded hundred. A change assessed without an intent, or
-with `--no-model`, carries S7 = 0 and scores exactly what it would have at
-stage 1.
+rather than by a hard-coded hundred. A change nobody has ever measured a grade
+for carries S7 = 0 and scores exactly what it would have at stage 1. A run that
+measures none itself - `--no-model`, a rate-limited model, or a `check` with no
+`--intent` - is not that case: not measuring is not changing, so it carries the
+grade already recorded for the same intent and says, in every payload and every
+rendering, that the grade came from an earlier measurement rather than from this
+run. A grade measured against a **different** intent is not carried: the author
+changed what the change is for, so the old verdict answers a different question
+and S7 falls back to zero.
 
 | signal | weight | K | what x counts |
 |---|---|---|---|

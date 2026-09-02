@@ -111,13 +111,24 @@ export function spotsFor(db: Database, checkId: string): SpotRow[] {
   return db.all<SpotRow>('SELECT * FROM spots WHERE check_id = ? ORDER BY weight DESC, file, line', checkId);
 }
 
-/** Records the drift grade and its two lists. A run that could not measure
- *  drift clears the grade rather than leaving a stale one on the row: a number
- *  from an earlier head is not a measurement of this one. */
-export function recordDrift(db: Database, checkId: string, drift: DriftResult): void {
+/**
+ * Records a grade this run measured, the intent it answers, and its two lists.
+ *
+ * **Only a run that measured a grade may call this**, and every caller checks
+ * before it does: the write replaces the two lists, so a call with nothing
+ * measured would delete the lists of a measurement taken of this very
+ * base..head. Not measuring is not changing. A row whose grade no longer
+ * answers the question being asked goes through `supersedeDrift` instead, which
+ * says so rather than pretending a measurement happened.
+ *
+ * The intent is written beside the grade because the grade measures the pair
+ * (diff, intent) while the row is keyed on (repository, base, head).
+ */
+export function recordDrift(db: Database, checkId: string, drift: DriftResult, intent: string | null): void {
   db.run(
-    'UPDATE checks SET drift = ?, updated_at = ? WHERE id = ?',
+    'UPDATE checks SET drift = ?, drift_intent = ?, updated_at = ? WHERE id = ?',
     drift.grade,
+    intent,
     Math.floor(Date.now() / 1000),
     checkId,
   );
@@ -135,6 +146,25 @@ export function recordDrift(db: Database, checkId: string, drift: DriftResult): 
   };
   write('missing_from_diff', drift.missing_from_diff);
   write('unrequested_in_diff', drift.unrequested_in_diff);
+}
+
+/**
+ * Drops a recorded grade because this run states a different intent.
+ *
+ * The author changed what the change is FOR, so the previous verdict answers a
+ * different question, and carrying it would be evidence saying something untrue
+ * about what was measured. The rule that keeps an unmeasured run from erasing a
+ * grade protects a measurement of the SAME question; this is not that. The row
+ * is left holding the new intent and no grade, and the caller scores S7 at zero.
+ */
+export function supersedeDrift(db: Database, checkId: string, intent: string | null): void {
+  db.run(
+    'UPDATE checks SET drift = NULL, drift_intent = ?, updated_at = ? WHERE id = ?',
+    intent,
+    Math.floor(Date.now() / 1000),
+    checkId,
+  );
+  db.run('DELETE FROM drift_items WHERE check_id = ?', checkId);
 }
 
 export interface DriftItemRow {

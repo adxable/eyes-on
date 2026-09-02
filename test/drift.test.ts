@@ -95,6 +95,16 @@ test('a diff too large for the prompt is cut, and the cut is stated rather than 
   const whole = driftDescribePrompt('@@ -1 +1 @@\n-a\n+b', files);
   assert.match(whole, /THE DIFF, IN FULL/);
   assert.doesNotMatch(whole, /CUT AT THE PROMPT SIZE LIMIT/);
+
+  // The cut is decided by the budget, not by comparing the two strings: the
+  // notice replacing the tail is itself forty characters, so at one diff size a
+  // length comparison calls a truncated prompt complete. That is D8's failure -
+  // a truncation the model cannot see - coming back through the check for it.
+  const exactly = 'x'.repeat(40_040);
+  const cutAgain = driftDescribePrompt(exactly, files);
+  assert.match(cutAgain, /CUT AT THE PROMPT SIZE LIMIT/);
+  assert.doesNotMatch(cutAgain, /THE DIFF, IN FULL/);
+  assert.ok(!cutAgain.includes(exactly), 'and the whole diff is not in the prompt it labelled');
 });
 
 test('the two passes are two calls, and the second is given the first one\'s answer', () => {
@@ -533,6 +543,89 @@ test('a check recorded before the maximum was stored says so rather than assumin
   const markdown = (await captureCli(['status', '--format', 'md'], { cwd: repo.path, env })).out;
   assert.doesNotMatch(markdown, /\/100/, 'a denominator nobody recorded is not invented');
   assert.match(markdown, /before eyes-on stored the maximum/);
+});
+
+test('acceptance: a grade measured against a different intent is dropped, not inherited', async (t) => {
+  // A drift grade measures the pair (diff, intent), and the row it lives on is
+  // keyed by (repository, base, head) - the intent is outside that key. The
+  // author changed what the change is FOR, so the previous verdict answers a
+  // different question and carrying it would be evidence saying something
+  // untrue about what was measured.
+  const OTHER = 'Add the health endpoint the panel needs, and nothing else.';
+  const agent = stubAgent('check-question', [describeAnswer(), compareAnswer(5)]);
+  const repo = repoWith(agent);
+  const env: Record<string, string> = { ...sandboxEnv('check-question'), PATH: agent.path };
+  await initRepo(t, repo, env);
+
+  interface CheckDoc {
+    check_id: string;
+    score: number;
+    band: string;
+    drift: number | null;
+    drift_intent: string | null;
+    drift_provenance: string;
+    drift_sentence: string;
+    drift_state: string;
+  }
+  const check = async (argv: string[]): Promise<CheckDoc> =>
+    JSON.parse((await captureCli(['check', ...argv, '--format', 'json'], { cwd: repo.path, env })).out) as CheckDoc;
+
+  const measured = await check(['--intent', INTENT]);
+  assert.equal(measured.drift, 5);
+  assert.equal(measured.drift_intent, INTENT);
+
+  const dbPath = join(env.EYES_HOME as string, 'state.sqlite');
+  const items = (): unknown[] => {
+    const db = Database.open(dbPath);
+    const rows = db.all('SELECT kind, item FROM drift_items WHERE check_id = ?', measured.check_id);
+    db.close();
+    return rows;
+  };
+  assert.equal(items().length, 1);
+
+  // Case 1: the same intent, nothing measured - the grade is carried.
+  const same = await check(['--intent', INTENT, '--no-model']);
+  assert.equal(same.drift, 5);
+  assert.equal(same.drift_provenance, 'carried');
+  assert.equal(same.score, measured.score);
+  assert.equal(items().length, 1, 'the lists of that measurement are untouched');
+
+  // Case 2: no --intent at all - the run asks no drift question, so it moves
+  // nothing and still reports the grade the row holds against its own intent.
+  const silent = await check([]);
+  assert.equal(silent.drift, 5);
+  assert.equal(silent.drift_intent, INTENT);
+  assert.equal(silent.drift_provenance, 'carried');
+  assert.equal(silent.score, measured.score);
+  assert.match(silent.drift_sentence, new RegExp(INTENT.slice(0, 30).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.equal(items().length, 1);
+
+  // ...and the recorded intent survives it, so `drift` can still find one.
+  const reused = JSON.parse(
+    (await captureCli(['drift', '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as { intent: string };
+  assert.equal(reused.intent, INTENT, 'a bare check did not blank the intent the grade answers');
+
+  // Case 3: a different intent, nothing measured - the grade answers another
+  // question, so it is dropped rather than inherited.
+  const changed = await check(['--intent', OTHER, '--no-model']);
+  assert.equal(changed.drift, null);
+  assert.equal(changed.drift_provenance, 'none');
+  assert.equal(changed.drift_intent, OTHER);
+  assert.ok(changed.score < measured.score, 'S7 fell back to zero');
+  assert.match(changed.drift_sentence, /answers a different question/);
+  assert.match(changed.drift_state, /different intent/);
+  assert.equal(items().length, 0, 'and the lists of the superseded measurement went with it');
+
+  const db = Database.open(dbPath);
+  const row = db.get<{ drift: number | null; drift_intent: string | null; intent: string }>(
+    'SELECT drift, drift_intent, intent FROM checks WHERE id = ?',
+    measured.check_id,
+  );
+  db.close();
+  assert.equal(row?.drift, null);
+  assert.equal(row?.drift_intent, OTHER);
+  assert.equal(row?.intent, OTHER);
 });
 
 test('acceptance: a check that measures nothing keeps the grade already taken of this change, and says so', async (t) => {

@@ -38,6 +38,10 @@ export interface CheckRow {
   drift: number | null;
   intent: string | null;
   intent_source: string | null;
+  /** The intent the recorded `drift` grade was measured against, which is not
+   *  always the intent in `intent`: a later run can state a new one. Null on a
+   *  row written before eyes-on recorded it, and on a row with no grade. */
+  drift_intent: string | null;
   status: string;
   trusted_config_sha: string | null;
   created_at: number;
@@ -49,18 +53,25 @@ export interface RecordOptions {
   branch: string;
   intent: string | null;
   assessment: Assessment;
+  /** Where `intent` came from: the flag on this run, or the row it was carried
+   *  from. Defaults to the flag, because that is the ordinary case. */
+  intentSource?: string | null;
   /**
-   * The drift grade folded into this score, or null when drift was not measured
-   * for this run. Recorded on the row so the pull-request comment and the stage
-   * 3 ledger read one number rather than recomputing it.
+   * The drift grade folded into this score, or null when no grade belongs to
+   * it. Recorded on the row so the pull-request comment and the stage 3 ledger
+   * read one number rather than recomputing it.
    *
-   * Null overwrites an earlier grade rather than being merged around, and that
-   * is deliberate: the score on this row was computed without S7, so a grade
-   * left over from an earlier run would sit beside a number that does not
-   * contain it. A caller that wants to keep a grade it did not measure - which
-   * is what `spotlight` does - reads the row first and passes it back.
+   * Whatever is passed is what the row will hold, so a caller that measured
+   * nothing must decide what belongs there rather than leaving it out. Not
+   * measuring is not changing: `check`, `drift` and `spotlight` all read the
+   * row first and pass back a grade they did not take, when it answers the
+   * same intent. A grade measured against a different intent is not carried -
+   * it answers a different question - and the callers pass null.
    */
   drift?: number | null;
+  /** The intent that grade was measured against, recorded beside it so a later
+   *  run can tell whether it answers the question being asked now. */
+  driftIntent?: string | null;
 }
 
 /**
@@ -84,15 +95,16 @@ export function recordCheck(db: Database, options: RecordOptions): string {
   const status = statusFor(db, id, assessment);
 
   db.run(
-    `INSERT INTO checks (id, repo_id, branch, base_sha, head_sha, score, score_max, band, drift, intent, intent_source,
-                         status, trusted_config_sha, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO checks (id, repo_id, branch, base_sha, head_sha, score, score_max, band, drift, drift_intent,
+                         intent, intent_source, status, trusted_config_sha, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        branch = excluded.branch,
        score = excluded.score,
        score_max = excluded.score_max,
        band = excluded.band,
        drift = excluded.drift,
+       drift_intent = excluded.drift_intent,
        intent = excluded.intent,
        intent_source = excluded.intent_source,
        status = excluded.status,
@@ -107,8 +119,9 @@ export function recordCheck(db: Database, options: RecordOptions): string {
     assessment.score_max,
     assessment.band,
     options.drift ?? null,
+    options.driftIntent ?? null,
     options.intent,
-    options.intent === null ? null : 'flag',
+    options.intentSource ?? (options.intent === null ? null : 'flag'),
     status,
     assessment.config_sha,
     now,

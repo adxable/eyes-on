@@ -6,10 +6,10 @@ import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
 import { modelOptionsFor } from './model-context.js';
 import { assess, type Assessment } from '../risk/assess.js';
-import { bandLabel, driftProvenanceOf, driftProvenanceSentence, type DriftProvenance } from '../risk/signals.js';
+import { bandLabel, carryDrift, driftProvenanceSentence, type CarryDecision } from '../risk/signals.js';
 import { hitSentence } from '../rules/hard.js';
 import { findCheck, recordCheck, writeReport } from '../db/checks.js';
-import { latestDecision, recordDrift, type DecisionRow } from '../db/gate.js';
+import { latestDecision, recordDrift, supersedeDrift, type DecisionRow } from '../db/gate.js';
 import { measureDrift, detailOf, type DriftResult } from '../spot/drift.js';
 import { loadConfig } from '../core/config.js';
 
@@ -76,10 +76,20 @@ export async function checkCommand(context: Context): Promise<number> {
   if (drift && drift.grade !== null) {
     progress(context.writers, `intent-versus-diff drift: ${drift.grade}/5`);
   }
-  const grade = drift?.grade ?? existing?.drift ?? null;
-  const provenance = driftProvenanceOf(drift?.grade ?? null, grade);
-  if (provenance === 'carried') {
-    progress(context.writers, `keeping the drift grade of ${String(grade)}/5 already measured for this change`);
+  const carry = carryDrift({
+    measured: drift?.grade ?? null,
+    intent,
+    recordedGrade: existing?.drift ?? null,
+    recordedIntent: existing?.drift_intent ?? null,
+  });
+  if (carry.provenance === 'carried') {
+    progress(context.writers, `keeping the drift grade of ${String(carry.grade)}/5 already measured for this intent`);
+  }
+  if (carry.supersede) {
+    progress(
+      context.writers,
+      `dropping the recorded drift grade of ${String(carry.superseded?.grade)}/5: it was measured against a different intent`,
+    );
   }
 
   const assessment = assess({
@@ -89,7 +99,7 @@ export async function checkCommand(context: Context): Promise<number> {
     baseSHA: risk.baseSHA,
     headSHA: risk.headSHA,
     nowSeconds: Math.floor(Date.now() / 1000),
-    driftGrade: grade,
+    driftGrade: carry.grade,
     onProgress: (message) => progress(context.writers, message),
   });
 
@@ -99,14 +109,17 @@ export async function checkCommand(context: Context): Promise<number> {
     checkId = recordCheck(risk.db, {
       repoId: risk.repoId,
       branch: risk.branch,
-      intent,
+      intent: carry.rowIntent,
+      intentSource: intent === null && carry.rowIntent !== null ? 'carried' : undefined,
       assessment,
-      drift: grade,
+      drift: carry.grade,
+      driftIntent: carry.intent,
     });
     // Only a run that measured one rewrites the items: `recordDrift` replaces
     // them, so calling it with an unmeasured result would delete the lists of
     // the measurement this run just kept.
-    if (drift && drift.grade !== null) recordDrift(risk.db, checkId, drift);
+    if (drift && drift.grade !== null) recordDrift(risk.db, checkId, drift, intent);
+    else if (carry.supersede) supersedeDrift(risk.db, checkId, intent);
     decision = latestDecision(risk.db, checkId);
   }
 
@@ -117,8 +130,7 @@ export async function checkCommand(context: Context): Promise<number> {
     noModel,
     strict,
     drift,
-    grade,
-    provenance,
+    carry,
     decision,
     checkId,
   });
@@ -180,10 +192,9 @@ interface RenderOptions {
   strict: boolean;
   /** What this run measured, or null when it measured nothing. */
   drift: DriftResult | null;
-  /** The grade the score was actually computed with: measured now, or carried
-   *  from the recorded assessment of this same change. */
-  grade: number | null;
-  provenance: DriftProvenance;
+  /** Which grade the score was computed with, where it came from, and the
+   *  intent it answers. */
+  carry: CarryDecision;
   decision: DecisionRow | undefined;
   checkId: string | null;
 }
@@ -250,12 +261,13 @@ export function renderDoc(assessment: Assessment, options: RenderOptions): ToonO
     decision: options.decision?.action ?? null,
     decision_reason: options.decision?.reason ?? null,
     decided_by: options.decision?.decided_by ?? null,
-    drift: options.grade,
-    // Whether this invocation measured that grade or carried it. A score
-    // carrying a grade this run did not take says more than this run measured
-    // unless the payload says which.
-    drift_provenance: options.provenance,
-    drift_sentence: driftProvenanceSentence(options.provenance, options.grade),
+    drift: options.carry.grade,
+    // Whether this invocation measured that grade or carried it, and which
+    // intent it answers. A score carrying a grade this run did not take says
+    // more than this run measured unless the payload says which.
+    drift_provenance: options.carry.provenance,
+    drift_intent: options.carry.intent,
+    drift_sentence: driftProvenanceSentence(options.carry),
     drift_state: driftState(options),
     drift_detail: options.drift ? detailOf(options.drift.model) : null,
     // Lists, not joined strings: a sentence containing the separator read back
@@ -306,8 +318,9 @@ export function renderDoc(assessment: Assessment, options: RenderOptions): ToonO
 
 /** Why there is or is not a drift grade, in one word an agent can branch on. */
 function driftState(options: RenderOptions): string {
-  if (options.provenance === 'measured') return 'measured';
-  if (options.provenance === 'carried') return 'carried from an earlier measurement of this same change';
+  if (options.carry.provenance === 'measured') return 'measured';
+  if (options.carry.provenance === 'carried') return 'carried from an earlier measurement of this same intent';
+  if (options.carry.supersede) return 'not measured: the recorded grade answers a different intent';
   if (options.drift === null) {
     if (options.noModel) return 'not measured: --no-model';
     return options.intent === null ? 'not measured: no --intent was given' : 'not measured';
@@ -335,17 +348,23 @@ function helpLines(assessment: Assessment, options: RenderOptions, gate: 'must_r
   }
   lines.push('Run `eyes-on why <file>` to see where one file\'s risk came from');
   lines.push('Run `eyes-on spotlight` for the three to five fragments a reviewer should actually read');
-  if (options.provenance === 'none' && options.intent === null) {
-    lines.push('Pass --intent "..." to measure intent-versus-diff drift; without a grade signal S7 is zero');
+  if (options.intent === null) {
+    lines.push(
+      options.carry.provenance === 'carried'
+        ? 'This run was given no --intent, so it asked no drift question and left the recorded grade and its lists alone'
+        : 'Pass --intent "..." to measure intent-versus-diff drift; without a grade signal S7 is zero',
+    );
   }
-  if (options.provenance !== 'none') {
-    lines.push(driftProvenanceSentence(options.provenance, options.grade));
+  if (options.carry.provenance !== 'none' || options.carry.supersede) {
+    lines.push(driftProvenanceSentence(options.carry));
+  }
+  if (options.carry.provenance !== 'none') {
     lines.push(
       'The drift grade is scored as S7, so it moves the band like any other signal: without --strict it changes no exit code, and with --strict it can',
     );
   }
-  if (options.provenance === 'carried') {
-    lines.push('Re-run with --intent "..." and a reachable model to measure the grade again for this same change');
+  if (options.carry.provenance === 'carried' || options.carry.supersede) {
+    lines.push('Re-run with --intent "..." and a reachable model to measure the grade against the intent stated now');
   }
   lines.push(exitCodeSentence(exitCodeFor(assessment, options.strict)));
   return lines as ToonValue;

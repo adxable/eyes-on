@@ -109,23 +109,70 @@ export type DriftProvenance =
   /** There is no grade at all. */
   | 'none';
 
+/**
+ * A grade, where it came from, and the intent it answers.
+ *
+ * The last of those is not decoration. A drift grade is a measurement of the
+ * pair (diff, intent), and the row it lives on is keyed by (repository, base,
+ * head) - the intent is outside that key. So a reader has to be able to see
+ * that the grade in front of them answers the intent in front of them, and
+ * every surface takes the sentence from here rather than writing its own.
+ */
+export interface DriftEvidence {
+  provenance: DriftProvenance;
+  grade: number | null;
+  /** The intent the grade answers, or the intent this run stated when there is
+   *  no grade. */
+  intent: string | null;
+  /** A grade this run dropped because it stated a different intent: what it
+   *  was, and what it answered. */
+  superseded?: { grade: number; intent: string | null } | null;
+}
+
 export function driftProvenanceOf(measuredNow: number | null, recorded: number | null): DriftProvenance {
   if (recorded === null) return 'none';
   return measuredNow === null ? 'carried' : 'measured';
 }
 
 /**
- * The one sentence that says where the grade came from, written here rather
- * than in each renderer so no surface can claim more than another.
+ * The one sentence that says where the grade came from and what it answers,
+ * written here rather than in each renderer so no surface can claim more than
+ * another.
  */
-export function driftProvenanceSentence(provenance: DriftProvenance, grade: number | null): string {
-  if (provenance === 'none' || grade === null) {
-    return 'No drift grade: the stated intent was not compared with this diff.';
+export function driftProvenanceSentence(evidence: DriftEvidence): string {
+  const against = (intent: string | null): string =>
+    intent === null ? 'an intent nobody recorded' : `the intent "${shortIntent(intent)}"`;
+
+  if (evidence.provenance === 'none' || evidence.grade === null) {
+    if (evidence.superseded) {
+      return (
+        `No drift grade for ${against(evidence.intent)}: the recorded ${evidence.superseded.grade}/5 was measured ` +
+        `against ${against(evidence.superseded.intent)} and answers a different question, so S7 is zero.`
+      );
+    }
+    return 'No drift grade: the stated intent was not compared with this diff, so S7 is zero.';
   }
-  if (provenance === 'carried') {
-    return `Drift ${grade}/5 is carried from an earlier measurement of this same change - nothing was measured now - and the score contains it as S7.`;
+  if (evidence.provenance === 'carried') {
+    return (
+      `Drift ${evidence.grade}/5 is carried from an earlier measurement of this same change against ` +
+      `${against(evidence.intent)} - nothing was measured now - and the score contains it as S7.`
+    );
   }
-  return `Drift ${grade}/5 was measured for this change, and the score contains it as S7.`;
+  return `Drift ${evidence.grade}/5 was measured for this change against ${against(evidence.intent)}, and the score contains it as S7.`;
+}
+
+/** An intent short enough to sit in one sentence, whole when it already is. */
+export function shortIntent(intent: string): string {
+  const flat = normalizeIntent(intent);
+  return flat.length <= 80 ? flat : `${flat.slice(0, 79)}\u2026`;
+}
+
+/** Two intents are the same question when they differ only in whitespace. The
+ *  comparison is on the whole text, never on the shortened display form: two
+ *  intents that agree for eighty characters and diverge after are two
+ *  questions. */
+export function normalizeIntent(intent: string): string {
+  return intent.replace(/\s+/g, ' ').trim();
 }
 
 /** The raw measurement of each signal, before weights and the curve. */
@@ -215,4 +262,79 @@ function formatRaw(signal: SignalValue): string {
 
 function format(value: number): string {
   return value.toFixed(2);
+}
+
+/**
+ * Which grade a run should score with, and what to record, when it measured
+ * one or did not.
+ *
+ * A drift grade is a measurement of the pair (diff, intent). The row it lives
+ * on is keyed by (repository, base, head), so the intent is outside the key and
+ * every command that touches the row has to answer the same question: does the
+ * grade already recorded here answer the question being asked now? Three cases,
+ * and they are decided in one place because four commands read them.
+ */
+export interface CarryInput {
+  /** The grade this invocation measured, or null when it measured none. */
+  measured: number | null;
+  /** The intent this invocation was given, or null when it was given none. */
+  intent: string | null;
+  /** The grade on the recorded row, and the intent it was measured against. */
+  recordedGrade: number | null;
+  recordedIntent: string | null;
+}
+
+export interface CarryDecision extends DriftEvidence {
+  /** The intent that belongs on the row after this run. */
+  rowIntent: string | null;
+  /** True when the recorded drift facts answer a different question and must be
+   *  replaced by an entry for the new intent carrying no grade. */
+  supersede: boolean;
+}
+
+export function carryDrift(input: CarryInput): CarryDecision {
+  if (input.measured !== null) {
+    return {
+      provenance: 'measured',
+      grade: input.measured,
+      intent: input.intent,
+      rowIntent: input.intent,
+      supersede: false,
+    };
+  }
+
+  // This run asked no drift question, so it decides nothing about drift: the
+  // recorded grade is still a measurement of this same diff against the intent
+  // on the row, and the row keeps that intent rather than being blanked.
+  if (input.intent === null) {
+    return {
+      provenance: input.recordedGrade === null ? 'none' : 'carried',
+      grade: input.recordedGrade,
+      intent: input.recordedIntent,
+      rowIntent: input.recordedIntent,
+      supersede: false,
+    };
+  }
+
+  const sameQuestion =
+    input.recordedIntent !== null && normalizeIntent(input.recordedIntent) === normalizeIntent(input.intent);
+  if (input.recordedGrade !== null && sameQuestion) {
+    return {
+      provenance: 'carried',
+      grade: input.recordedGrade,
+      intent: input.recordedIntent,
+      rowIntent: input.intent,
+      supersede: false,
+    };
+  }
+
+  return {
+    provenance: 'none',
+    grade: null,
+    intent: input.intent,
+    rowIntent: input.intent,
+    supersede: input.recordedGrade !== null,
+    superseded:
+      input.recordedGrade === null ? null : { grade: input.recordedGrade, intent: input.recordedIntent },
+  };
 }

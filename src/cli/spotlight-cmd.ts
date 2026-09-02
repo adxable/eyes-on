@@ -6,7 +6,7 @@ import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
 import { modelOptionsFor } from './model-context.js';
 import { assess } from '../risk/assess.js';
-import { bandLabel } from '../risk/signals.js';
+import { bandLabel, driftProvenanceSentence } from '../risk/signals.js';
 import { findCheck, recordCheck } from '../db/checks.js';
 import { latestDecision, recordSpots } from '../db/gate.js';
 import { parseHunks } from '../spot/hunks.js';
@@ -117,8 +117,10 @@ export async function spotlightCommand(context: Context): Promise<number> {
       repoId: risk.repoId,
       branch: risk.branch,
       intent: existing?.intent ?? null,
+      intentSource: existing?.intent_source ?? null,
       assessment,
       drift: existing?.drift ?? null,
+      driftIntent: existing?.drift_intent ?? null,
     });
     recordSpots(risk.db, checkId, result.spots);
   }
@@ -131,6 +133,8 @@ export async function spotlightCommand(context: Context): Promise<number> {
     n,
     checkId,
     gate: gateOf(risk, assessment.hard_rules.length, checkId),
+    drift: existing?.drift ?? null,
+    driftIntent: existing?.drift_intent ?? null,
     base: risk.baseSHA,
     head: risk.headSHA,
   });
@@ -161,6 +165,10 @@ interface DocOptions {
   n: number;
   checkId: string | null;
   gate: 'must_read' | 'none';
+  /** The recorded grade this run folded into the score, and the intent it was
+   *  measured against. */
+  drift: number | null;
+  driftIntent: string | null;
   base: string;
   head: string;
 }
@@ -175,6 +183,17 @@ export function renderDoc(score: number, scoreMax: number, band: string, options
     base: options.base.slice(0, 12),
     head: options.head.slice(0, 12),
     check_id: options.checkId,
+    // The score above contains this grade, and this command never measures one:
+    // whatever is here was carried from the recorded assessment of this same
+    // change. Saying so is the difference between a number and evidence.
+    drift: options.drift,
+    drift_intent: options.driftIntent,
+    drift_provenance: options.drift === null ? 'none' : 'carried',
+    drift_sentence: driftProvenanceSentence({
+      provenance: options.drift === null ? 'none' : 'carried',
+      grade: options.drift,
+      intent: options.driftIntent,
+    }),
     gate: options.gate,
     stage: result.stage,
     asked_for: options.n,
