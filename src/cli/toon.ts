@@ -21,6 +21,24 @@ export type ToonScalar = string | number | boolean | null;
 export type ToonValue = ToonScalar | ToonValue[] | { [key: string]: ToonValue };
 export type ToonObject = { [key: string]: ToonValue };
 
+/**
+ * A payload this encoder has no rendering for.
+ *
+ * A table row is one record of scalar cells, so a row carrying a nested list or
+ * object has no place to put it. That used to be discovered inside `trim` on an
+ * array, which reached the agent as a `TypeError` where a machine payload was
+ * promised - the opposite of the output contract. Refusing here names the key
+ * and the field instead, and the caller reports it in the contract's shape.
+ */
+export class ToonEncodeError extends Error {
+  readonly help: string[];
+  constructor(message: string, help: string[]) {
+    super(message);
+    this.name = 'ToonEncodeError';
+    this.help = help;
+  }
+}
+
 const INDENT = '  ';
 
 /** Literals a bare string would be misread as, so they get quoted. */
@@ -85,7 +103,17 @@ function encodeField(key: string, value: ToonValue, depth: number): string[] {
       for (const row of rows) {
         const cells = fields.map((field) => {
           const cell = row[field];
-          return cell === undefined || cell === null ? '' : encodeScalar(cell as ToonScalar);
+          if (cell === undefined || cell === null) return '';
+          if (!isScalar(cell)) {
+            throw new ToonEncodeError(
+              `${key}[].${field} is ${Array.isArray(cell) ? 'a list' : 'an object'}, and a TOON table row holds only scalars`,
+              [
+                `Emit ${key} as a nested object keyed by row, so ${field} can be a list of its own`,
+                'Or ask for `--format json`, which carries any shape',
+              ],
+            );
+          }
+          return encodeScalar(cell);
         });
         lines.push(`${pad}${INDENT}${cells.join(',')}`);
       }

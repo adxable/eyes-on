@@ -341,3 +341,87 @@ test('an artificially deep TMPDIR does not reach the suite\'s state roots', asyn
   });
   assert.equal(result.code, EXIT_OK, result.err);
 });
+
+/**
+ * The values of every `key[N]: ...` scalar list in a TOON document, in order.
+ *
+ * TOON is the payload contract eyes-on emits on stdout, so decoding it is
+ * reading what an agent reads. The declared count is checked against the row,
+ * because a list an agent cannot count is the failure `[N]` exists to prevent.
+ */
+function toonLists(out: string, key: string): string[][] {
+  const lists: string[][] = [];
+  for (const line of out.split('\n')) {
+    const match = /^\s*([A-Za-z_][\w-]*)\[(\d+)\]:\s?(.*)$/.exec(line);
+    if (!match || match[1] !== key) continue;
+    const values = toonCells(match[3] ?? '');
+    assert.equal(values.length, Number(match[2]), `the declared count disagrees with the row: ${line}`);
+    lists.push(values);
+  }
+  return lists;
+}
+
+function toonCells(payload: string): string[] {
+  if (payload.length === 0) return [];
+  const cells: string[] = [];
+  let current = '';
+  let quoted = false;
+  let escaped = false;
+  for (const char of payload) {
+    if (escaped) {
+      current += char === 'n' ? '\n' : char === 'r' ? '\r' : char;
+      escaped = false;
+    } else if (quoted && char === '\\') {
+      escaped = true;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (char === ',' && !quoted) {
+      cells.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  cells.push(current);
+  return cells;
+}
+
+/**
+ * `eyes-on axi logs` in the format the axi subtree actually defaults to.
+ *
+ * A log tail is a list of lines, and a line can contain any separator, so this
+ * is the one payload in the product whose shape the TOON table form cannot
+ * hold. It used to reach the agent as a TypeError instead of a payload.
+ */
+test('axi logs returns each log tail as a list, in its own default format', async () => {
+  const env = sandbox();
+  const root = env.EYES_HOME as string;
+  mkdirSync(join(root, 'logs'), { recursive: true });
+  const daemonLines = ['started', 'listening on socket, ready', 'a line with "quotes"'];
+  writeFileSync(join(root, 'logs', 'daemon.log'), `${daemonLines.join('\n')}\n`);
+  // An empty log is ordinary: it was written to and then rotated away.
+  writeFileSync(join(root, 'logs', 'cli.log'), '');
+
+  const result = await cli(['axi', 'logs'], { env });
+
+  assert.equal(result.code, EXIT_OK);
+  assert.equal(result.err, '');
+  assert.doesNotMatch(result.out, /^error: /m);
+  assert.deepEqual(
+    toonLists(result.out, 'lines'),
+    [daemonLines, []],
+    'both tails come back as lists, the commas and quotes inside a line intact',
+  );
+  assert.match(result.out, /^ {2}daemon:$/m);
+  assert.match(result.out, /^ {2}cli:$/m);
+});
+
+test('axi logs reports a log that was never written as absent rather than empty', async () => {
+  const env = sandbox();
+  const result = await cli(['axi', 'logs'], { env });
+
+  assert.equal(result.code, EXIT_OK);
+  assert.deepEqual(toonLists(result.out, 'lines'), [[], []]);
+  // "not there" and "empty" are different diagnoses, and only one is a problem.
+  assert.equal((result.out.match(/^ {4}present: false$/gm) ?? []).length, 2);
+});

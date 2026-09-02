@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { encodeScalar, encodeToon } from '../src/cli/toon.js';
+import { encodeScalar, encodeToon, ToonEncodeError } from '../src/cli/toon.js';
 
 test('scalars are quoted only when a bare form would be misread', () => {
   assert.equal(encodeScalar('running'), 'running');
@@ -52,4 +52,23 @@ test('objects, scalar arrays and object tables render in the documented shapes',
 test('a table header is the union of the rows, so no field is silently dropped', () => {
   const out = encodeToon({ rows: [{ a: 1 }, { b: 2 }] });
   assert.equal(out, 'rows[2]{a,b}:\n  1,\n  ,2\n');
+});
+
+test('a value the encoder cannot render is refused by name, not by a TypeError', () => {
+  // A table row is one record of scalar cells, so a row carrying its own list
+  // has nowhere to put it. This used to be discovered inside `trim`, and the
+  // TypeError reached the agent where a machine payload was promised.
+  const nested = { logs: [{ name: 'daemon', lines: ['one', 'two'] }] };
+  assert.throws(() => encodeToon(nested), (error: unknown) => {
+    assert.ok(error instanceof ToonEncodeError, `refused with ${String(error)}`);
+    assert.match(error.message, /logs\[\]\.lines is a list/);
+    assert.ok(error.help.length > 0, 'the refusal names what to do about it');
+    return true;
+  });
+
+  // An empty list in the same position took the other broken branch, `replace`.
+  assert.throws(
+    () => encodeToon({ logs: [{ name: 'cli', lines: [] }] }),
+    (error: unknown) => error instanceof ToonEncodeError,
+  );
 });

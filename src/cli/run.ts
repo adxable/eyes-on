@@ -1,4 +1,5 @@
 import { classify } from '../core/guard.js';
+import { ToonEncodeError } from './toon.js';
 import { GitError } from '../git/git.js';
 import { parseArgs, parseArgsLenient, flagString, flagBool, resolveFormat, type ParsedArgs } from './args.js';
 import {
@@ -134,6 +135,14 @@ export async function run(argv: readonly string[], writers: Writers = processWri
         'Install git and make sure it is on PATH',
         'Run `eyes-on doctor` to see what eyes-on can and cannot reach from here',
       ]);
+      return EXIT_ERROR;
+    }
+    // A payload the encoder has no rendering for is a defect in the command
+    // that built it, but it is reported as itself: the message names the field
+    // and the help names a format that can carry it, rather than a TypeError
+    // from inside the encoder.
+    if (error instanceof ToonEncodeError) {
+      emitError(writers, format, error.message, error.help);
       return EXIT_ERROR;
     }
     // An unexpected failure is still reported in the contract's shape: an agent

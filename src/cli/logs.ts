@@ -12,7 +12,10 @@ import type { ToonObject, ToonValue } from './toon.js';
  * answer. Both logs are reported together with their sizes, because "empty"
  * and "not there" are different diagnoses and only one of them is a problem.
  *
- * Lines are a list, not a blob: `axi` output is parsed.
+ * Lines are a list, not a blob: `axi` output is parsed. That is why the two
+ * logs are a nested object keyed by name rather than a list of records: a TOON
+ * table row holds only scalars, so a record carrying its own list of lines has
+ * nowhere to put them.
  */
 export const DEFAULT_LOG_LINES = 40;
 
@@ -23,10 +26,10 @@ export function logsCommand(context: Context): number {
   const doc: ToonObject = {
     root: context.paths.root,
     lines,
-    logs: [
-      readTail(context.paths.daemonLog, 'daemon', lines),
-      readTail(context.paths.cliLog, 'cli', lines),
-    ] as ToonValue,
+    logs: {
+      daemon: readTail(context.paths.daemonLog, 'daemon', lines),
+      cli: readTail(context.paths.cliLog, 'cli', lines),
+    } as ToonValue,
     exit_code: EXIT_OK,
     help: [
       'Logs are rotated at the size set by logs.max_bytes in the state root\'s config.yaml',
@@ -56,7 +59,7 @@ function readTail(path: string, name: string, count: number): ToonObject {
 
 function renderMarkdown(doc: ToonObject): string {
   const out: string[] = [`# eyes-on logs - last ${String(doc.lines)} lines`, ''];
-  for (const entry of (doc.logs as unknown as ToonObject[]) ?? []) {
+  for (const entry of Object.values((doc.logs ?? {}) as ToonObject) as unknown as ToonObject[]) {
     out.push(`## ${String(entry.name)} (\`${String(entry.path)}\`)`, '');
     const lines = (entry.lines ?? []) as unknown as string[];
     if (!entry.present) out.push('_not written yet._');

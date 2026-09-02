@@ -458,6 +458,11 @@ export function renderMarkdown(assessment: Assessment, doc: ToonObject): string 
     }
   } else if (doc.drift_state !== 'not measured: no --intent was given') {
     lines.push('', `_Drift: ${String(doc.drift_state)}${doc.drift_detail ? ` - ${String(doc.drift_detail)}` : ''}._`);
+    // The same sentence the payload and the help lines carry, so the human
+    // surface says what happened to a recorded measurement - a superseded grade
+    // was dropped and the score fell with it - rather than only what this run
+    // did not do.
+    lines.push('', String(doc.drift_sentence));
   }
 
   lines.push('', '## Why this score', '');
