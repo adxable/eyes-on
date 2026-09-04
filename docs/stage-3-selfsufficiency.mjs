@@ -120,6 +120,13 @@ function main() {
         github_merge_sha: doc?.github_merge_sha ?? null,
         merge_sha: doc?.merge_sha ?? null,
         head_sha: doc?.head_sha ?? null,
+        // Whether GitHub answered at all, and why not when it did not. `label`
+        // records a row from the default-branch subject alone when gh cannot
+        // read the pull request, so a sweep interrupted by a rate limit still
+        // produces links - and only this field tells that run apart from one
+        // measured with GitHub reachable throughout.
+        github_read: doc?.github_read ?? null,
+        github_unread_reason: doc?.github_unread_reason ?? null,
         // The population and the product must name the same commit. A link
         // that "agrees" about the wrong commit would be a confirmed error.
         matches_history: doc?.merge_sha === merge.sha,
@@ -148,6 +155,10 @@ function main() {
       criterion: 'every merged pull request links to its merge commit from git and GitHub alone',
       passes: confirmed.length === rows.length,
       by_link: byLink,
+      // Rows GitHub answered for. A confirmed count taken over a sweep where gh
+      // was refused reads as a claim about a path that run never exercised, so
+      // the two numbers are reported apart rather than trusted to agree.
+      github_answered: rows.filter((row) => row.github_read === true).length,
       mismatches: rows.filter((row) => !row.matches_history).map((row) => ({
         pr: row.pr,
         link: row.link,

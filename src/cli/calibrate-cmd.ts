@@ -90,6 +90,7 @@ export async function calibrateCommand(context: Context): Promise<number> {
   const doc = renderDoc(report, {
     anchor: anchor ? `${anchor.ref} @ ${anchor.sha.slice(0, 12)}` : anchorSHA.slice(0, 12),
     ledgerAbsent: ledger.absent,
+    ledgerSkipped: ledger.skipped,
     ledgerPath: context.paths.ledger,
     windowDays: Math.round(windowSeconds / 86_400),
     sinceDays: Math.round(sinceSeconds / 86_400),
@@ -102,6 +103,10 @@ export async function calibrateCommand(context: Context): Promise<number> {
 interface DocOptions {
   anchor: string;
   ledgerAbsent: boolean;
+  /** Register lines this build could not read. Reported here as `leaks` reports
+   *  them: a sweep short by those rows and silent about it is the same register
+   *  answered two ways by two commands. */
+  ledgerSkipped: number;
   ledgerPath: string;
   windowDays: number;
   sinceDays: number;
@@ -178,6 +183,7 @@ function renderDoc(report: CalibrateReport, options: DocOptions): ToonObject {
     outside_denominator: report.outside_denominator as unknown as ToonValue,
     ledger: options.ledgerPath,
     ledger_absent: options.ledgerAbsent,
+    ledger_lines_skipped: options.ledgerSkipped,
     config_state: options.configState,
     exit_code: EXIT_OK,
     help: helpLines(report, options) as ToonValue,
@@ -188,6 +194,11 @@ function helpLines(report: CalibrateReport, options: DocOptions): string[] {
   const lines: string[] = [];
   if (options.ledgerAbsent) {
     lines.push(`There is no register at ${options.ledgerPath} yet: run \`eyes-on label --pr <n>\` after a merge`);
+  }
+  if (options.ledgerSkipped > 0) {
+    lines.push(
+      `${options.ledgerSkipped} line${options.ledgerSkipped === 1 ? '' : 's'} of the register could not be read as a record of this version and ${options.ledgerSkipped === 1 ? 'was' : 'were'} skipped, so this sweep is short by ${options.ledgerSkipped === 1 ? 'it' : 'them'}`,
+    );
   }
   if (report.candidate_blocked !== null) lines.push(report.candidate_blocked);
   if (report.rule_forced > 0) {

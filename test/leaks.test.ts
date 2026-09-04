@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { captureCli, pathWithGitOnly, run, sandboxEnv, tempRepo, type TempRepo } from './helpers.js';
 import { EXIT_OK, EXIT_USAGE } from '../src/cli/output.js';
@@ -68,6 +68,7 @@ interface CalibrateDoc {
   rows_considered: number;
   rule_forced: number;
   unscored: number;
+  ledger_lines_skipped: number;
   outside_denominator: { reason: string; merges: number }[];
   exit_code: number;
   help: string[];
@@ -905,6 +906,76 @@ test('the coverage line names the denominator the rates were divided by, not the
   const line = gap.help.find((entry) => entry.includes('are not in the register'));
   assert.ok(line, `a register missing a merge still says so: ${JSON.stringify(gap.help)}`);
   assert.match(line, new RegExp(`the rates above are over the ${gap.merges} merge`));
+  // Nothing below that line narrows the denominator: the exclusion lines say
+  // how it reached that number, and the number is what the channel rows sum to.
+  assert.ok(
+    !line.includes('narrow further'),
+    `the denominator is final, so nothing may suggest it shrinks below: ${line}`,
+  );
+});
+
+/**
+ * An empty branch walk is evidence that coverage cannot be measured, and
+ * evidence of nothing else.
+ *
+ * A repository that squash-merges every pull request but has landed nothing
+ * inside `--since` produces exactly the same empty walk as one whose subjects
+ * never carry `(#N)`. A sentence about how the register's rows were placed
+ * would be false of the first, and only the rows can answer that question.
+ */
+test('an empty branch walk says coverage cannot be measured and claims nothing about how the rows were placed', async (t) => {
+  const { repo, widget, at } = leakyRepo('leaks-noclaim');
+  const env = sandboxEnv('leaks-noclaim');
+  await initRepo(t, repo, env);
+  // The row was placed by a `(#7)` subject on the default branch - but that
+  // commit landed forty days ago, and this run reads ten.
+  writeLedger(repo, env, (repoId) => [
+    record({ repo: repoId, pr: 7, merge_sha: widget, band: 'auto', merged_at: at(40) }),
+  ]);
+
+  const doc = JSON.parse(
+    (await captureCli(['leaks', '--since', '10d', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as LeaksDoc;
+  assert.equal(doc.merged_on_branch, 0);
+  assert.equal(doc.register_rows, 1);
+  const line = doc.help.find((entry) => entry.includes('nothing to measure coverage against'));
+  assert.ok(line, `the state is still named: ${JSON.stringify(doc.help)}`);
+  assert.ok(
+    !line.includes('placed by GitHub'),
+    `this row was placed by a subject, so nothing may say otherwise: ${line}`,
+  );
+});
+
+/**
+ * A line this build cannot read is counted and reported by every surface that
+ * divides by the register, not only by the first one that was taught to.
+ */
+test('calibrate reports the register lines it could not read, as leaks does for the same file', async (t) => {
+  const { repo, widget, at } = leakyRepo('calibrate-skipped');
+  const env = sandboxEnv('calibrate-skipped');
+  await initRepo(t, repo, env);
+  writeLedger(repo, env, (repoId) => [
+    record({ repo: repoId, pr: 7, merge_sha: widget, score: 20, band: 'auto', merged_at: at(40) }),
+  ]);
+  // A line a later version of eyes-on appended: readable as JSON, not as a
+  // record of this version.
+  writeFileSync(
+    join(env.EYES_HOME as string, 'ledger.jsonl'),
+    `${readFileSync(join(env.EYES_HOME as string, 'ledger.jsonl'), 'utf8')}${JSON.stringify({ v: 999, repo: 'x', pr: 8 })}
+`,
+  );
+
+  const leaks = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env })).out) as LeaksDoc;
+  const sweep = JSON.parse(
+    (await captureCli(['calibrate', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as CalibrateDoc;
+
+  assert.equal(leaks.ledger_lines_skipped, 1);
+  assert.equal(sweep.ledger_lines_skipped, 1, 'one register, one answer about what it could not read');
+  assert.ok(
+    sweep.help.some((line) => line.includes('could not be read as a record of this version')),
+    `the sweep is short by that row and must say so: ${JSON.stringify(sweep.help)}`,
+  );
 });
 
 /**

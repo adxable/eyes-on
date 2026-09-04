@@ -122,14 +122,21 @@ export type PullRequestView =
     }
   | { checked: false; reason: UncheckedReason };
 
-/** Why a run never looked at the pull request. The two are different states of
- *  the machine and only one of them is fixed by installing anything. */
+/** Why a run never read the pull request from GitHub. The three are different
+ *  states of the machine: only the first is fixed by installing anything, only
+ *  the second is about this clone, and the third is GitHub's own answer. A
+ *  surface that collapsed any pair would name a remedy for a state the machine
+ *  is not in. */
 export type UncheckedReason =
   /** The GitHub CLI is not on PATH. */
   | 'gh-missing'
   /** gh ran and could not name a GitHub repository for this clone - an
    *  unauthenticated gh, or a clone with no GitHub remote. */
-  | 'no-repository';
+  | 'no-repository'
+  /** gh ran, named the repository, and GitHub answered with an error: a 404, a
+   *  403, a rate limit. Nothing about this machine is broken and nothing about
+   *  it needs installing; the same call may succeed later. */
+  | 'gh-error';
 
 /**
  * Whether the assessment describes the commit the pull request now points at.

@@ -260,10 +260,15 @@ function decideLink(input: LinkInput): PullLink {
 
 /** What GitHub contributed, when it contributed no merge commit. */
 function githubUnreadSentence(input: LinkInput): string {
-  if (input.unread !== null) {
-    return input.unread === 'gh-missing'
-      ? 'The GitHub CLI is not installed, so nothing confirmed it from the other end.'
-      : 'gh could not name a GitHub repository for this clone, so nothing confirmed it from the other end.';
+  switch (input.unread) {
+    case 'gh-missing':
+      return 'The GitHub CLI is not installed, so nothing confirmed it from the other end.';
+    case 'no-repository':
+      return 'gh could not name a GitHub repository for this clone, so nothing confirmed it from the other end.';
+    case 'gh-error':
+      return 'gh ran and GitHub answered with an error, so nothing confirmed it from the other end.';
+    case null:
+      break;
   }
   if (input.fromGitHub === null) {
     return 'gh answered nothing eyes-on could read as a pull request, so nothing confirmed it from the other end.';

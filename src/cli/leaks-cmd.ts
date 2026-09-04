@@ -219,16 +219,19 @@ function helpLines(report: LeaksReport, options: DocOptions): string[] {
   const uncovered = report.coverage.merged_on_branch - report.coverage.registered;
   if (uncovered > 0) {
     lines.push(
-      `${uncovered} of the ${report.coverage.merged_on_branch} pull requests the branch landed in this window are not in the register; the rates above are over the ${report.merges} merge${report.merges === 1 ? '' : 's'} in the denominator, which the lines below narrow further`,
+      `${uncovered} of the ${report.coverage.merged_on_branch} pull requests the branch landed in this window are not in the register; the rates above are over the ${report.merges} merge${report.merges === 1 ? '' : 's'} in the denominator, and the lines below say how it reached that number`,
     );
   }
   // A branch whose subjects carry no trailing `(#N)` - one that merges with
-  // `--no-ff`, or writes "Merge pull request #7 from ..." - lands nothing this
-  // walk can count, and a coverage ratio against nothing is not a small number,
-  // it is no number. The register rows are still there and still say so.
+  // `--no-ff`, writes "Merge pull request #7 from ...", or has simply landed
+  // nothing inside `--since` - lands nothing this walk can count, and a
+  // coverage ratio against nothing is not a small number, it is no number. The
+  // walk is evidence for that and for nothing else: why the register's rows are
+  // there is a question about the rows, and an empty walk answers it for none
+  // of the three ways a row can have been placed.
   if (report.coverage.merged_on_branch === 0 && report.population.registered > 0) {
     lines.push(
-      `No commit the branch landed in this window carries a \`(#N)\` subject, so there is nothing to measure coverage against; the register holds ${report.population.registered} row${report.population.registered === 1 ? '' : 's'} for this repository, placed by GitHub rather than by a squash-merge subject`,
+      `No commit the branch landed in this window carries a \`(#N)\` subject, so there is nothing to measure coverage against; the register holds ${report.population.registered} row${report.population.registered === 1 ? '' : 's'} for this repository`,
     );
   }
   // One line per reason present, generated from the same table that says

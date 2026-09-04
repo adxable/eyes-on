@@ -71,7 +71,7 @@ export async function labelCommand(context: Context): Promise<number> {
   }
 
   const fromGit = mergedPulls(risk.reader, anchor.sha).filter((merge) => merge.number === number);
-  const observed = observePull(risk.clonePath, number);
+  const observed = observePull(risk.clonePath, number, fromGit.length > 0);
   const link = linkPull({ number, fromGit, fromGitHub: observed.record, unread: observed.unread });
   progress(context.writers, link.sentence);
   // Read once, so a dry run and a real one cannot report different parent
@@ -99,7 +99,7 @@ export async function labelCommand(context: Context): Promise<number> {
     emitDoc(
       context.writers,
       context.format,
-      unrecordableDoc(number, link, mergeParents, found, failure),
+      unrecordableDoc(number, link, mergeParents, observed.unreadDetail, found, failure),
       () => renderUnrecordable(number, link, failure),
     );
     return EXIT_OK;
@@ -129,6 +129,7 @@ export async function labelCommand(context: Context): Promise<number> {
     priorRecords,
     checkCandidates: found.candidates,
     unread: observed.unread,
+    unreadDetail: observed.unreadDetail,
     // What `leaks` will do with the row this command has just written, read off
     // the one classifier rather than re-stated here. `label` is the command a
     // person runs per merge, so it is where an unmeasurable row has to be said
@@ -152,30 +153,51 @@ interface Observation {
   slug: string | null;
   record: PullRecord | null;
   unread: UncheckedReason | null;
+  /** What gh said, when GitHub answered with an error. Kept out of the recorded
+   *  sentence - a rate-limit message is not a durable fact about the change -
+   *  and printed where the reader is deciding what to do about it. */
+  unreadDetail: string | null;
 }
 
 /**
  * Reads the pull request, or says which of the two silences this is.
  *
- * gh being absent and gh naming no repository are different states of the
- * machine, only one of which is fixed by installing anything, and they are told
- * apart here where the difference is known. Neither stops the command: git
- * alone still names the merge commit through the `(#N)` subject, and the link
- * records that only one source answered rather than presenting a confirmed
- * chain it never confirmed.
+ * gh being absent, gh naming no repository and GitHub answering with an error
+ * are three different states of the machine - only the first is fixed by
+ * installing anything - and they are told apart here where the difference is
+ * known. None of the three stops the command *when git named the merge commit*:
+ * git alone still names it through the `(#N)` subject, and the link records
+ * that only one source answered rather than presenting a confirmed chain it
+ * never confirmed. Self-sufficiency that aborts on a rate limit half way
+ * through a backfill is self-sufficiency on paper.
+ *
+ * A remote error with no git-side candidate is the one case that still stops:
+ * there is nothing to record from either source, and the likeliest cause is a
+ * `--pr` that names no pull request, where refusing with gh's own words is the
+ * right answer.
  */
-function observePull(clonePath: string, number: number): Observation {
+function observePull(clonePath: string, number: number, gitNamedMerge: boolean): Observation {
   let slug: string | null;
   try {
     slug = repoSlug(clonePath);
   } catch (error) {
     if (error instanceof GhError && error.spawnFailure === 'missing') {
-      return { slug: null, record: null, unread: 'gh-missing' };
+      return { slug: null, record: null, unread: 'gh-missing', unreadDetail: null };
+    }
+    if (error instanceof GhError && gitNamedMerge) {
+      return { slug: null, record: null, unread: 'gh-error', unreadDetail: error.message };
     }
     throw error;
   }
-  if (slug === null) return { slug: null, record: null, unread: 'no-repository' };
-  return { slug, record: pullRecord(clonePath, slug, number), unread: null };
+  if (slug === null) return { slug: null, record: null, unread: 'no-repository', unreadDetail: null };
+  try {
+    return { slug, record: pullRecord(clonePath, slug, number), unread: null, unreadDetail: null };
+  } catch (error) {
+    if (error instanceof GhError && gitNamedMerge) {
+      return { slug, record: null, unread: 'gh-error', unreadDetail: error.message };
+    }
+    throw error;
+  }
 }
 
 /**
@@ -409,6 +431,7 @@ interface DocOptions {
   priorRecords: number;
   checkCandidates: Found['candidates'];
   unread: UncheckedReason | null;
+  unreadDetail: string | null;
   /** Whether `eyes-on leaks` can measure this row, at the default window and
    *  history span the command runs with. */
   measurable: MergeClassification;
@@ -444,6 +467,9 @@ function recordedDoc(record: LedgerRecord, options: DocOptions): ToonObject {
     // a value it did not observe.
     github_read: options.unread === null,
     github_unread_reason: options.unread,
+    // gh's own words, when GitHub answered with an error. Null in every other
+    // state, including the two silences, which have no words of GitHub's.
+    github_unread_detail: options.unreadDetail,
     check_id: record.check_id,
     // Which of the four ways found the assessment. It cannot be re-derived
     // from the row afterwards, so it is on the row.
@@ -554,6 +580,11 @@ function helpLines(record: LedgerRecord, options: DocOptions): string[] {
   if (options.unread === 'no-repository') {
     lines.push('gh ran but named no GitHub repository for this clone; run `gh auth status` and `gh repo view` here to see what it reports');
   }
+  if (options.unread === 'gh-error') {
+    lines.push(
+      `GitHub answered gh with an error${options.unreadDetail === null ? '' : ` - ${options.unreadDetail}`}; the chain was reconstructed from the default-branch subject alone, and labelling this pull request again once GitHub answers records what both sources say`,
+    );
+  }
   if (record.unverified) {
     lines.push(`${unverifiedSentence()} The register row carries that flag, so the channel above is a floor rather than a measurement`);
   }
@@ -581,6 +612,7 @@ function unrecordableDoc(
   number: number,
   link: PullLink,
   mergeParents: number | null,
+  unreadDetail: string | null,
   found: Found,
   failure: UserFacingError,
 ): ToonObject {
@@ -608,6 +640,7 @@ function unrecordableDoc(
     merged_at: link.github?.merged_at ?? named?.committed ?? null,
     github_read: link.unread === null,
     github_unread_reason: link.unread,
+    github_unread_detail: unreadDetail,
     check_id: null,
     check_source: null,
     check_candidates: found.candidates as unknown as ToonValue,

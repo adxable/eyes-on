@@ -55,6 +55,7 @@ interface LabelDoc {
   merged_at: number | null;
   github_read: boolean;
   github_unread_reason: string | null;
+  github_unread_detail?: string | null;
   check_id: string | null;
   check_source: string | null;
   score: number | null;
@@ -887,6 +888,75 @@ test('without gh the chain is still rebuilt from git, and the record says only o
   assert.equal(doc.merged_at, Number(repo.git(['show', '-s', '--format=%ct', merge]).trim()));
   assert.notEqual(doc.merged_at, null);
   assert.ok(doc.help.some((line) => line.includes('Install the GitHub CLI')));
+});
+
+/**
+ * A backfill interrupted by a rate limit is an ordinary Monday.
+ *
+ * The register is meant to be buildable from either source alone, and git alone
+ * names the merge commit through the `(#N)` subject. A remote error from gh is
+ * a third state beside the two silences - nothing here needs installing and the
+ * same call may succeed later - so the row is recorded as `git-only` and says
+ * which of the three states it was recorded in.
+ */
+test('a gh error over a pull request git already placed records the row from git alone', async (t) => {
+  const { repo, merge, parent } = mergedRepo('label-gherror');
+  const env = sandboxEnv('label-gherror');
+  await initRepo(t, repo, env);
+  await captureCli(['check', '--base', parent, '--head', merge, '--format', 'json'], { cwd: repo.path, env });
+
+  // `headSHA: null` makes the stub answer the pull-request endpoint with a 404,
+  // which is what GitHub does for a number the token cannot read.
+  const gh = stubGh('label-gherror', { slug: SLUG, number: 7, headSHA: null, body: 'body\n' });
+  const result = await captureCli(['label', '--pr', '7', '--format', 'json'], {
+    cwd: repo.path,
+    env: { ...env, PATH: gh.path },
+  });
+  const doc = JSON.parse(result.out) as LabelDoc;
+
+  assert.equal(result.code, EXIT_OK, 'git named the commit, so there is a complete row to record');
+  assert.equal(doc.link, 'git-only');
+  assert.equal(doc.merge_sha, merge);
+  assert.equal(doc.github_read, false);
+  assert.equal(doc.github_unread_reason, 'gh-error', 'a remote error is neither of the two silences');
+  assert.ok(doc.github_unread_detail, 'gh said something, and the reader gets its words');
+  assert.match(doc.link_sentence, /GitHub answered with an error/);
+  assert.ok(
+    !doc.help.some((line) => line.includes('Install the GitHub CLI')),
+    `nothing here is fixed by installing anything: ${JSON.stringify(doc.help)}`,
+  );
+  assert.ok(doc.help.some((line) => line.includes('GitHub answered gh with an error')));
+
+  const records = ledgerLines(env);
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.merge_sha, merge);
+  assert.equal(records[0]?.link.agreement, 'git-only');
+});
+
+/**
+ * The other half of the same rule: with nothing from either source there is
+ * nothing to record, and the likeliest cause is a `--pr` that names no pull
+ * request - where refusing with gh's own words is the right answer.
+ */
+test('a gh error over a pull request git never placed still refuses', async (t) => {
+  const repo = tempRepo('label-gherror-nogit');
+  const base = repo.commitFiles('chore: set up', { 'src/a.ts': 'export const a = 1;\n' });
+  const head = repo.commitFiles('feat(widget): add the widget', { 'src/widget.ts': 'export const w = 1;\n' });
+
+  const env = sandboxEnv('label-gherror-nogit');
+  await initRepo(t, repo, env);
+  await captureCli(['check', '--base', base, '--head', head, '--format', 'json'], { cwd: repo.path, env });
+
+  const gh = stubGh('label-gherror-nogit', { slug: SLUG, number: 7, headSHA: null, body: 'body\n' });
+  const result = await captureCli(['label', '--pr', '7', '--format', 'json'], {
+    cwd: repo.path,
+    env: { ...env, PATH: gh.path },
+  });
+
+  assert.notEqual(result.code, EXIT_OK, 'no source named a commit, so there is nothing to record');
+  const failure = JSON.parse(result.out) as { error: string };
+  assert.match(failure.error, /gh could not read/, 'the refusal carries gh\'s own words');
+  assert.equal(existsSync(join(env.EYES_HOME as string, 'ledger.jsonl')), false);
 });
 
 test('a --check-id from another repository is not this repository\'s assessment', async (t) => {
