@@ -245,7 +245,9 @@ function hitsFor(db: NonNullable<ReturnType<typeof riskContext>['db']>, id: stri
 function parsePr(args: ParsedArgs): number {
   const raw = flagString(args, 'pr');
   const number = flagCount(args, 'pr');
-  if (number === null) {
+  // A pull request number is a contract rather than a preference, so a value
+  // out of range is refused here rather than clamped into one.
+  if (number === null || number <= 0) {
     throw new UserFacingError(
       raw === null ? 'comment needs --pr <n>' : `--pr ${raw} is not a pull request number`,
       ['Pass the pull request number, for example `eyes-on comment --pr 42`'],

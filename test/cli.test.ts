@@ -111,6 +111,53 @@ test('an unimplemented command names the stage that owns it and exits 1', async 
   }
 });
 
+/**
+ * One rule for a numeric flag, applied to every one of them.
+ *
+ * `--n abc` was a usage error while `--n 42abc` was read as 42 and clamped,
+ * so two spellings of the same mistake got two different answers and the
+ * payload reported a number nobody asked for. Out of range is a separate
+ * question and the two kinds answer it differently on purpose: `--pr` is a
+ * contract and refuses, `--n` and `--lines` are preferences and clamp.
+ */
+test('a numeric flag is read whole, and out of range is clamped only where the flag is a preference', async () => {
+  const repo = tempRepo('cli-flags');
+  const env = sandbox();
+  await cli(['init'], { cwd: repo.path, env });
+  try {
+    for (const argv of [
+      ['spotlight', '--n', 'abc'],
+      ['spotlight', '--n', '42abc'],
+      ['spotlight', '--n', '1e9'],
+    ]) {
+      const result = await cli([...argv, '--format', 'json'], { cwd: repo.path, env });
+      assert.equal(result.code, EXIT_USAGE, `${argv.join(' ')} is the same mistake as the others`);
+      assert.match(result.out, /is not a number/);
+    }
+    for (const argv of [
+      ['axi', 'logs', '--lines', 'abc'],
+      ['axi', 'logs', '--lines', '1e9'],
+    ]) {
+      const result = await cli(argv, { cwd: repo.path, env });
+      assert.equal(result.code, EXIT_USAGE, `${argv.join(' ')} was read as a number it does not spell`);
+      assert.match(result.out, /--lines .* is not a number/);
+    }
+
+    // And a number outside the range is still clamped, because how many
+    // fragments to name and how much tail to print are preferences.
+    const many = JSON.parse(
+      (await cli(['spotlight', '--n', '99', '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
+    ) as { asked_for: number };
+    assert.equal(many.asked_for, 5, "the report's range is three to five, and --n is brought into it");
+    const tail = JSON.parse((await cli(['axi', 'logs', '--lines', '5000', '--format', 'json'], { cwd: repo.path, env })).out) as {
+      lines: number;
+    };
+    assert.equal(tail.lines, 1000);
+  } finally {
+    await cli(['daemon', 'stop'], { cwd: repo.path, env });
+  }
+});
+
 test('an unknown --format is a usage error', async () => {
   const result = await cli(['status', '--format', 'xml'], { env: sandbox() });
   assert.equal(result.code, EXIT_USAGE);

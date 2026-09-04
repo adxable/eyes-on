@@ -55,7 +55,7 @@ leaves a healthy install alone. `eyes-on init --watch` additionally installs a
 | `eyes-on rules --check [--strict] [--base <ref>] [--head <ref>] [--default-branch <ref>]` | The hard rules alone, read from the default branch |
 | `eyes-on export-path-instructions [--min-risk <0-100>] [--default-branch <ref>]` | A `review.path_instructions` block for `.no-mistakes.yaml` |
 | `eyes-on backtest --split <date>[,<date>...] [--horizon <days>] [--default-branch <ref>]` | Whether the signal knew anything, on this repository's own history |
-| `eyes-on axi {status\|check\|logs [--lines <n>]\|respond --action read\|waive --reason "..." [--check-id <id>] [--by <name>]} [--base <ref>] [--head <ref>] [--default-branch <ref>]` | The agent surface, including the `must_read` gate |
+| `eyes-on axi {status\|check\|logs [--lines <n>]\|respond --action read\|waive --reason "..." [--check-id <id>] [--by <name>]\|abort} [--base <ref>] [--head <ref>] [--default-branch <ref>]` | The agent surface, including the `must_read` gate. `abort` answers that there is no in-flight run to stop |
 
 `label`, `leaks` and `calibrate` arrive in stage 3. `eyes-on help` prints the
 full surface with the stage that owns each one.

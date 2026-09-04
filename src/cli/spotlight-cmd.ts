@@ -1,6 +1,6 @@
 import type { Context } from './context.js';
 import { assertMayMutate } from './context.js';
-import { flagBool, flagString } from './args.js';
+import { flagBool, flagCount, flagString } from './args.js';
 import { emitDoc, progress, EXIT_OK, EXIT_USAGE, UserFacingError } from './output.js';
 import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
@@ -54,11 +54,16 @@ export async function spotlightCommand(context: Context): Promise<number> {
   assertMayMutate(context, 'spotlight');
 
   const risk = riskContext(context);
+  // One rule for the flag: the whole token has to be a number, and a number
+  // outside the report's three-to-five range is clamped rather than refused,
+  // because `--n` is a preference. `--n abc` and `--n 42abc` are the same
+  // mistake and now get the same answer.
   const requested = flagString(context.args, 'n');
-  const n = clampN(requested === null ? 5 : Number.parseInt(requested, 10));
-  if (requested !== null && !Number.isFinite(Number.parseInt(requested, 10))) {
+  const asked = flagCount(context.args, 'n');
+  if (requested !== null && asked === null) {
     throw new UserFacingError(`--n ${requested} is not a number`, ['Pass --n 3, 4 or 5'], EXIT_USAGE);
   }
+  const n = clampN(asked ?? 5);
   const noModel = flagBool(context.args, 'no-model');
 
   if (risk.baseSHA === risk.headSHA) {

@@ -1,7 +1,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import type { Context } from './context.js';
-import { flagString } from './args.js';
-import { emitDoc, EXIT_OK } from './output.js';
+import { flagCount, flagString } from './args.js';
+import { emitDoc, EXIT_OK, EXIT_USAGE, UserFacingError } from './output.js';
 import type { ToonObject, ToonValue } from './toon.js';
 
 /**
@@ -20,8 +20,15 @@ import type { ToonObject, ToonValue } from './toon.js';
 export const DEFAULT_LOG_LINES = 40;
 
 export function logsCommand(context: Context): number {
-  const requested = Number.parseInt(flagString(context.args, 'lines') ?? '', 10);
-  const lines = Number.isFinite(requested) && requested > 0 ? Math.min(1000, requested) : DEFAULT_LOG_LINES;
+  // Same rule as `--n`: the whole token or nothing, and a number out of range
+  // is clamped because how much tail to print is a preference. `--lines 1e9`
+  // used to be read as 1 and return a single line.
+  const raw = flagString(context.args, 'lines');
+  const asked = flagCount(context.args, 'lines');
+  if (raw !== null && asked === null) {
+    throw new UserFacingError(`--lines ${raw} is not a number`, ['Pass a whole number of lines, for example `--lines 100`'], EXIT_USAGE);
+  }
+  const lines = asked !== null && asked > 0 ? Math.min(1000, asked) : DEFAULT_LOG_LINES;
 
   const doc: ToonObject = {
     root: context.paths.root,

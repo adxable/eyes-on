@@ -66,9 +66,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'axi',
     usage:
-      'eyes-on axi {status|check|logs [--lines <n>]|respond --action read|waive --reason "..." [--check-id <id>] [--by <name>]} [--base <ref>] [--head <ref>] [--default-branch <ref>]',
+      'eyes-on axi {status|check|logs [--lines <n>]|respond --action read|waive --reason "..." [--check-id <id>] [--by <name>]|abort} [--base <ref>] [--head <ref>] [--default-branch <ref>]',
     summary:
-      'Agent surface: TOON on stdout, progress on stderr, exit 0 success, 1 error, 2 usage error. `respond` answers a run parked by a hard rule and records who decided what, and why.',
+      'Agent surface: TOON on stdout, progress on stderr, exit 0 success, 1 error, 2 usage error. `respond` answers a run parked by a hard rule and records who decided what, and why. `abort` is answered rather than implemented: eyes-on has no in-flight run to stop, and it says so.',
     stage: 0,
     mutating: false,
     implemented: true,

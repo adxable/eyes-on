@@ -350,4 +350,12 @@ test('abort says what eyes-on actually has, rather than promising a later stage'
   assert.equal(result.code, EXIT_USAGE);
   assert.match(result.out, /no in-flight run to abort/);
   assert.match(result.out, /axi respond --action read/);
+  assert.doesNotMatch(result.out, /unknown axi subcommand/);
+
+  // And the command is on the surface it answers from. An agent working from
+  // the scope report's Appendix C.1 asks for `abort`, and a refusal with a
+  // reason is only better than a stub if the surface admits the command
+  // exists - `help` and the generated skill are built from the same registry.
+  const usage = await captureCli(['axi', '--help'], { cwd: repo.path, env });
+  assert.match(usage.out, /\babort\b/, 'the axi usage string omits a subcommand the dispatcher answers');
 });

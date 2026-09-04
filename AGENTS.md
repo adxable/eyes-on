@@ -141,9 +141,15 @@ consulted.
   invocations stop matching `implementedCommands()` - four review rounds found a
   flag in the registry and not in README. After changing a command, run
   `npm run genskill` and update that table.
-- **Unimplemented commands must stay honest.** A stage 2+ command exits 1 naming
-  its stage. Never make one return an empty-but-plausible result: an agent would
-  report "no risk found" for a change nobody assessed.
+- **A command nobody built and a command that is answered are different, and
+  both must stay honest.** An *unimplemented* stage 2+ command exits 1 naming
+  its stage, and must never return an empty-but-plausible result: an agent would
+  report "no risk found" for a change nobody assessed. `axi abort` is the other
+  case - it is answered, not missing: eyes-on has no in-flight run to abort,
+  because a check is synchronous and a parked gate is released by answering it,
+  so it exits 2 saying that and stays on the command surface for an agent
+  following the report's Appendix C.1. Do not turn that true answer back into a
+  stub promising a stage that has already shipped.
 - **The scoring constants are the report's, not tuning knobs.** Weights,
   saturation constants and the two thresholds live in `src/risk/repoconfig.ts`
   and come from scope report section 5. Changing one is a decision argued from
@@ -174,7 +180,7 @@ consulted.
 - **A repository picks an agent by name; eyes-on owns the argv.** `.eyes-on.yml`
   comes from the default branch like every other trusted field, which is the
   right trust level for deciding which paths need a reviewer and not a reason to
-  let it choose what runs. Narrowing that one dimension at a time failed twice -
+  let it choose what runs. Narrowing that one dimension at a time failed three times -
   the program's path, then its name, then its flags - so the choice is closed
   rather than filtered: `model.agent` names one entry of `AGENT_ARGV`
   (`src/spot/agent.ts`) and eyes-on holds the whole vector. `AGENT_ARGV` carries
@@ -186,7 +192,7 @@ consulted.
   so the check and the spawn cannot look at two different files.
   `test/spotlight.test.ts` asserts the argv the stub was actually invoked with.
 - **The agent starts in `Paths.agentDir`, never in the clone.** The working
-  directory is the same vector as the argv in a third disguise: a coding agent
+  directory is the same vector as the argv in a fourth disguise: a coding agent
   reads the settings and instruction files of the directory it starts in, so a
   branch adding `.claude/settings.json` and a `CLAUDE.md` would be configuring
   the process eyes-on spawns over that same branch's diff. `modelOptionsFor`
