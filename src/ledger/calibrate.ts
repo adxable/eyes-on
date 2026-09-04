@@ -197,11 +197,15 @@ export function calibrate(options: CalibrateOptions): CalibrateReport {
     // not exist. The population beside it is what tells an empty register from
     // a full one whose rows are not measurable yet - the ordinary first state
     // of this product, which `leaks` and this command must describe alike.
+    // `projected`: a band nothing is in today is where a moved threshold could
+    // put merges, so its size is part of the answer here even though `leaks`
+    // is right to leave it out of the question it asks.
     sample: sampleVerdict(
       population.length === 0
         ? []
         : currentRow.channels.map((channel): ChannelSize => ({ band: channel.band, merges: channel.merges })),
       populationState(options, population.length, unscored, otherScales),
+      'projected',
     ),
   };
 }

@@ -7,6 +7,17 @@
  * commands say it and a caveat that is written twice is a caveat that stops
  * agreeing with itself.
  *
+ * The two commands do not ask the same question of one register, so the one
+ * place takes the question as an argument rather than assuming it. `leaks`
+ * measures what happened, and a band nothing was ever in is not a measurement
+ * of that band, so its channels are the ones the denominator has merges in.
+ * `calibrate` moves thresholds and can move merges into a band that is empty
+ * today, so an empty band is a real destination whose size matters and all
+ * three are passed. Two different headers over one register are then not a
+ * contradiction but two answers, and each names its own population in words so
+ * a reader can see why they differ without reading this file. Numbers are not
+ * forced to agree; what is measured is said precisely.
+ *
  * The number is not a convention. The reference measurement is 55 merges at a
  * 28% base leak rate: separating two channels whose rates differ by anything a
  * threshold could be moved for takes on the order of a hundred merges in each
@@ -27,6 +38,29 @@ export const MIN_MERGES_PER_CHANNEL = 100;
  *  so the sentence can name what it was derived against rather than assert a
  *  number. */
 export const REFERENCE_BASE_RATE_PERCENT = 28;
+
+/**
+ * Which population the header is about.
+ *
+ * `measured` is the set of channels the register has merges in - what happened.
+ * `projected` is the set a pair of thresholds produces - where merges could go.
+ */
+export type SampleQuestion = 'measured' | 'projected';
+
+/** How each question names its own population, in the three grammatical shapes
+ *  the sentences need. */
+const POPULATION: Record<SampleQuestion, { of: string; every: string; group: string }> = {
+  measured: {
+    of: 'the channels this register has merges in',
+    every: 'Every channel this register has merges in',
+    group: 'the denominator',
+  },
+  projected: {
+    of: 'the channels these thresholds would produce',
+    every: 'Every channel these thresholds would produce',
+    group: 'this sweep',
+  },
+};
 
 export interface ChannelSize {
   /** The channel, as the band names it. */
@@ -62,27 +96,37 @@ export interface SampleVerdict {
  *
  * Two commands print this sentence, so it names no command that one of them
  * *is*: pointing a `leaks` reader at `eyes-on leaks` is the same defect wearing
- * the other branch's clothes.
+ * the other branch's clothes. For the same reason it names which population it
+ * is about: the two commands hand different channel sets in on purpose, and a
+ * header that did not say which would read as one of them being wrong.
  */
-export function sampleVerdict(channels: readonly ChannelSize[], population: PopulationState): SampleVerdict {
+export function sampleVerdict(
+  channels: readonly ChannelSize[],
+  population: PopulationState,
+  question: SampleQuestion,
+): SampleVerdict {
   const short = channels
     .filter((channel) => channel.merges < MIN_MERGES_PER_CHANNEL)
     .sort((a, b) => a.merges - b.merges || a.band.localeCompare(b.band));
   const smallest = [...channels].sort((a, b) => a.merges - b.merges || a.band.localeCompare(b.band))[0] ?? null;
 
+  const words = POPULATION[question];
   if (channels.length === 0) {
-    return { decisive: false, short, smallest, sentence: emptySentence(population) };
+    return { decisive: false, short, smallest, sentence: emptySentence(population, words.group) };
   }
   if (short.length === 0) {
     return {
       decisive: true,
       short,
       smallest,
-      sentence: `Every channel carries at least ${MIN_MERGES_PER_CHANNEL} merges, which is the size at which two of them can be told apart rather than merely ranked.`,
+      sentence: `${words.every} carries at least ${MIN_MERGES_PER_CHANNEL} merges, which is the size at which two of them can be told apart rather than merely ranked.`,
     };
   }
   const named = short.map((channel) => `\`${channel.band}\` ${channel.merges}`).join(', ');
-  const of = channels.length === 1 ? '1 of 1 channel carries' : `${short.length} of ${channels.length} channels carry`;
+  const of =
+    channels.length === 1
+      ? `Of ${words.of}, 1 of 1 carries`
+      : `Of ${words.of}, ${short.length} of ${channels.length} carry`;
   return {
     decisive: false,
     short,
@@ -97,7 +141,7 @@ export function sampleVerdict(channels: readonly ChannelSize[], population: Popu
 
 /** The header when no channel has a merge to compare, which is two states and
  *  not one. */
-function emptySentence(population: PopulationState): string {
+function emptySentence(population: PopulationState, group: string): string {
   if (population.registered === 0) {
     return 'No channel has a merge in the register yet, so there is nothing to compare: run `eyes-on label --pr <n>` after each merge.';
   }
@@ -105,7 +149,7 @@ function emptySentence(population: PopulationState): string {
   const waiting = population.excluded.filter((entry) => !entry.permanent).reduce((sum, entry) => sum + entry.merges, 0);
   return (
     `**Nothing here is measurable yet.** The register holds ${population.registered} merge${population.registered === 1 ? '' : 's'} ` +
-    `for this repository and none of them is in the denominator${named.length === 0 ? '' : ` (${named})`}, so there is nothing to ` +
+    `for this repository and none of them is in ${group}${named.length === 0 ? '' : ` (${named})`}, so there is nothing to ` +
     'compare. ' +
     (waiting > 0
       ? `${waiting} of them ${waiting === 1 ? 'joins' : 'join'} the table once ${waiting === 1 ? 'its' : 'their'} window has passed; labelling more merges is still the way the count gets to ${MIN_MERGES_PER_CHANNEL}.`

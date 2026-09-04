@@ -8,6 +8,7 @@ import { readLedger, recordsFor } from '../ledger/ledger.js';
 import { measureLeaks, type LeaksReport } from '../ledger/leaks.js';
 import {
   exclusionHelpLines,
+  exclusionOutlook,
   EXCLUSION_KINDS,
   DEFAULT_SINCE_SECONDS,
   DEFAULT_WINDOW_SECONDS,
@@ -218,7 +219,7 @@ function helpLines(report: LeaksReport, options: DocOptions): string[] {
   const uncovered = report.coverage.merged_on_branch - report.coverage.registered;
   if (uncovered > 0) {
     lines.push(
-      `${uncovered} of the ${report.coverage.merged_on_branch} pull requests the branch landed in this window are not in the register, so these rates describe the ${report.coverage.registered} that are`,
+      `${uncovered} of the ${report.coverage.merged_on_branch} pull requests the branch landed in this window are not in the register; the rates above are over the ${report.merges} merge${report.merges === 1 ? '' : 's'} in the denominator, which the lines below narrow further`,
     );
   }
   // A branch whose subjects carry no trailing `(#N)` - one that merges with
@@ -282,9 +283,13 @@ function renderMarkdown(report: LeaksReport, doc: ToonObject): string {
   if (report.excluded.length > 0) {
     lines.push('', '## Registered merges outside the denominator, and why', '');
     for (const entry of report.excluded) {
-      const kind = EXCLUSION_KINDS[entry.reason];
+      // The reason's own outlook, like every other surface. Writing the promise
+      // here from the `permanent` flag is the construct three rounds removed
+      // everywhere else, and it showed: it named no window while the help line
+      // below it did.
       lines.push(
-        `- #${entry.pr}${entry.merge_sha ? ` (\`${entry.merge_sha.slice(0, 12)}\`)` : ''}: ${entry.reason}${kind.permanent ? '' : ' (returns once its window has passed)'}`,
+        `- #${entry.pr}${entry.merge_sha ? ` (\`${entry.merge_sha.slice(0, 12)}\`)` : ''}: ${entry.reason}. ` +
+          exclusionOutlook(entry.reason, { plural: false, windowLabel: String(doc.window) }),
       );
     }
   }

@@ -292,7 +292,14 @@ export function measureLeaks(options: LeakOptions): LeaksReport {
     blames_cached: szz.cached,
     blames_computed: szz.computed,
     population,
-    sample: sampleVerdict(channels.map((row): ChannelSize => ({ band: row.band, merges: row.merges })), population),
+    // `measured`: these channels are the ones the denominator has merges in, and
+    // a band nothing was ever in is not a measurement of that band. `calibrate`
+    // asks the other question of the same register, and the sentence says which.
+    sample: sampleVerdict(
+      channels.map((row): ChannelSize => ({ band: row.band, merges: row.merges })),
+      population,
+      'measured',
+    ),
   };
 }
 

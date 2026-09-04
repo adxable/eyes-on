@@ -735,6 +735,7 @@ test('acceptance: below a hundred merges in a channel the header says the number
       { band: 'wskazane', merges: 12 },
     ],
     measured,
+    'measured',
   );
   assert.equal(short.decisive, false);
   assert.match(short.sentence, /directional, not decisive/);
@@ -748,21 +749,25 @@ test('acceptance: below a hundred merges in a channel the header says the number
       { band: 'wskazane', merges: 100 },
     ],
     { registered: 240, measurable: 240, excluded: [] },
+    'measured',
   );
   assert.equal(enough.decisive, true);
   assert.ok(!enough.sentence.includes('directional'));
 
   // An empty channel is short rather than clean: a rate over no denominator is
   // not a small number, it is no number.
-  const empty = sampleVerdict([{ band: 'auto', merges: 200 }, { band: 'pelna', merges: 0 }], {
-    registered: 200,
-    measurable: 200,
-    excluded: [],
-  });
+  const empty = sampleVerdict(
+    [
+      { band: 'auto', merges: 200 },
+      { band: 'pelna', merges: 0 },
+    ],
+    { registered: 200, measurable: 200, excluded: [] },
+    'projected',
+  );
   assert.equal(empty.decisive, false);
   assert.equal(empty.smallest?.band, 'pelna');
 
-  const nothing = sampleVerdict([], { registered: 0, measurable: 0, excluded: [] });
+  const nothing = sampleVerdict([], { registered: 0, measurable: 0, excluded: [] }, 'measured');
   assert.equal(nothing.decisive, false);
   assert.match(nothing.sentence, /eyes-on label --pr <n>/);
 });
@@ -818,6 +823,126 @@ test('an absent register is said to be absent, and a line this build cannot read
   const skipped = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env })).out) as LeaksDoc;
   assert.equal(skipped.ledger_lines_skipped, 2, 'an append-only register survives a line a later version wrote');
   assert.equal(skipped.exit_code, EXIT_OK);
+});
+
+
+/**
+ * Two commands, one register, two questions - and each header says which.
+ *
+ * `leaks` measures what happened, so a band nothing was ever in is not a
+ * measurement of that band. `calibrate` moves thresholds and can move merges
+ * into a band that is empty today, so that band's size is part of its answer.
+ * Forcing the two headers to agree would make one of them wrong; naming the
+ * population in each makes them two answers instead of a contradiction.
+ */
+test('the honesty header names the population it is about, so the two commands do not read as contradicting each other', async (t) => {
+  const { repo, widget, gadget, at } = leakyRepo('sample-question');
+  const env = sandboxEnv('sample-question');
+  await initRepo(t, repo, env);
+  // Every registered merge is `auto`, so the register has one channel and the
+  // thresholds in force produce three.
+  writeLedger(repo, env, (repoId) => [
+    record({ repo: repoId, pr: 7, merge_sha: widget, score: 20, band: 'auto', merged_at: at(40) }),
+    record({ repo: repoId, pr: 8, merge_sha: gadget, score: 20, band: 'auto', merged_at: at(39) }),
+  ]);
+
+  const leaks = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env })).out) as LeaksDoc;
+  const sweep = JSON.parse(
+    (await captureCli(['calibrate', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as CalibrateDoc;
+
+  assert.match(leaks.sample_sentence, /the channels this register has merges in/);
+  assert.ok(
+    !leaks.sample_sentence.includes('`pelna` 0'),
+    `leaks measures what happened, so it names no band nothing was in: ${leaks.sample_sentence}`,
+  );
+
+  assert.match(sweep.sample_sentence, /the channels these thresholds would produce/);
+  assert.match(sweep.sample_sentence, /`pelna` 0/, 'a band a moved threshold could fill is part of the sweep\'s answer');
+
+  assert.notEqual(
+    leaks.sample_sentence,
+    sweep.sample_sentence,
+    'the two answers differ, and each says which question it answered',
+  );
+});
+
+/**
+ * A label pointing at a number that is not the denominator is a number nobody
+ * can use.
+ *
+ * The rates in the table are divided by the leak denominator; the coverage
+ * counts are about which pull requests the branch landed. Both are worth
+ * printing and neither is the other.
+ */
+test('the coverage line names the denominator the rates were divided by, not the coverage count', async (t) => {
+  const { repo, widget, gadget, at } = leakyRepo('leaks-coverage-label');
+  const env = sandboxEnv('leaks-coverage-label');
+  await initRepo(t, repo, env);
+  // The branch landed #7 and #8; the register holds both, but #8 landed
+  // yesterday, so the denominator is one merge and coverage is two.
+  writeLedger(repo, env, (repoId) => [
+    record({ repo: repoId, pr: 7, merge_sha: widget, band: 'auto', merged_at: at(40) }),
+    record({ repo: repoId, pr: 8, merge_sha: gadget, band: 'auto', merged_at: at(1) }),
+  ]);
+
+  const doc = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env })).out) as LeaksDoc;
+  assert.equal(doc.merges, 1);
+  assert.equal(doc.registered, 2);
+  assert.ok(
+    !doc.help.some((line) => line.includes('these rates describe')),
+    `nothing may label the coverage count as the denominator: ${JSON.stringify(doc.help)}`,
+  );
+
+  // With one pull request uncovered the line prints, and the number it names as
+  // the denominator is the one the rates were divided by.
+  const partial = sandboxEnv('leaks-coverage-label-partial');
+  await initRepo(t, repo, partial);
+  writeLedger(repo, partial, (repoId) => [
+    record({ repo: repoId, pr: 7, merge_sha: widget, band: 'auto', merged_at: at(40) }),
+  ]);
+  const gap = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env: partial })).out) as LeaksDoc;
+  const line = gap.help.find((entry) => entry.includes('are not in the register'));
+  assert.ok(line, `a register missing a merge still says so: ${JSON.stringify(gap.help)}`);
+  assert.match(line, new RegExp(`the rates above are over the ${gap.merges} merge`));
+});
+
+/**
+ * The Markdown list of excluded merges renders the reason's own outlook, like
+ * every other surface. Writing the promise beside the flag is the construct
+ * that let one report state the same fact at two levels of precision.
+ */
+test('each excluded merge in the Markdown carries the remedy its reason declares', async (t) => {
+  const repo = tempRepo('leaks-md-outlook');
+  const clock = fixtureClock();
+  repo.commitFiles('chore: set up', { 'src/a.ts': 'export const a = 1;\n' }, clock.iso(60));
+  repo.git(['checkout', '-q', '-b', 'side']);
+  repo.commitFiles('feat: the widget', { 'src/widget.ts': 'export const w = 1;\n' }, clock.iso(50));
+  repo.git(['checkout', '-q', 'main']);
+  repo.git(['merge', '--no-ff', '-q', '-m', 'feat: land the widget (#9)', 'side']);
+  const merge = repo.git(['rev-parse', 'HEAD']).trim();
+  const landed = repo.commitFiles(
+    'feat(gadget): add the gadget (#10)',
+    { 'src/gadget.ts': 'export const g = 1;\n' },
+    clock.iso(30),
+  );
+
+  const env = sandboxEnv('leaks-md-outlook');
+  await initRepo(t, repo, env);
+  writeLedger(repo, env, (repoId) => [
+    record({ repo: repoId, pr: 9, merge_sha: merge, merge_parents: 2, band: 'auto', merged_at: clock.at(30) }),
+    record({ repo: repoId, pr: 10, merge_sha: landed, band: 'auto', merged_at: clock.at(1) }),
+  ]);
+
+  const markdown = (await captureCli(['leaks', '--format', 'md'], { cwd: repo.path, env })).out;
+  const excluded = markdown.slice(markdown.indexOf('## Registered merges outside the denominator'));
+
+  assert.match(excluded, /#9.*Nothing clears this one/s, 'the permanent reason names what it is a property of');
+  assert.match(
+    excluded,
+    /#10.*takes it back once 14d has passed/s,
+    'and the one time undoes names the window it waits for, as the help line does',
+  );
 });
 
 /* ------------------------------------------------------------------ *
