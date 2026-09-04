@@ -238,12 +238,14 @@ and eyes-on does not sandbox it. What eyes-on controls is what it hands that
 process: a working directory under its own state root, one prompt on stdin, and
 nothing that points at your clone.
 
-The pull-request prohibition is enforced rather than intended: every `gh`
-invocation passes an allow-list of two comment endpoints before a process is
-spawned, and the endpoint that would edit a pull request body differs from the
-comment update eyes-on is allowed to make by a single path segment. The body
-belongs to no-mistakes, which regenerates it on every update; eyes-on writes one
-comment, finds it again by its marker, and edits that.
+The pull-request prohibition is enforced rather than intended: no caller
+anywhere writes a `gh` argument vector. A caller names one of six operations and
+eyes-on holds the six vectors literally - four read, two write, and both writes
+are issue comments. The endpoint that would edit a pull request body differs
+from the comment update by a single path segment and has no operation, so no
+vector for it can be built. The body belongs to no-mistakes, which regenerates
+it on every update; eyes-on writes one comment, finds it again by its marker,
+and edits that.
 
 Called from inside a no-mistakes pipeline run, eyes-on refuses to record
 anything and says so. Read-only commands keep working there.
