@@ -37,11 +37,17 @@ import {
  * where a vector carrying `--input` and no `--method` is sent as a POST. Each
  * fix was correct and the next round found another. A defence that must model
  * another program's parser is only as good as the model; a defence that emits
- * six fixed vectors has nothing to model.
+ * six fixed vectors has nothing to model. That is why the set is closed rather
+ * than filtered - the same move `model.agent` makes for the coding agent, where
+ * narrowing one dimension at a time did not hold either.
  *
  * `doctor`'s credential probe is here rather than in `doctor` so that "every gh
  * invocation eyes-on makes comes from this table" has no exception: a rule with
  * one is enforced by memory rather than by shape.
+ *
+ * This is the one place that reasoning is written out. AGENTS.md states the
+ * invariant and `docs/stage-2-acceptance.md` records the evidence for it; the
+ * comments below say what their own construct is and point back here.
  */
 
 const OWNER = String.raw`[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?`;
@@ -55,18 +61,8 @@ const COMMENT_PATH = new RegExp(`^repos/${OWNER}/${REPO}/issues/comments/\\d+$`)
 /**
  * Everything eyes-on can ask gh to do. There is no seventh.
  *
- * A caller names an operation; this module owns the argument vector. That is
- * the same move `model.agent` makes for the coding agent, and it is here for
- * the same reason it was needed there: narrowing one dimension at a time did
- * not hold. Review rounds found an argument vector being read as something
- * other than what gh would do with it - the attached shorthand `-XPATCH`
- * parsed as a GET, then `gh api`'s implicit method, which turns a vector
- * carrying `--input` into a POST with no `--method` in sight.
- *
- * A defence that has to reproduce another program's argument semantics is only
- * ever as good as that reproduction. So the semantics are removed instead: the
- * writing vectors are the two comment endpoints because those are the only
- * vectors that exist, and there is nothing left to infer.
+ * A caller names an operation and never an argument vector; the header above
+ * says why the set is closed rather than filtered.
  */
 export type GhOperation =
   /** `<owner>/<repo>` for the clone this runs in. */
@@ -95,12 +91,8 @@ type Slot = string | RegExp;
  * token compares as a string, an interpolated one against an anchored pattern -
  * so no question of "is this token a flag, and what does gh do with it" arises.
  * A vector with an extra token, a missing one, or a token in the wrong place is
- * not one of these and is refused.
- *
- * Note what is absent and looks as if it might be here: `PATCH
- * repos/<owner>/<repo>/issues/<n>` is the endpoint that edits a pull request's
- * body, and it differs from the permitted comment update by one path segment.
- * It has no entry, so it cannot be built.
+ * not one of these and is refused. Which endpoints are deliberately absent from
+ * this table, and why, is in the header above.
  */
 const EMITTED_VECTORS: readonly (readonly Slot[])[] = [
   ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'],
