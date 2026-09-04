@@ -203,6 +203,37 @@ node docs/stage-3-register.mjs
 For every merged pull request it assesses the change *as it landed* - `check
 --base <parent> --head <merge> --no-model` - and then labels it.
 
+**The register below stands; the numbers derived from it do not.** This section
+was measured against the code as stage 3 first shipped, before review on this
+branch added `window has not elapsed` to the leak denominator's exclusion
+reasons (`EXCLUSION_KINDS`, `src/ledger/population.ts`). A merge that landed
+inside the last `--window` has had only part of the period the rest of the
+denominator was given, so it is now excluded and rejoins once its window passes.
+Which figures that leaves standing, and which it does not:
+
+- **Still holds - the register itself.** Re-verified against the shipped code
+  while this branch was under review: 153 lines, `auto` 30 / `wskazane` 58 /
+  `pelna` 65, scores 0 to 95 out of a maximum of 120, median 59, no `unverified`
+  row, no `band_from: hard rule`, nothing parked. Those are the numbers under
+  "The register that was built" below, unchanged.
+- **No longer holds - everything `leaks` and `calibrate` derive from it.** That
+  same re-run observed `eyes-on leaks --window 14d --since 90d` excluding 7
+  merges (#173-#179) and reporting 51 of 146 at a 79% read share, against the 53
+  of 153 at 80% recorded below; the `calibrate` frontier moves with the same
+  rows. Those two figures are quoted as that observation and are **not** a fresh
+  measured session. The tables below have deliberately not been re-derived:
+  only a run of `docs/stage-3-register.mjs` against the reference repository
+  produces them, and a document quoting numbers no measurement produced is the
+  defect this one already had once.
+- **Why.** The exclusion is correct, documented and under test - a denominator
+  holding changes that were never given the time to leak understates every rate
+  in it at once. The code is not wrong; the evidence below overstates the
+  denominator it was computed on.
+- **What settles it.** A re-measurement against the reference repository,
+  tracked as a separate task. Until it lands, read this section's rates and
+  frontier as evidence about the denominator named in them rather than as the
+  current numbers.
+
 **What this register is and is not.** The assessments are real: the score, the
 hard rules and the band are exactly what eyes-on says about those changes. What
 they are not is a record of decisions anybody made. Nobody stated an intent for
@@ -243,8 +274,10 @@ attributions over **53 distinct merges**.
 | `pelna` | 65 | 27 | **41%** | directional (< 100) |
 
 Overall 53 of 153, **35%** - near the 28% the hundred-merge threshold was
-reasoned from. Nothing was excluded from the denominator: all 153 merge commits
-are squash merges with one parent.
+reasoned from. No merge was excluded for a structural reason: all 153 merge
+commits are squash merges with one parent, so none of them is a merge blame can
+attribute nothing to. Seven are now excluded for the clock alone, which is the
+caveat at the top of this section.
 
 **The ordering is the right way round, and that is the whole of what it says.**
 The channel eyes-on would have let through unread leaks least often and the
@@ -304,7 +337,8 @@ is not a candidate, however the grid is ordered`, in `test/leaks.test.ts`.
 
 **One observation worth the captain's attention, stated as an observation.** At
 the report's default thresholds this repository sends **80% of its merges to a
-human**, because its median change scores 59 out of 120. That is the arithmetic
+human** - 79% on the denominator the shipped code now builds, per the caveat at
+the top of this section - because its median change scores 59 out of 120. That is the arithmetic
 working as specified rather than a defect - and it is also not what a threshold
 is usually set for. The evidence to move it is the register, and the register
 says nothing yet: every channel is under a hundred merges, and the pairs that

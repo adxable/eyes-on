@@ -309,9 +309,18 @@ consulted.
   permanent reasons carry a real remedy - label the pull request again, fetch
   the branch, widen `--since` - that a surface must not turn into "nothing can
   be done"; only the true merge commit is cleared by nothing. `sampleVerdict`
-  takes the population beside the channels for the same reason: a full register
-  none of whose rows has had its window yet is the ordinary first state of the
-  product, and it must not read as an empty one.
+  (`src/ledger/sample.ts`) takes the population beside the channels for the same
+  reason: a full register none of whose rows has had its window yet is the
+  ordinary first state of the product, and it must not read as an empty one. It
+  takes the *question* beside them because two commands ask different things of
+  one register: `leaks` measures what happened, so its channels are the ones the
+  denominator has merges in, while `calibrate` moves thresholds and can move
+  merges into a band that is empty today, so all three bands are a real
+  destination whose size matters. Two headers over one register are two answers,
+  each naming its own population in words, not a contradiction to unify - a
+  review round was lost to each module documenting the opposite rule with a
+  correct-sounding justification. Do not make the numbers agree; make each
+  sentence say which population it counted.
 - **The register is append-only and every reader takes the newest.**
   `appendRecord` writes one line; nothing rewrites one. Re-labelling is
   ordinary - a gate answered after the merge, a check re-run - and both lines
