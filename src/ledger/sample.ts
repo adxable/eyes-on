@@ -17,6 +17,8 @@
  * numbers are read rather than in a footnote.
  */
 
+import type { PopulationState } from './population.js';
+
 /** Merges in a channel below which its rate is directional rather than
  *  decisive. Report section 8, stage 3. */
 export const MIN_MERGES_PER_CHANNEL = 100;
@@ -49,21 +51,23 @@ export interface SampleVerdict {
  * A channel with no merges at all counts as short: a rate over an empty
  * denominator is not a small number, it is no number, and a header that stayed
  * silent about it would let a reader take an absent channel for a clean one.
+ *
+ * The population is passed beside the channels because an empty table has two
+ * causes and they need different sentences. "Nobody has labelled a merge" is
+ * answered by running `label`; "the register is full and none of it has had its
+ * window yet" is answered by waiting, and is what every new register looks like
+ * for a fortnight. Telling the second reader to run the command they have just
+ * run twenty times is a sentence stronger than the code, at the first moment
+ * they read one.
  */
-export function sampleVerdict(channels: readonly ChannelSize[]): SampleVerdict {
+export function sampleVerdict(channels: readonly ChannelSize[], population: PopulationState): SampleVerdict {
   const short = channels
     .filter((channel) => channel.merges < MIN_MERGES_PER_CHANNEL)
     .sort((a, b) => a.merges - b.merges || a.band.localeCompare(b.band));
   const smallest = [...channels].sort((a, b) => a.merges - b.merges || a.band.localeCompare(b.band))[0] ?? null;
 
   if (channels.length === 0) {
-    return {
-      decisive: false,
-      short,
-      smallest,
-      sentence:
-        'No channel has a merge in the register yet, so there is nothing to compare: run `eyes-on label --pr <n>` after each merge.',
-    };
+    return { decisive: false, short, smallest, sentence: emptySentence(population) };
   }
   if (short.length === 0) {
     return {
@@ -85,4 +89,22 @@ export function sampleVerdict(channels: readonly ChannelSize[]): SampleVerdict {
       `channels apart takes on the order of ${MIN_MERGES_PER_CHANNEL} merges in each of them, so read the table as a ` +
       'direction to keep measuring in and not as a result to move a threshold on.',
   };
+}
+
+/** The header when no channel has a merge to compare, which is two states and
+ *  not one. */
+function emptySentence(population: PopulationState): string {
+  if (population.registered === 0) {
+    return 'No channel has a merge in the register yet, so there is nothing to compare: run `eyes-on label --pr <n>` after each merge.';
+  }
+  const named = population.excluded.map((entry) => `${entry.merges} \`${entry.reason}\``).join(', ');
+  const waiting = population.excluded.filter((entry) => !entry.permanent).reduce((sum, entry) => sum + entry.merges, 0);
+  return (
+    `**Nothing here is measurable yet.** The register holds ${population.registered} merge${population.registered === 1 ? '' : 's'} ` +
+    `for this repository and none of them is in the denominator${named.length === 0 ? '' : ` (${named})`}, so there is nothing to ` +
+    'compare. ' +
+    (waiting > 0
+      ? `${waiting} of them ${waiting === 1 ? 'joins' : 'join'} the table once ${waiting === 1 ? 'its' : 'their'} window has passed; labelling more merges is still the way the count gets to ${MIN_MERGES_PER_CHANNEL}.`
+      : 'None of them returns by waiting - run `eyes-on leaks` for what each row is missing.')
+  );
 }

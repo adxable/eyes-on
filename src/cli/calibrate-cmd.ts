@@ -8,7 +8,7 @@ import { readLedger, recordsFor } from '../ledger/ledger.js';
 import { measureLeaks } from '../ledger/leaks.js';
 import { calibrate, type CalibrateReport, type GridRow } from '../ledger/calibrate.js';
 import { maxScore } from '../risk/signals.js';
-import { DEFAULT_SINCE_SECONDS, DEFAULT_WINDOW_SECONDS } from './leaks-cmd.js';
+import { DEFAULT_SINCE_SECONDS, DEFAULT_WINDOW_SECONDS } from '../ledger/population.js';
 
 /**
  * `eyes-on calibrate` - the threshold sweep over the register.

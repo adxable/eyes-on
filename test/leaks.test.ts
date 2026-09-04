@@ -43,7 +43,8 @@ interface LeaksDoc {
   leak_rate: number | null;
   channels: { band: string; merges: number; leaked: number; leak_rate: number | null; directional: boolean }[];
   leaks: { pr: number; band: string; merge: string; fix: string; days_after_merge: number; blamed_lines: number }[];
-  excluded: { pr: number; merge: string | null; reason: string }[];
+  excluded: { pr: number; merge: string | null; reason: string; permanent: boolean }[];
+  register_rows: number;
   unverified: number;
   parked: number;
   merged_on_branch: number;
@@ -292,7 +293,7 @@ test('a true merge commit is left out of the denominator rather than counted cle
 
   assert.equal(doc.merges, 0, 'a merge blame can never name is not a merge that stayed clean');
   assert.deepEqual(doc.excluded, [
-    { pr: 9, merge: merge.slice(0, 12), reason: 'merge commit introduces no line' },
+    { pr: 9, merge: merge.slice(0, 12), reason: 'merge commit introduces no line', permanent: true },
   ]);
   assert.ok(
     doc.help.some((line) => line.includes('blame never names a merge commit as introducing a line')),
@@ -365,7 +366,9 @@ test('a merge whose window has not elapsed leaves the denominator with the reaso
 
   const doc = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env })).out) as LeaksDoc;
   assert.equal(doc.merges, 1, 'a merge that has not had its window is under-observed, not clean');
-  assert.deepEqual(doc.excluded, [{ pr: 8, merge: gadget.slice(0, 12), reason: 'window has not elapsed' }]);
+  assert.deepEqual(doc.excluded, [
+    { pr: 8, merge: gadget.slice(0, 12), reason: 'window has not elapsed', permanent: false },
+  ]);
   assert.ok(
     doc.channels.every((channel) => channel.band !== 'wskazane'),
     'and it is in no channel row either, so no rate is computed over it',
@@ -476,7 +479,7 @@ test('a true merge commit is excluded even when the register row carries no pare
   const doc = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env })).out) as LeaksDoc;
   assert.equal(doc.merges, 0, 'blame can never name this commit, whichever source told eyes-on about it');
   assert.deepEqual(doc.excluded, [
-    { pr: 9, merge: merge.slice(0, 12), reason: 'merge commit introduces no line' },
+    { pr: 9, merge: merge.slice(0, 12), reason: 'merge commit introduces no line', permanent: true },
   ]);
 });
 
@@ -507,12 +510,104 @@ test('a merge that is both inside its window and structurally excluded is report
 
   const doc = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env })).out) as LeaksDoc;
   assert.deepEqual(doc.excluded, [
-    { pr: 9, merge: merge.slice(0, 12), reason: 'merge commit introduces no line' },
-    { pr: 10, merge: absent.slice(0, 12), reason: 'commit not in this repository' },
+    { pr: 9, merge: merge.slice(0, 12), reason: 'merge commit introduces no line', permanent: true },
+    { pr: 10, merge: absent.slice(0, 12), reason: 'commit not in this repository', permanent: true },
   ]);
+  assert.ok(
+    doc.help.every((line) => !line.includes('returns to the denominator') && !line.includes('they return to the denominator')),
+    `a permanent exclusion may not promise a return: ${JSON.stringify(doc.help)}`,
+  );
   assert.ok(
     !doc.help.some((line) => line.includes('not had the whole window')),
     `neither row comes back once the window passes, so nothing may promise it: ${JSON.stringify(doc.help)}`,
+  );
+});
+
+
+/**
+ * The ordinary first state of the product, not an edge of it.
+ *
+ * A team adopts eyes-on, labels its last twenty merges and runs `leaks` the
+ * same afternoon. Every row is inside the fourteen-day window, so the
+ * denominator is empty - and a header reading "no merge is in the register yet,
+ * run `label` after each merge" would be a false sentence at the first moment
+ * anybody reads one. The register is full; it is merely too young.
+ */
+test('a full register whose merges are all too young says so, and does not call itself empty', async (t) => {
+  const { repo, widget, gadget, at } = leakyRepo('leaks-young');
+  const env = sandboxEnv('leaks-young');
+  await initRepo(t, repo, env);
+  writeLedger(repo, env, (repoId) => [
+    record({ repo: repoId, pr: 7, merge_sha: widget, score: 20, band: 'auto', merged_at: at(1) }),
+    record({ repo: repoId, pr: 8, merge_sha: gadget, score: 90, band: 'pelna', merged_at: at(2) }),
+  ]);
+
+  const doc = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env })).out) as LeaksDoc;
+  assert.equal(doc.merges, 0);
+  assert.equal(doc.register_rows, 2, 'the payload carries what the register holds beside what is measurable');
+  assert.match(doc.sample_sentence, /Nothing here is measurable yet/);
+  assert.match(doc.sample_sentence, /holds 2 merges/);
+  assert.match(doc.sample_sentence, /window has passed/, 'these rows come back, and the sentence may say so');
+  assert.ok(
+    !doc.sample_sentence.includes('run `eyes-on label --pr <n>`'),
+    `the reader has just run label twenty times: ${doc.sample_sentence}`,
+  );
+
+  // The same register through the other surface says the same thing: the two
+  // commands read one helper, so neither can describe this state differently.
+  const sweep = JSON.parse(
+    (await captureCli(['calibrate', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as CalibrateDoc;
+  assert.equal(sweep.merges, 0);
+  assert.match(sweep.sample_sentence, /Nothing here is measurable yet/);
+  assert.ok(!sweep.sample_sentence.includes('run `eyes-on label --pr <n>`'));
+
+  // And a register nobody has written to still gets the sentence that names the
+  // command that fills it - the two states stay two.
+  const other = sandboxEnv('leaks-young-empty');
+  await initRepo(t, repo, other);
+  const blank = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env: other })).out) as LeaksDoc;
+  assert.equal(blank.register_rows, 0);
+  assert.match(blank.sample_sentence, /No channel has a merge in the register yet/);
+});
+
+/**
+ * Coverage compares pull requests with pull requests.
+ *
+ * `mergedPulls` keeps a number that landed twice twice and says the caller
+ * decides; the register has already been reduced to one row per pull request,
+ * so counting commits against rows invents a gap in a register that holds
+ * everything.
+ */
+test('a pull request landed twice is one pull request in the coverage ratio', async (t) => {
+  const clock = fixtureClock();
+  const repo = tempRepo('leaks-coverage-twice');
+  repo.commitFiles('chore: set up', { 'src/a.ts': 'export const a = 1;\n' }, clock.iso(60));
+  const widget = repo.commitFiles(
+    'feat(widget): add the widget (#7)',
+    { 'src/widget.ts': 'export const w = 1;\n' },
+    clock.iso(40),
+  );
+  // Reverted and re-landed under a subject that kept the suffix: two commits on
+  // the default branch, one pull request.
+  repo.commitFiles(
+    'fix(widget): re-land the widget (#7)',
+    { 'src/widget.ts': 'export const w = 2;\n' },
+    clock.iso(39),
+  );
+
+  const env = sandboxEnv('leaks-coverage-twice');
+  await initRepo(t, repo, env);
+  writeLedger(repo, env, (repoId) => [
+    record({ repo: repoId, pr: 7, merge_sha: widget, band: 'auto', merged_at: clock.at(40) }),
+  ]);
+
+  const doc = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env })).out) as LeaksDoc;
+  assert.equal(doc.merged_on_branch, 1, 'the branch landed one pull request, whatever the commit count');
+  assert.equal(doc.registered, 1);
+  assert.ok(
+    !doc.help.some((line) => line.includes('are not in the register')),
+    `the register holds every pull request the branch landed: ${JSON.stringify(doc.help)}`,
   );
 });
 
@@ -521,30 +616,41 @@ test('a merge that is both inside its window and structurally excluded is report
  * ------------------------------------------------------------------ */
 
 test('acceptance: below a hundred merges in a channel the header says the numbers are directional', () => {
-  const short = sampleVerdict([
-    { band: 'auto', merges: 55 },
-    { band: 'wskazane', merges: 12 },
-  ]);
+  const measured = { registered: 67, measurable: 67, excluded: [] };
+  const short = sampleVerdict(
+    [
+      { band: 'auto', merges: 55 },
+      { band: 'wskazane', merges: 12 },
+    ],
+    measured,
+  );
   assert.equal(short.decisive, false);
   assert.match(short.sentence, /directional, not decisive/);
   assert.match(short.sentence, new RegExp(String(MIN_MERGES_PER_CHANNEL)));
   assert.match(short.sentence, /base leak rate near 28%/);
   assert.deepEqual(short.short.map((channel) => channel.band), ['wskazane', 'auto']);
 
-  const enough = sampleVerdict([
-    { band: 'auto', merges: 140 },
-    { band: 'wskazane', merges: 100 },
-  ]);
+  const enough = sampleVerdict(
+    [
+      { band: 'auto', merges: 140 },
+      { band: 'wskazane', merges: 100 },
+    ],
+    { registered: 240, measurable: 240, excluded: [] },
+  );
   assert.equal(enough.decisive, true);
   assert.ok(!enough.sentence.includes('directional'));
 
   // An empty channel is short rather than clean: a rate over no denominator is
   // not a small number, it is no number.
-  const empty = sampleVerdict([{ band: 'auto', merges: 200 }, { band: 'pelna', merges: 0 }]);
+  const empty = sampleVerdict([{ band: 'auto', merges: 200 }, { band: 'pelna', merges: 0 }], {
+    registered: 200,
+    measurable: 200,
+    excluded: [],
+  });
   assert.equal(empty.decisive, false);
   assert.equal(empty.smallest?.band, 'pelna');
 
-  const nothing = sampleVerdict([]);
+  const nothing = sampleVerdict([], { registered: 0, measurable: 0, excluded: [] });
   assert.equal(nothing.decisive, false);
   assert.match(nothing.sentence, /eyes-on label --pr <n>/);
 });

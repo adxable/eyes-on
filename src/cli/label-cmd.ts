@@ -11,6 +11,14 @@ import type { UncheckedReason } from '../gh/comment.js';
 import { resolveDefaultBranch } from '../rules/trusted.js';
 import { linkPull, mergedPulls, type MergeCommit, type PullLink } from '../ledger/link.js';
 import { appendRecord, readLedger, LEDGER_VERSION, type CheckSource, type LedgerRecord } from '../ledger/ledger.js';
+import {
+  classifyMerge,
+  EXCLUSION_KINDS,
+  DEFAULT_SINCE_SECONDS,
+  DEFAULT_WINDOW_SECONDS,
+  type ExclusionReason,
+  type MergeClassification,
+} from '../ledger/population.js';
 import { carriedEvidence, driftProvenanceSentence, unverifiedSentence } from '../risk/signals.js';
 import { version } from '../core/version.js';
 import type { Database } from '../db/db.js';
@@ -121,6 +129,16 @@ export async function labelCommand(context: Context): Promise<number> {
     priorRecords,
     checkCandidates: found.candidates,
     unread: observed.unread,
+    // What `leaks` will do with the row this command has just written, read off
+    // the one classifier rather than re-stated here. `label` is the command a
+    // person runs per merge, so it is where an unmeasurable row has to be said
+    // out loud.
+    measurable: classifyMerge(record, {
+      reader: risk.reader,
+      sinceSeconds: record.recorded_at - DEFAULT_SINCE_SECONDS,
+      windowSeconds: DEFAULT_WINDOW_SECONDS,
+      nowSeconds: record.recorded_at,
+    }),
   });
   emitDoc(context.writers, context.format, doc, () => renderMarkdown(record, doc));
   return EXIT_OK;
@@ -307,6 +325,7 @@ function buildRecord(input: {
   source: CheckSource;
 }): LedgerRecord {
   const { db, check, link } = input;
+  const named = link.merge_sha === null ? null : link.git;
   const hits: GateHit[] = recordedHits(db, check.id);
   const decision = recordedDecisionCovering(db, check.id);
   const fingerprint = hitsFingerprint(hits);
@@ -323,9 +342,12 @@ function buildRecord(input: {
     pr_title: github?.title ?? null,
     base_branch: github?.base_ref ?? null,
     merge_sha: link.merge_sha,
-    merge_subject: mergeCommit?.subject ?? null,
-    merge_parent_sha: mergeCommit?.parent ?? null,
-    merge_parents: input.mergeParents,
+    // Only ever the commit this row names. On a disagreement it names neither,
+    // and a subject, a parent and a parent count describing the candidate the
+    // row rejected would be three facts recorded against something else.
+    merge_subject: named?.subject ?? null,
+    merge_parent_sha: named?.parent ?? null,
+    merge_parents: link.merge_sha === null ? null : input.mergeParents,
     head_sha: github?.head_sha ?? null,
     // GitHub's own merge time when it answered; otherwise the committer date of
     // the commit on the default branch, which is when it landed. Never the
@@ -387,6 +409,9 @@ interface DocOptions {
   priorRecords: number;
   checkCandidates: Found['candidates'];
   unread: UncheckedReason | null;
+  /** Whether `eyes-on leaks` can measure this row, at the default window and
+   *  history span the command runs with. */
+  measurable: MergeClassification;
 }
 
 function recordedDoc(record: LedgerRecord, options: DocOptions): ToonObject {
@@ -440,11 +465,29 @@ function recordedDoc(record: LedgerRecord, options: DocOptions): ToonObject {
     decision_covers_recorded_hits: record.decision?.covers_recorded_hits ?? null,
     drift: record.drift,
     drift_intent: record.drift_intent,
+    // The reason `eyes-on leaks` will keep this row out of the denominator for
+    // good, or null. A row inside its window is not reported here: that is the
+    // ordinary state of a change that just merged, and it resolves itself.
+    excluded_from_leaks: permanentlyUnmeasurable(record, options),
     drift_sentence: driftProvenanceSentence(evidence),
     intent: record.intent,
     exit_code: EXIT_OK,
     help: helpLines(record, options) as ToonValue,
   };
+}
+
+/**
+ * The reason `leaks` will never count this row, or null.
+ *
+ * Read off the one classifier rather than re-tested here, and only where no
+ * other line already says it: a row naming no merge commit is described by its
+ * agreement above, and the case nothing else covers is a row that names one and
+ * still cannot be measured.
+ */
+function permanentlyUnmeasurable(record: LedgerRecord, options: DocOptions): ExclusionReason | null {
+  if (record.merge_sha === null) return null;
+  const verdict = options.measurable;
+  return !verdict.eligible && verdict.permanent ? verdict.reason : null;
 }
 
 function helpLines(record: LedgerRecord, options: DocOptions): string[] {
@@ -482,6 +525,15 @@ function helpLines(record: LedgerRecord, options: DocOptions): string[] {
       record.merge_sha === null
         ? `${record.link.git_candidates} commits on the default branch carry a \`(#${record.pr})\` subject, and no merge commit was recorded for this row, so \`eyes-on leaks\` leaves it out of the denominator with the reason \`no merge commit\`. Check which of them landed this change`
         : `${record.link.git_candidates} commits on the default branch carry a \`(#${record.pr})\` subject; the newest was recorded as the merge commit, and \`eyes-on leaks\` blames every later fix against that one. Check which of them landed this change`,
+    );
+  }
+  // A row naming no merge commit is already described by its agreement line
+  // above; this is the other case - a row that names one and still cannot be
+  // measured, which nothing else on this surface says.
+  const unmeasurable = permanentlyUnmeasurable(record, options);
+  if (unmeasurable !== null) {
+    lines.push(
+      `\`eyes-on leaks\` will leave this row out of the denominator as \`${unmeasurable}\`: ${EXCLUSION_KINDS[unmeasurable].because}. The row is recorded as it is; nothing here is measurable by waiting`,
     );
   }
   if (options.unread === 'gh-missing') {

@@ -5,6 +5,7 @@ import { attributeFixes, isFixCommit } from '../risk/szz.js';
 import { mergedPulls } from './link.js';
 import type { LedgerRecord } from './ledger.js';
 import { sampleVerdict, type ChannelSize, type SampleVerdict } from './sample.js';
+import { classifyMerge, countExclusions, type ExcludedMerge, type PopulationState } from './population.js';
 
 /**
  * Leaks per channel (report section 5, P6) - the measure the research report
@@ -47,14 +48,6 @@ import { sampleVerdict, type ChannelSize, type SampleVerdict } from './sample.js
  * leak is understated by however many of them there are - and every report says
  * how many it excluded and why.
  *
- * The parent count is one rule, asked once, of whichever source can answer it:
- * the register row when it carries one, and otherwise the object store, which
- * the exclusion above it has just established holds the commit. A row written
- * from GitHub's `merge_commit_sha` alone carries none - nothing on the default
- * branch named that commit - and on a repository that merges with `--no-ff`
- * that is every row, which is exactly the repository this exclusion exists
- * for.
- *
  * ## A merge that has not had its window yet is under-observed, not clean
  *
  * The same argument settles the other end of the range. A merge that landed
@@ -65,10 +58,11 @@ import { sampleVerdict, type ChannelSize, type SampleVerdict } from './sample.js
  * channel at once. Those merges leave the denominator with `window has not
  * elapsed` recorded against them and return to it on the next run.
  *
- * That promise is why the permanent exclusions are decided first. A true merge
- * commit that landed this morning is both structurally unattributable and
- * inside its window, and reporting the second reason would tell a reader it
- * comes back in a fortnight, which it never does.
+ * Which of the two states a row is in, and whether the state it is in is one
+ * time undoes, is decided in `src/ledger/population.ts` and nowhere here: this
+ * module measures leaks, and every surface that describes the population reads
+ * the same classifier. That is the invariant three review rounds of sentences
+ * drifting out of step with the code bought.
  *
  * ## Both ends of the window are landing times
  *
@@ -130,28 +124,6 @@ export interface ChannelRow {
   rate: number | null;
 }
 
-/** A registered merge that is not in the denominator, and which state it is
- *  in. Reported rather than dropped: a population silently narrowed is a rate
- *  nobody can check. */
-export interface ExcludedMerge {
-  pr: number;
-  merge_sha: string | null;
-  reason:
-    /** No commit was agreed on, so there is nothing to blame onto. */
-    | 'no merge commit'
-    /** GitHub named no merge time, so the window has no start. */
-    | 'no merge time'
-    /** It merged before the window this report covers. */
-    | 'outside --since'
-    /** It merged less than `--window` ago, so it has not had the whole period
-     *  every other merge in the denominator was given to leak in. */
-    | 'window has not elapsed'
-    /** A true merge commit introduces no line, so blame can never name it. */
-    | 'merge commit introduces no line'
-    /** The object store this run read does not hold the commit. */
-    | 'commit not in this repository';
-}
-
 export interface LeaksReport {
   /** There is one variant and this names it, in every payload, so a reader of
    *  the machine output never has to ask which one produced the number. */
@@ -181,8 +153,11 @@ export interface LeaksReport {
   /** Registered merges that were still parked when they were labelled: nobody
    *  answered the gate before the change landed. */
   parked: number;
-  /** How much of the branch's own history the register covers. */
+  /** How much of the branch's own history the register covers, in distinct
+   *  pull requests on both sides. */
   coverage: { merged_on_branch: number; registered: number };
+  /** What the denominator is made of, for every surface that describes it. */
+  population: PopulationState;
   /** Fix commits considered, and how many blames the walk had to compute. */
   fixes_considered: number;
   blames_cached: number;
@@ -203,41 +178,12 @@ export function measureLeaks(options: LeakOptions): LeaksReport {
   const excluded: ExcludedMerge[] = [];
 
   for (const record of options.records) {
-    const mergeSHA = record.merge_sha;
-    if (mergeSHA === null) {
-      excluded.push({ pr: record.pr, merge_sha: null, reason: 'no merge commit' });
-      continue;
+    const verdict = classifyMerge(record, options);
+    if (verdict.eligible) {
+      eligible.push({ record, mergeSHA: verdict.merge_sha, mergedAt: verdict.merged_at });
+    } else {
+      excluded.push({ pr: record.pr, merge_sha: verdict.merge_sha, reason: verdict.reason });
     }
-    if (record.merged_at === null) {
-      excluded.push({ pr: record.pr, merge_sha: mergeSHA, reason: 'no merge time' });
-      continue;
-    }
-    if (record.merged_at < options.sinceSeconds) {
-      excluded.push({ pr: record.pr, merge_sha: mergeSHA, reason: 'outside --since' });
-      continue;
-    }
-    // The two permanent exclusions are decided before the temporal one; see the
-    // header.
-    if (!options.reader.has(mergeSHA)) {
-      excluded.push({ pr: record.pr, merge_sha: mergeSHA, reason: 'commit not in this repository' });
-      continue;
-    }
-    // A true merge commit introduces no line; see the header. A row written
-    // from GitHub alone carries no parent count, because no default-branch
-    // subject named the commit - so the count comes from the object store this
-    // run has already established holds it.
-    const parents = record.merge_parents ?? options.reader.commit(mergeSHA)?.parents.length ?? null;
-    if (parents !== null && parents > 1) {
-      excluded.push({ pr: record.pr, merge_sha: mergeSHA, reason: 'merge commit introduces no line' });
-      continue;
-    }
-    // Not yet observable for as long as everything else in the denominator was;
-    // see the header.
-    if (record.merged_at + options.windowSeconds > options.nowSeconds) {
-      excluded.push({ pr: record.pr, merge_sha: mergeSHA, reason: 'window has not elapsed' });
-      continue;
-    }
-    eligible.push({ record, mergeSHA, mergedAt: record.merged_at });
   }
 
   const byMerge = new Map(eligible.map((entry) => [entry.mergeSHA, entry]));
@@ -297,14 +243,25 @@ export function measureLeaks(options: LeakOptions): LeaksReport {
   }
 
   const channels = channelRows(eligible.map((entry) => entry.record), leaks);
+  const population: PopulationState = {
+    registered: options.records.length,
+    measurable: eligible.length,
+    excluded: countExclusions(excluded),
+  };
   const leakedMerges = new Set(leaks.map((leak) => leak.merge_sha));
   // Both sides of the coverage ratio are counted over the same period. A
   // registered count taken over the whole register against a branch count taken
   // over the window would report coverage above 100% on a repository older than
   // `--since`, which reads as "more than everything" rather than as two
   // different questions.
+  // Distinct pull request numbers on both sides. `mergedPulls` keeps a number
+  // that landed twice twice and says the caller decides, and `latestPerPull`
+  // has already reduced the register to one row each: counting commits against
+  // rows would report a coverage gap for a register holding every one of them.
   const coverage = {
-    merged_on_branch: mergedPulls(options.reader, options.anchorSHA, { sinceSeconds: options.sinceSeconds }).length,
+    merged_on_branch: new Set(
+      mergedPulls(options.reader, options.anchorSHA, { sinceSeconds: options.sinceSeconds }).map((merge) => merge.number),
+    ).size,
     registered: options.records.filter(
       (record) => record.merged_at !== null && record.merged_at >= options.sinceSeconds,
     ).length,
@@ -327,7 +284,8 @@ export function measureLeaks(options: LeakOptions): LeaksReport {
     fixes_considered: fixes.length,
     blames_cached: szz.cached,
     blames_computed: szz.computed,
-    sample: sampleVerdict(channels.map((row): ChannelSize => ({ band: row.band, merges: row.merges }))),
+    population,
+    sample: sampleVerdict(channels.map((row): ChannelSize => ({ band: row.band, merges: row.merges })), population),
   };
 }
 

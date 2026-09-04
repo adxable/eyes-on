@@ -71,12 +71,16 @@ a design violation, not a flaky test.
   `docs/stage-2-acceptance.md`, `docs/stage-1-acceptance.md` and
   `docs/stage-0-acceptance.md`. All are anchored by description rather than by
   commit id, because a pull-request SHA does not survive the squash-merge that
-  lands it. Two scripts re-derive the numbers and both write nothing anywhere:
-  `docs/stage-2-locality.mjs` (it reads the no-mistakes database through
-  `?mode=ro`) and `docs/stage-3-selfsufficiency.mjs`, which drives
+  lands it. Three scripts re-derive the numbers, and none of them writes into a
+  repository it reads: `docs/stage-2-locality.mjs` (it reads the no-mistakes
+  database through `?mode=ro`), `docs/stage-3-selfsufficiency.mjs`, which drives
   `eyes-on label --dry-run` rather than reimplementing the link, with `NM_HOME`
   pointed at an empty directory so the no-mistakes database is unreachable
-  rather than merely unused.
+  rather than merely unused, and `docs/stage-3-register.mjs`, which is behind
+  section 4's register, leaks and calibrate tables. The third one **does**
+  write: it runs `eyes-on init`, `check` and a real, non-dry-run `label` into a
+  temporary state root of its own and deletes it afterwards. The reference
+  repository is only ever read.
 
 ## Commands
 
@@ -269,18 +273,36 @@ consulted.
   asked for. The reasoning is written out at the top of `src/ledger/leaks.ts`
   because the variant is a two-line simplification of the code beneath it and
   looks like an optimisation to anybody who has not seen the base rate.
-- **A merge time is a committer date, never an author date.** For a squash
-  merge the author date is when the branch's first commit was written, days
-  earlier; the committer date is when it landed. `merged_at` takes GitHub's own
-  answer when gh was read and falls back to `CommitRecord.committed`, and the
-  leak window starts there - an author date would push fixes out of a window
-  they were inside and undercount every channel at once.
-- **A merge blame can never name is not a merge that stayed clean.** Blame names
-  the commit that introduced a line; a true merge commit introduces none, so no
-  fix can ever be attributed to one. Those rows are excluded from the leak
-  denominator and counted in `excluded` with the reason, because a denominator
-  holding changes that structurally cannot leak understates every rate in the
-  table by however many of them there are.
+- **A merge time is a committer date, never an author date, and so is a fix
+  time.** For a squash merge the author date is when the branch's first commit
+  was written, days earlier; the committer date is when it landed. `merged_at`
+  takes GitHub's own answer when gh was read and falls back to
+  `CommitRecord.committed`, and the leak window starts there. Both ends of that
+  window read the same clock: `FixAttribution.committed` is what `leaks`
+  measures the fix side by, because a branch written before the change it fixes,
+  rebased onto it and landed afterwards has an author date *earlier* than the
+  merge it blames into, and a negative elapsed drops a real leak.
+- **Who is in the leak denominator is decided in one place, and the answer
+  carries whether time undoes it.** `classifyMerge` (`src/ledger/population.ts`)
+  is that place; `measureLeaks` builds the denominator from it, `calibrate`
+  sweeps the population that measurement produced rather than re-deriving
+  eligibility, and `label` asks it about the row it just wrote so the command a
+  person runs per merge says what `leaks` will do with it. A denominator holding
+  changes that structurally cannot leak - or that were never given the time to -
+  understates every rate in the table at once, so two rules exclude rather than
+  count clean. *Blame can never name a true merge commit*: it introduces no
+  line. The parent count behind that is one rule asked of whichever source can
+  answer it - the register row, and otherwise the object store - because a row
+  written from GitHub's `merge_commit_sha` alone carries none, which on a
+  `--no-ff` repository is every row. *A merge whose `--window` has not elapsed*
+  has had part of the period the rest of the denominator was given, and it is
+  the only reason that returns: `EXCLUSION_KINDS` declares `permanent` beside
+  each reason and `classifyMerge` prefers a permanent reason over a pending one,
+  so no ordering of tests can dress a structural exclusion as a temporary one
+  and no surface may promise a return the reason does not carry. `sampleVerdict`
+  takes the population beside the channels for the same reason: a full register
+  none of whose rows has had its window yet is the ordinary first state of the
+  product, and it must not read as an empty one.
 - **The register is append-only and every reader takes the newest.**
   `appendRecord` writes one line; nothing rewrites one. Re-labelling is
   ordinary - a gate answered after the merge, a check re-run - and both lines

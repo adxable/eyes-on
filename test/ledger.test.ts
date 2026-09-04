@@ -70,6 +70,7 @@ interface LabelDoc {
   decision_covers_recorded_hits: boolean | null;
   drift: number | null;
   drift_intent: string | null;
+  excluded_from_leaks?: string | null;
   exit_code: number;
   help: string[];
 }
@@ -255,6 +256,8 @@ test('acceptance: the chain from change to pull request to merge commit is rebui
   assert.equal(doc.merge_sha, merge);
   assert.equal(doc.merge_parent_sha, parent);
   assert.equal(doc.merge_parents, 1, 'a squash merge has one parent, which is what makes blame able to name it');
+  assert.equal(doc.excluded_from_leaks, null, 'a squash merge is a row `leaks` can measure, and nothing warns about it');
+  assert.ok(!doc.help.some((line) => line.includes('will leave this row out of the denominator')));
   assert.equal(doc.head_sha, PR_HEAD, 'the branch tip GitHub named, which is not the commit that landed');
   assert.equal(doc.merged_at, Date.parse('2026-08-26T16:41:46Z') / 1000, 'GitHub answered, so its merge time is the one recorded');
   assert.equal(doc.recorded, true);
@@ -438,6 +441,20 @@ test('a row GitHub alone placed still carries the merge commit\'s parent count',
     ).out,
   ) as LabelDoc;
   assert.equal(dry.merge_parents, 2);
+
+  // And the command a person runs per merge says what `leaks` will do with the
+  // row it just wrote. On this repository every row is in this state, and
+  // finding that out from an empty channel table after 153 of them is finding
+  // it out too late.
+  assert.equal(doc.excluded_from_leaks, 'merge commit introduces no line');
+  assert.ok(
+    doc.help.some(
+      (line) =>
+        line.includes('will leave this row out of the denominator') &&
+        line.includes('merge commit introduces no line'),
+    ),
+    `the row is unmeasurable and label must say so: ${JSON.stringify(doc.help)}`,
+  );
 });
 
 /**
@@ -478,6 +495,11 @@ test('with two candidates and a disagreement, nothing claims the newest was take
     `nothing was taken: ${doc.link_sentence}`,
   );
   assert.match(doc.link_sentence, /no merge commit was recorded here, so none of them was chosen/);
+  // Nothing about a commit the row deliberately does not name: a subject, a
+  // parent and a parent count beside a null merge commit would be three facts
+  // recorded against something the row rejected.
+  assert.equal(doc.merge_parent_sha, null);
+  assert.equal(doc.merge_parents, null);
   assert.ok(
     !doc.help.some((line) => line.includes('blames every later fix against that one')),
     `leaks excludes this row rather than blaming against it: ${JSON.stringify(doc.help)}`,

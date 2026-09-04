@@ -1,6 +1,7 @@
 import { bandFor, type Band } from '../risk/signals.js';
 import type { LedgerRecord } from './ledger.js';
-import type { ExcludedMerge, Leak } from './leaks.js';
+import type { Leak } from './leaks.js';
+import { countExclusions, type ExcludedMerge, type PopulationState } from './population.js';
 import { sampleVerdict, type ChannelSize, type SampleVerdict } from './sample.js';
 
 /**
@@ -186,19 +187,21 @@ export function calibrate(options: CalibrateOptions): CalibrateReport {
     other_scales: otherScales,
     rule_forced: population.filter((entry) => entry.forced).length,
     unscored,
-    outside_denominator: countReasons(options.excluded),
+    outside_denominator: countExclusions(options.excluded).map((entry) => ({ reason: entry.reason, merges: entry.merges })),
     current: currentRow,
     rows,
     candidate: chosen.row,
     candidate_blocked: chosen.blocked,
-    // An empty register has no channels at all, and saying "three channels
-    // carry fewer than a hundred merges" about it would describe a table that
-    // does not exist. `sampleVerdict` has the sentence for that case; it just
-    // has to be given the empty list rather than three empty bands.
+    // An empty sweep has no channels at all, and saying "three channels carry
+    // fewer than a hundred merges" about it would describe a table that does
+    // not exist. The population beside it is what tells an empty register from
+    // a full one whose rows are not measurable yet - the ordinary first state
+    // of this product, which `leaks` and this command must describe alike.
     sample: sampleVerdict(
       population.length === 0
         ? []
         : currentRow.channels.map((channel): ChannelSize => ({ band: channel.band, merges: channel.merges })),
+      populationState(options, population.length, unscored, otherScales),
     ),
   };
 }
@@ -287,13 +290,30 @@ function percent(value: number): string {
   return `${Math.round(value * 100)}%`;
 }
 
-/** How many register rows each exclusion reason accounts for, largest first. */
-function countReasons(excluded: readonly ExcludedMerge[]): { reason: ExcludedMerge['reason']; merges: number }[] {
-  const counts = new Map<ExcludedMerge['reason'], number>();
-  for (const entry of excluded) counts.set(entry.reason, (counts.get(entry.reason) ?? 0) + 1);
-  return [...counts.entries()]
-    .map(([reason, merges]) => ({ reason, merges }))
-    .sort((a, b) => b.merges - a.merges || a.reason.localeCompare(b.reason));
+/**
+ * What the sweep ran over, and everything it did not, in the shape every
+ * surface reads.
+ *
+ * The leak exclusions come from the measurement rather than being re-derived,
+ * and the sweep's own two narrowings are named beside them: a score under other
+ * weights and a row with no score are permanent in the same sense - no amount
+ * of waiting puts them on this grid.
+ */
+function populationState(
+  options: CalibrateOptions,
+  measurable: number,
+  unscored: number,
+  otherScales: { score_max: number | null; merges: number }[],
+): PopulationState {
+  const excluded: PopulationState['excluded'] = [...countExclusions(options.excluded)];
+  const onOtherScales = otherScales.reduce((sum, scale) => sum + scale.merges, 0);
+  if (onOtherScales > 0) excluded.push({ reason: 'scored on another scale', permanent: true, merges: onOtherScales });
+  if (unscored > 0) excluded.push({ reason: 'no score recorded', permanent: true, merges: unscored });
+  return {
+    registered: options.records.length + options.excluded.length,
+    measurable,
+    excluded,
+  };
 }
 
 /** How many records sit on each other scale, so a reader can see whether the

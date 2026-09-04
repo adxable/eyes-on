@@ -6,6 +6,12 @@ import { riskContext } from './risk-context.js';
 import { resolveDefaultBranch } from '../rules/trusted.js';
 import { readLedger, recordsFor } from '../ledger/ledger.js';
 import { measureLeaks, type LeaksReport } from '../ledger/leaks.js';
+import {
+  exclusionHelpLines,
+  EXCLUSION_KINDS,
+  DEFAULT_SINCE_SECONDS,
+  DEFAULT_WINDOW_SECONDS,
+} from '../ledger/population.js';
 import { MIN_MERGES_PER_CHANNEL } from '../ledger/sample.js';
 
 /**
@@ -33,10 +39,6 @@ import { MIN_MERGES_PER_CHANNEL } from '../ledger/sample.js';
  * register is evidence about the past, and there is no state of it that should
  * fail anybody's build.
  */
-
-/** The default leak window and history span (report Appendix C.1). */
-export const DEFAULT_WINDOW_SECONDS = 14 * 86_400;
-export const DEFAULT_SINCE_SECONDS = 90 * 86_400;
 
 /**
  * Flags that would be asking for the file-level variant.
@@ -178,7 +180,14 @@ function renderDoc(report: LeaksReport, options: DocOptions): ToonObject {
       pr: entry.pr,
       merge: entry.merge_sha === null ? null : entry.merge_sha.slice(0, 12),
       reason: entry.reason,
+      // Whether waiting alone puts this row back in the denominator. Read from
+      // the reason's own definition, never from where it was tested.
+      permanent: EXCLUSION_KINDS[entry.reason].permanent,
     })) as ToonValue,
+    // Rows the register holds for this repository, beside the `merges` above
+    // that a rate may be divided by. A reader of a zero denominator has to be
+    // able to tell an empty register from a full one nothing is measurable in.
+    register_rows: report.population.registered,
     unverified: report.unverified,
     parked: report.parked,
     merged_on_branch: report.coverage.merged_on_branch,
@@ -212,18 +221,10 @@ function helpLines(report: LeaksReport, options: DocOptions): string[] {
       `${uncovered} of the ${report.coverage.merged_on_branch} pull requests the branch landed in this window are not in the register, so these rates describe the ${report.coverage.registered} that are`,
     );
   }
-  const noLine = report.excluded.filter((entry) => entry.reason === 'merge commit introduces no line').length;
-  if (noLine > 0) {
-    lines.push(
-      `${noLine} registered merge${noLine === 1 ? ' is' : 's are'} a true merge commit rather than a squash: blame never names a merge commit as introducing a line, so no fix can be attributed to ${noLine === 1 ? 'it' : 'them'} and ${noLine === 1 ? 'it is' : 'they are'} left out of the denominator rather than counted clean`,
-    );
-  }
-  const tooRecent = report.excluded.filter((entry) => entry.reason === 'window has not elapsed').length;
-  if (tooRecent > 0) {
-    lines.push(
-      `${tooRecent} registered merge${tooRecent === 1 ? ' landed' : 's landed'} less than ${days(options.windowSeconds)} ago, so ${tooRecent === 1 ? 'it has' : 'they have'} not had the whole window every other merge here was given to leak in: ${tooRecent === 1 ? 'it is' : 'they are'} left out of the denominator and ${tooRecent === 1 ? 'returns' : 'return'} to it once the window has passed`,
-    );
-  }
+  // One line per reason present, generated from the same table that says
+  // whether the reason is one time undoes. Written per reason here is what let
+  // a structural exclusion carry a promise of return for a whole review round.
+  lines.push(...exclusionHelpLines(report.excluded, days(options.windowSeconds)));
   if (report.unverified > 0) {
     lines.push(
       `${report.unverified} of the merges in this table were assessed while the trusted configuration could not be read, so their channel is a floor and they may belong in a higher one`,
@@ -272,7 +273,10 @@ function renderMarkdown(report: LeaksReport, doc: ToonObject): string {
   if (report.excluded.length > 0) {
     lines.push('', '## Registered merges outside the denominator, and why', '');
     for (const entry of report.excluded) {
-      lines.push(`- #${entry.pr}${entry.merge_sha ? ` (\`${entry.merge_sha.slice(0, 12)}\`)` : ''}: ${entry.reason}`);
+      const kind = EXCLUSION_KINDS[entry.reason];
+      lines.push(
+        `- #${entry.pr}${entry.merge_sha ? ` (\`${entry.merge_sha.slice(0, 12)}\`)` : ''}: ${entry.reason}${kind.permanent ? '' : ' (returns once its window has passed)'}`,
+      );
     }
   }
 
