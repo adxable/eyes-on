@@ -5,7 +5,7 @@ import { captureCli, sandboxEnv, stubGh, tempRepo, type TempRepo } from './helpe
 import { EXIT_OK } from '../src/cli/output.js';
 import { GitError } from '../src/git/git.js';
 import { GhError } from '../src/gh/gh.js';
-import { spawnFailureKindOf, MAX_OUTPUT_BYTES } from '../src/core/spawn.js';
+import { signalDetail, spawnFailureKindOf, spawnFailureOf, MAX_OUTPUT_BYTES } from '../src/core/spawn.js';
 
 /**
  * The size condition.
@@ -122,9 +122,10 @@ test('an output that does not fit is the size condition, and no remedy claims th
   assert.ok(tooLarge.help.some((line) => line.includes('installed and ran')));
   assert.ok(tooLarge.help.some((line) => line.includes('--base')), 'the remedy has to be one the caller can act on');
 
-  const ghTooLarge = new GhError('', -1, String(overflowed.error?.message), 'output-too-large');
+  const ghTooLarge = GhError.spawnFailed('output-too-large', String(overflowed.error?.message));
   assert.match(ghTooLarge.message, /gh ran and produced more than/);
   assert.ok(ghTooLarge.help.every((line) => !/^Install /.test(line)));
+  assert.equal(ghTooLarge.status, null, 'a call with no exit status carries none, not a sentinel');
 
   // And absence is still absence, with the remedy that does work in it.
   const absent = spawnSync('eyes-on-no-such-program', [], { encoding: 'utf8' });
@@ -140,4 +141,33 @@ test('an output that does not fit is the size condition, and no remedy claims th
   const timedOut = new GitError(['log'], -1, String(slow.error?.message), 'timeout');
   assert.match(timedOut.message, /stopped for taking too long/);
   assert.ok(timedOut.help.every((line) => !/^Install /.test(line)));
+});
+
+test('a subprocess killed from outside is a fourth state, and it sets no error at all', () => {
+  // The one `spawnSync` reports with `error` unset: a classifier reading only
+  // the error sees a success-shaped result with no status and has to invent
+  // one. Reading the whole result is what makes the branches exhaustive.
+  const killed = spawnSync(process.execPath, ['-e', "process.kill(process.pid, 'SIGKILL')"], { encoding: 'utf8' });
+  assert.equal(killed.error, undefined, 'this is the shape the old classifier could not see');
+  assert.equal(killed.status, null);
+  assert.equal(killed.signal, 'SIGKILL');
+  assert.equal(spawnFailureOf(killed), 'signalled');
+
+  // And a process that ran and exited is not a failure at all, whatever it
+  // exited with.
+  const exited = spawnSync(process.execPath, ['-e', 'process.exit(3)'], { encoding: 'utf8' });
+  assert.equal(spawnFailureOf(exited), null, 'an exit status is an answer, not a failure to classify');
+
+  const ghKilled = GhError.spawnFailed('signalled', signalDetail(killed));
+  assert.match(ghKilled.message, /gh ran and was killed by SIGKILL/);
+  assert.equal(ghKilled.kind, 'spawn');
+  assert.ok(ghKilled.help.length > 0, 'the dispatcher renders help, so an empty one is reported as a bug');
+  assert.ok(ghKilled.help.every((line) => !/^Install /.test(line)));
+
+  // The state it used to be confused with, which really is a defect in eyes-on
+  // and really does carry no remedy.
+  const refused = GhError.refused('refusing to run "gh pr merge 1"');
+  assert.equal(refused.kind, 'refused');
+  assert.equal(refused.help.length, 0);
+  assert.notEqual(refused.kind, ghKilled.kind, 'the two no longer share a sentinel');
 });

@@ -1,9 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import {
   MAX_OUTPUT_BYTES,
+  signalDetail,
   spawnFailureHelp,
-  spawnFailureKindOf,
   spawnFailureMessage,
+  spawnFailureOf,
   type SpawnFailureKind,
 } from '../core/spawn.js';
 
@@ -52,13 +53,21 @@ const WRITE_PATHS: Readonly<Record<string, readonly RegExp[]>> = {
 /**
  * The three states a failed `gh` invocation can be in, which are three
  * different things about the machine and want three different sentences.
+ *
+ * Each has exactly one constructor below and none of them is inferred from a
+ * status code. The previous shape read `status < 0` as "refused", and `-1` was
+ * also what an invocation with no status at all was given - so a gh killed by
+ * the out-of-memory killer arrived as an allow-list refusal, whose help is
+ * deliberately empty, and was reported as a defect in eyes-on. A number that
+ * means two things cannot be told apart by looking at it harder.
  */
 export type GhFailure =
   /** Refused by the allow-list before a process existed. Only eyes-on's own
    *  code builds an argument vector, so reaching this is a defect in eyes-on
    *  and is deliberately left to be reported as one. */
   | 'refused'
-  /** gh never produced a status; `spawnFailure` says which state that is. */
+  /** gh never produced an exit status; `spawnFailure` says which state that is,
+   *  including the one where something outside killed it. */
   | 'spawn'
   /** gh ran, reached GitHub, and the call came back non-zero. A pull request
    *  that does not exist, one the user cannot see, one that is locked - all of
@@ -79,38 +88,67 @@ const REMOTE_HELP: readonly string[] = [
 ];
 
 export class GhError extends Error {
-  readonly status: number;
+  /** gh's exit status, or null when it never produced one. Null rather than a
+   *  negative sentinel, so "no status" cannot be mistaken for a status. */
+  readonly status: number | null;
   readonly stderr: string;
   /** Why gh never produced a status, or null when it ran. Only `missing` is a
-   *  host without the GitHub CLI; a listing too large to buffer and a call that
-   *  timed out are states of a machine where gh is installed and working. */
+   *  host without the GitHub CLI; a listing too large to buffer, a call that
+   *  timed out and a process something else killed are states of a machine
+   *  where gh is installed and working. */
   readonly spawnFailure: SpawnFailureKind | null;
   readonly kind: GhFailure;
   /** The remedies that work in the state this error describes, empty when the
    *  honest report is the generic one. The dispatcher renders this rather than
    *  deciding again what kind of failure it is looking at. */
   readonly help: string[];
-  constructor(message: string, status: number, stderr: string, spawnFailure: SpawnFailureKind | null = null) {
-    const kind: GhFailure = spawnFailure !== null ? 'spawn' : status < 0 ? 'refused' : 'remote';
-    const said = firstLine(stderr);
-    super(
-      kind === 'spawn'
-        ? spawnFailureMessage('gh', spawnFailure as SpawnFailureKind, stderr.trim())
-        : kind === 'remote'
-          ? `${message}: gh exited ${status}${said.length > 0 ? ` - ${said}` : ''}`
-          : message,
-    );
+
+  private constructor(init: {
+    kind: GhFailure;
+    message: string;
+    status: number | null;
+    stderr: string;
+    spawnFailure: SpawnFailureKind | null;
+    help: readonly string[];
+  }) {
+    super(init.message);
     this.name = 'GhError';
-    this.status = status;
-    this.stderr = stderr;
-    this.spawnFailure = spawnFailure;
-    this.kind = kind;
-    this.help =
-      kind === 'spawn'
-        ? spawnFailureHelp('gh', spawnFailure as SpawnFailureKind, ghRemedy(spawnFailure as SpawnFailureKind))
-        : kind === 'remote'
-          ? [...REMOTE_HELP]
-          : [];
+    this.kind = init.kind;
+    this.status = init.status;
+    this.stderr = init.stderr;
+    this.spawnFailure = init.spawnFailure;
+    this.help = [...init.help];
+  }
+
+  /** The allow-list said no, before any process existed. */
+  static refused(message: string): GhError {
+    return new GhError({ kind: 'refused', message, status: null, stderr: '', spawnFailure: null, help: [] });
+  }
+
+  /** gh produced no exit status. `detail` is what is known: the runtime's
+   *  message, or the signal that killed it. */
+  static spawnFailed(kind: SpawnFailureKind, detail: string): GhError {
+    return new GhError({
+      kind: 'spawn',
+      message: spawnFailureMessage('gh', kind, detail),
+      status: null,
+      stderr: detail,
+      spawnFailure: kind,
+      help: spawnFailureHelp('gh', kind, ghRemedy(kind)),
+    });
+  }
+
+  /** gh ran and the call came back non-zero. `what` names the call. */
+  static remote(what: string, status: number, stderr: string): GhError {
+    const said = firstLine(stderr);
+    return new GhError({
+      kind: 'remote',
+      message: `${what}: gh exited ${status}${said.length > 0 ? ` - ${said}` : ''}`,
+      status,
+      stderr,
+      spawnFailure: null,
+      help: REMOTE_HELP,
+    });
   }
 }
 
@@ -147,10 +185,8 @@ export interface GhResult {
 export function assertAllowed(args: readonly string[]): void {
   const refusal = refusalFor(args);
   if (refusal !== null) {
-    throw new GhError(
+    throw GhError.refused(
       `refusing to run "gh ${args.join(' ')}": eyes-on only reads a pull request and writes its own comment (${refusal})`,
-      -1,
-      '',
     );
   }
 }
@@ -223,10 +259,18 @@ function gh(args: readonly string[], options: { cwd?: string; input?: string; ti
     maxBuffer: MAX_OUTPUT_BYTES,
     env: { ...process.env, GH_PAGER: 'cat', GH_PROMPT_DISABLED: '1', CLICOLOR: '0' },
   });
-  if (result.error) {
-    throw new GhError('', -1, String(result.error.message), spawnFailureKindOf(result.error));
+  // Asked over the whole result: a gh the out-of-memory killer or a Ctrl-C took
+  // down sets no error at all, and reading only `result.error` would leave it
+  // looking like a success with no status. Past this point `result.status` is a
+  // number, so nothing downstream needs a sentinel for the absence of one.
+  const failure = spawnFailureOf(result);
+  if (failure !== null) {
+    throw GhError.spawnFailed(
+      failure,
+      failure === 'signalled' ? signalDetail(result) : String(result.error?.message ?? ''),
+    );
   }
-  return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+  return { status: result.status as number, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 
 export interface IssueComment {
@@ -257,7 +301,7 @@ export function pullHeadSHA(clonePath: string, slug: string, number: number): st
 export function listComments(clonePath: string, slug: string, number: number): IssueComment[] {
   const result = gh(['api', '--paginate', `repos/${slug}/issues/${number}/comments`], { cwd: clonePath });
   if (result.status !== 0) {
-    throw new GhError(`gh could not read the comments of ${slug}#${number}`, result.status, result.stderr);
+    throw GhError.remote(`gh could not read the comments of ${slug}#${number}`, result.status, result.stderr);
   }
   return parseComments(result.stdout);
 }
@@ -333,7 +377,7 @@ export function createComment(clonePath: string, slug: string, number: number, b
     input: JSON.stringify({ body }),
   });
   if (result.status !== 0) {
-    throw new GhError(`gh could not comment on ${slug}#${number}`, result.status, result.stderr);
+    throw GhError.remote(`gh could not comment on ${slug}#${number}`, result.status, result.stderr);
   }
   return parseComments(`[${result.stdout}]`)[0] ?? null;
 }
@@ -344,7 +388,7 @@ export function updateComment(clonePath: string, slug: string, id: number, body:
     input: JSON.stringify({ body }),
   });
   if (result.status !== 0) {
-    throw new GhError(`gh could not update comment ${id} on ${slug}`, result.status, result.stderr);
+    throw GhError.remote(`gh could not update comment ${id} on ${slug}`, result.status, result.stderr);
   }
   return parseComments(`[${result.stdout}]`)[0] ?? null;
 }

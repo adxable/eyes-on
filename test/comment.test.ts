@@ -1,9 +1,11 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { delimiter } from 'node:path';
-import { captureCli, pathWithGitOnly, sandboxEnv, stubAgent, stubGh, tempRepo, type StubAgent, type TempRepo } from './helpers.js';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { captureCli, pathWithGitOnly, sandboxEnv, stubAgent, stubGh, tempDir, tempRepo, type StubAgent, type TempRepo } from './helpers.js';
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/output.js';
-import { findMarked, marker, MARKER_PREFIX, renderComment } from '../src/gh/comment.js';
+import { findMarked, marker, MARKER_PREFIX, renderComment, type PullRequestView } from '../src/gh/comment.js';
 import { parseComments, refusalFor } from '../src/gh/gh.js';
 
 /**
@@ -22,6 +24,13 @@ import { parseComments, refusalFor } from '../src/gh/gh.js';
  * the endpoint that edits a pull request body differs from the one eyes-on is
  * allowed to call by a single path segment.
  */
+
+
+/** A pull request eyes-on did look at, pointing at the commit under assessment.
+ *  The renderer derives staleness from this, so a test cannot hand it one. */
+function observed(head: string, overrides: Partial<Extract<PullRequestView, { checked: true }>> = {}): PullRequestView {
+  return { checked: true, slug: SLUG, head, comments: 0, marked: 0, existingId: null, existingUrl: null, ...overrides };
+}
 
 const BODY = '## Summary\n\nno-mistakes wrote this body and regenerates it on every push.\n\n<!-- no-mistakes:attestation -->\n';
 const SLUG = 'acme/widgets';
@@ -130,8 +139,7 @@ test('the comment says what to read and never becomes a second pull-request body
     decision: { check_id: 'abc123', action: 'read', reason: null, decided_by: 'crewmate', decided_at: 0, hits_fingerprint: 'f', config_sha: null },
     driftItems: [{ check_id: 'abc123', kind: 'unrequested_in_diff', position: 0, item: 'a health endpoint nobody asked for' }],
     signals: [{ name: 'fix_history', normalized: 0.72 }, { name: 'churn', normalized: 0 }],
-    stale: false,
-    prHeadSHA: null,
+    pullRequest: observed('h'.repeat(40)),
   });
 
   assert.ok(body.startsWith(MARKER_PREFIX));
@@ -177,8 +185,7 @@ test('a check with no recorded maximum is published without a denominator, not w
     decision: undefined,
     driftItems: [],
     signals: [],
-    stale: false,
-    prHeadSHA: null,
+    pullRequest: observed(row.head_sha),
   });
 
   assert.match(body, /\*\*eyes-on - 58, channel: read the indicated fragments\*\*/);
@@ -221,8 +228,7 @@ test('an unverified check is published as one, because no hard rule behind that 
     decision: undefined,
     driftItems: [],
     signals: [],
-    stale: false,
-    prHeadSHA: null,
+    pullRequest: observed(row.head_sha),
   };
   const body = renderComment(input);
 
@@ -605,9 +611,12 @@ test('--dry-run really is a preview without gh, and says what it could not check
   });
   const doc = JSON.parse(preview.out) as CommentDoc & {
     pull_request_checked: boolean;
+    unchecked_reason: string | null;
     comments_on_pr: number | null;
     eyes_on_comments_found: number | null;
     repo: string | null;
+    stale: boolean | null;
+    pr_head: string | null;
   };
 
   assert.equal(preview.code, EXIT_OK, `--dry-run must work without gh: ${preview.err}`);
@@ -618,12 +627,20 @@ test('--dry-run really is a preview without gh, and says what it could not check
 
   // And the price is stated rather than guessed at.
   assert.equal(doc.pull_request_checked, false);
+  assert.equal(doc.unchecked_reason, 'gh-missing');
   assert.notEqual(doc.action, 'would create', 'nothing looked at the pull request, so neither verb is known');
   assert.equal(doc.action, 'would create or update');
   assert.equal(doc.comments_on_pr, null, 'a count nobody read is not zero');
   assert.equal(doc.eyes_on_comments_found, null);
   assert.equal(doc.repo, null);
+  // The one that is not a count: `false` here would assert that the assessment
+  // describes the head the pull request has now, which is the fact no gh call
+  // was made to establish.
+  assert.equal(doc.stale, null, 'staleness nobody read is not "not stale"');
+  assert.equal(doc.pr_head, null);
+  assert.match(doc.body, /whether it still points at this commit is unchecked/);
   assert.ok(doc.help.some((line) => line.includes('never looked at the pull request')));
+  assert.ok(doc.help.some((line) => line.includes('The GitHub CLI is not installed')));
   assert.match(preview.err, /never checked/);
 
   // The publish path still refuses, because there the refusal is true.
@@ -656,4 +673,76 @@ test('a pull request GitHub refuses is reported as GitHub answering, not as an e
   );
   assert.ok(doc.help.some((line) => line.includes('gh auth status')), 'the remedy is one that works in this state');
   assert.ok(doc.help.some((line) => line.includes('--dry-run')));
+});
+
+/**
+ * A `gh` that is not the fake pull request: a program of a few lines, used to
+ * reach the two states the real one cannot be asked for - a gh that cannot name
+ * a repository, and a gh something kills.
+ *
+ * The shebang is this process's own node, so the PATH the test hands the CLI
+ * can hold git and this program and nothing else.
+ */
+function fakeGh(prefix: string, script: string): string {
+  const dir = tempDir(`${prefix}-gh`);
+  writeFileSync(join(dir, 'gh'), `#!${process.execPath}\n${script}\n`, { mode: 0o755 });
+  return `${dir}${delimiter}${pathWithGitOnly(`${prefix}-git`)}`;
+}
+
+test('a gh that cannot name the repository is told apart from a gh that is not installed', async (t) => {
+  const repo = repoWithoutModel('comment-noslug');
+  // gh is installed and just ran; telling this reader to install it is the
+  // remedy that cannot work in the state they are in.
+  const env: Record<string, string> = {
+    ...sandboxEnv('comment-noslug'),
+    PATH: fakeGh('comment-noslug', "process.stderr.write('not logged in\\n'); process.exit(1);"),
+  };
+  await initRepo(t, repo, env);
+  await captureCli(['check', '--no-model', '--format', 'json'], { cwd: repo.path, env });
+
+  const preview = await captureCli(['comment', '--pr', String(PR), '--dry-run', '--format', 'json'], {
+    cwd: repo.path,
+    env,
+  });
+  const doc = JSON.parse(preview.out) as CommentDoc & {
+    pull_request_checked: boolean;
+    unchecked_reason: string | null;
+    stale: boolean | null;
+  };
+
+  assert.equal(preview.code, EXIT_OK);
+  assert.equal(doc.pull_request_checked, false);
+  assert.equal(doc.unchecked_reason, 'no-repository', 'a different state from an absent gh');
+  assert.equal(doc.stale, null);
+  assert.ok(
+    doc.help.every((line) => !line.includes('Install the GitHub CLI')),
+    'gh is installed and ran, so installing it is not the remedy',
+  );
+  assert.ok(doc.help.some((line) => line.includes('gh auth status')));
+});
+
+test('a gh something kills is reported as a killed process, not as an eyes-on bug', async (t) => {
+  const repo = repoWithoutModel('comment-killed');
+  // No error and no status - the shape the out-of-memory killer and a Ctrl-C
+  // both produce, and the one that used to arrive as an allow-list refusal.
+  const env: Record<string, string> = {
+    ...sandboxEnv('comment-killed'),
+    PATH: fakeGh('comment-killed', "process.kill(process.pid, 'SIGKILL');"),
+  };
+  await initRepo(t, repo, env);
+  await captureCli(['check', '--no-model', '--format', 'json'], { cwd: repo.path, env });
+
+  const result = await captureCli(['comment', '--pr', String(PR), '--dry-run', '--format', 'json'], {
+    cwd: repo.path,
+    env,
+  });
+  const doc = JSON.parse(result.out) as { error: string; help: string[] };
+
+  assert.equal(result.code, EXIT_ERROR);
+  assert.match(doc.error, /gh ran and was killed by SIGKILL/);
+  assert.ok(
+    doc.help.every((line) => !line.includes('eyes-on bug')),
+    'a subprocess something else killed is not a defect in eyes-on',
+  );
+  assert.ok(doc.help.some((line) => line.includes('run the command again')));
 });

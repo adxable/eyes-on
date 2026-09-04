@@ -83,13 +83,71 @@ export interface CommentInput {
   /** Normalized signal values, for the one line that says where the score came
    *  from. Only the ones that moved it. */
   signals: readonly { name: string; normalized: number }[];
-  /** True when the head this comment describes is not the pull request's head. */
-  stale: boolean;
-  prHeadSHA: string | null;
+  /** What eyes-on saw when it looked at the pull request, or the fact that it
+   *  never looked. Staleness is derived from this rather than passed in, so a
+   *  caller with no observation cannot hand the renderer a default. */
+  pullRequest: PullRequestView;
+}
+
+/**
+ * The pull request as this run observed it, or the fact that it did not.
+ *
+ * Every field the output carries about the pull request - its head, how many
+ * comments are on it, whether an eyes-on comment is already there, whether the
+ * assessment describes the head it now points at - is derived from this one
+ * value. `--dry-run` on a host without the GitHub CLI reaches the end of the
+ * command having called gh not once, and `false` for staleness there is not a
+ * missing observation but a positive claim that the assessment matches a head
+ * nobody read.
+ *
+ * A discriminated union rather than a set of nullable fields, because the next
+ * field somebody adds must be unable to default: there is no `head` to read on
+ * the unchecked branch at all.
+ */
+export type PullRequestView =
+  | {
+      checked: true;
+      /** `<owner>/<repo>` as gh named it. */
+      slug: string;
+      /** The pull request's head commit, or null when gh could not name one. */
+      head: string | null;
+      /** Every comment on the pull request, from anyone. */
+      comments: number;
+      /** Those carrying the eyes-on marker. Two would be a defect this number
+       *  exists to make visible, so it is counted rather than derived from the
+       *  one that gets updated. */
+      marked: number;
+      existingId: number | null;
+      existingUrl: string | null;
+    }
+  | { checked: false; reason: UncheckedReason };
+
+/** Why a run never looked at the pull request. The two are different states of
+ *  the machine and only one of them is fixed by installing anything. */
+export type UncheckedReason =
+  /** The GitHub CLI is not on PATH. */
+  | 'gh-missing'
+  /** gh ran and could not name a GitHub repository for this clone - an
+   *  unauthenticated gh, or a clone with no GitHub remote. */
+  | 'no-repository';
+
+/**
+ * Whether the assessment describes the commit the pull request now points at,
+ * or null when nothing read the pull request to find out.
+ *
+ * The single place that decides it. A short sha from the API and a full one
+ * from the database describe the same commit, so comparing them for equality
+ * would report every pull request as stale.
+ */
+export function staleness(view: PullRequestView, headSHA: string): boolean | null {
+  if (!view.checked || view.head === null) return null;
+  return !headSHA.startsWith(view.head) && !view.head.startsWith(headSHA);
 }
 
 export function renderComment(input: CommentInput): string {
   const { check } = input;
+  const stale = staleness(input.pullRequest, check.head_sha);
+  const prHead = input.pullRequest.checked ? input.pullRequest.head : null;
   const band = (check.band ?? 'auto') as Band;
   const unverified = check.status === 'unverified';
   const outOf = check.score_max === null ? '' : ` of at most ${check.score_max}`;
@@ -166,7 +224,16 @@ export function renderComment(input: CommentInput): string {
 
   lines.push(
     '',
-    `<sub>${check.base_sha.slice(0, 12)}..${check.head_sha.slice(0, 12)}. eyes-on directs attention; nothing here reddens this pull request or holds up a merge, and it does not edit this pull request's body or file a review.${input.stale ? ` **This assessment is of ${check.head_sha.slice(0, 12)}, and the pull request now points at ${(input.prHeadSHA ?? '').slice(0, 12)}.**` : ''}</sub>`,
+    // Three states, not two: stale, fresh, and nobody looked. The third says so
+    // rather than reading as the second, because omitting the sentence is the
+    // claim that the assessment describes the head the pull request has now.
+    `<sub>${check.base_sha.slice(0, 12)}..${check.head_sha.slice(0, 12)}. eyes-on directs attention; nothing here reddens this pull request or holds up a merge, and it does not edit this pull request's body or file a review.${
+      stale === null
+        ? ' **eyes-on could not read this pull request, so whether it still points at this commit is unchecked.**'
+        : stale
+          ? ` **This assessment is of ${check.head_sha.slice(0, 12)}, and the pull request now points at ${(prHead ?? '').slice(0, 12)}.**`
+          : ''
+    }</sub>`,
   );
   return lines.join('\n');
 }

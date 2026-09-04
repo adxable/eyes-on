@@ -1,9 +1,10 @@
 import { spawnSync } from 'node:child_process';
 import {
   MAX_OUTPUT_BYTES,
+  signalDetail,
   spawnFailureHelp,
-  spawnFailureKindOf,
   spawnFailureMessage,
+  spawnFailureOf,
   type SpawnFailureKind,
 } from '../core/spawn.js';
 
@@ -117,15 +118,17 @@ function git(args: string[], options: GitOptions = {}): GitResult {
       GIT_OPTIONAL_LOCKS: '0',
     },
   });
-  if (result.error) {
-    // No status at all. Which of the four states that is decides the sentence:
-    // absence is a probe's "no git", while an output too large to buffer and a
-    // read that timed out are failures of a working git and are reported as
-    // themselves.
-    throw new GitError(full, -1, String(result.error.message ?? result.error), spawnFailureKindOf(result.error));
+  // Asked over the whole result rather than over `result.error`, because a git
+  // killed from outside sets no error at all and would otherwise arrive here
+  // looking like a success with no status. Past this point `result.status` is a
+  // number, so nothing below needs a sentinel for the absence of one.
+  const failure = spawnFailureOf(result);
+  if (failure !== null) {
+    const detail = failure === 'signalled' ? signalDetail(result) : String(result.error?.message ?? result.error ?? '');
+    throw new GitError(full, -1, detail, failure);
   }
   const out: GitResult = {
-    status: result.status ?? -1,
+    status: result.status as number,
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
   };

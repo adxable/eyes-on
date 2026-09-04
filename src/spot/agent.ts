@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
-import { MAX_OUTPUT_BYTES, spawnFailureKindOf, spawnFailureMessage } from '../core/spawn.js';
+import { MAX_OUTPUT_BYTES, signalDetail, spawnFailureMessage, spawnFailureOf } from '../core/spawn.js';
 
 /**
  * The single door to a local coding agent.
@@ -214,18 +214,23 @@ export function askModel(prompt: string, options: ModelOptions): ModelOutcome {
   });
   const elapsed = Math.round(Number(process.hrtime.bigint() - started) / 1e6);
 
-  if (result.error) {
-    const kind = result.signal === 'SIGTERM' ? 'timeout' : spawnFailureKindOf(result.error);
+  const failure = result.signal === 'SIGTERM' && result.error ? 'timeout' : spawnFailureOf(result);
+  if (failure !== null) {
     return {
       state: 'failed',
       command,
       elapsed_ms: elapsed,
-      // An agent that wrote more than eyes-on reads is not an agent that could
-      // not be run, and only one of those is worth trying to install.
+      // An agent that wrote more than eyes-on reads, and one something else
+      // killed, are not agents that could not be run - and only absence is
+      // worth trying to install.
       detail:
-        kind === 'timeout'
+        failure === 'timeout'
           ? `${command[0]} did not answer within ${Math.round((options.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000)}s`
-          : spawnFailureMessage(command[0] as string, kind, result.error.message),
+          : spawnFailureMessage(
+              command[0] as string,
+              failure,
+              failure === 'signalled' ? signalDetail(result) : String(result.error?.message ?? ''),
+            ),
     };
   }
   if (result.status !== 0) {
