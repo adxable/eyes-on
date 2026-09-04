@@ -99,6 +99,30 @@ export function flagBool(args: ParsedArgs, name: string): boolean {
   return args.flags.get(name) === true || args.flags.get(name) === 'true';
 }
 
+/**
+ * A flag value that has to be an exact positive whole number, or null when it
+ * is not one.
+ *
+ * `Number.parseInt` is too forgiving to validate with: it reads `42abc` as 42
+ * and a twenty-digit argument as `1e20`, which is finite and positive and
+ * therefore passes every check short of `Number.isSafeInteger`. A `--pr` like
+ * that used to survive all the way to the gh operation builder, which refuses
+ * it as a vector eyes-on itself could not have written - and a user's typo was
+ * reported as a defect in eyes-on.
+ *
+ * So the reading is exact and it lives here, where flags are read, rather than
+ * at each caller: digits only, and a value the rest of the product can act on.
+ * A number that is a *preference* rather than a contract - `--n`, `--lines` -
+ * is deliberately not read through this, because those are clamped into their
+ * range on purpose and refusing them would be the stronger sentence.
+ */
+export function flagCount(args: ParsedArgs, name: string): number | null {
+  const raw = flagString(args, name);
+  if (raw === null || !/^\d+$/.test(raw)) return null;
+  const value = Number.parseInt(raw, 10);
+  return Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
 const FORMATS: readonly Format[] = ['toon', 'json', 'md'];
 
 /** Resolves --format, falling back to the caller's default for this command. */

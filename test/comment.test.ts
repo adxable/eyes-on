@@ -801,3 +801,38 @@ test('a number GitHub gives comments but no head is said to be that, not "eyes-o
   assert.doesNotMatch(doc.body, /could not read this pull request/);
   assert.ok(doc.help.some((line) => line.includes('an issue rather than a pull request')));
 });
+
+test('a --pr that is not a pull request number is a usage error, not a defect in eyes-on', async (t) => {
+  const agent = stubAgent('comment-badpr', [SPOTLIGHT_ANSWER]);
+  const repo = repoWith(agent);
+  const head = repo.git(['rev-parse', 'HEAD']).trim();
+  // gh installed and answering, so nothing short of the number itself stops the
+  // command: this is the path where a bad `--pr` used to reach the operation
+  // builder and come back as an internal refusal.
+  const gh = stubGh('comment-badpr', { slug: SLUG, number: PR, headSHA: head, body: BODY });
+  const env: Record<string, string> = { ...sandboxEnv('comment-badpr'), PATH: `${agent.dir}${delimiter}${gh.path}` };
+  await initRepo(t, repo, env);
+  await captureCli(['check', '--format', 'json'], { cwd: repo.path, env });
+
+  // Twenty digits: finite and positive, and not a whole number JavaScript can
+  // carry, so it survived every check short of the one that matters.
+  const huge = await captureCli(['comment', '--pr', '99999999999999999999', '--format', 'json'], {
+    cwd: repo.path,
+    env,
+  });
+  const hugeDoc = JSON.parse(huge.out) as { error: string; help: string[] };
+  assert.equal(huge.code, EXIT_USAGE, 'a mistyped flag is the caller using the CLI wrongly');
+  assert.match(hugeDoc.error, /is not a pull request number/);
+  assert.ok(
+    hugeDoc.help.every((line) => !line.includes('eyes-on bug')),
+    'a typo in --pr is not a defect in the product',
+  );
+  assert.equal(gh.calls().length, 0, 'and nothing was asked of GitHub');
+
+  // Trailing garbage: parseInt reads this as 42, so the command used to publish
+  // on a pull request the caller never named.
+  const garbage = await captureCli(['comment', '--pr', '42abc', '--format', 'json'], { cwd: repo.path, env });
+  assert.equal(garbage.code, EXIT_USAGE);
+  assert.match(garbage.out, /--pr 42abc is not a pull request number/);
+  assert.equal(gh.calls().length, 0);
+});

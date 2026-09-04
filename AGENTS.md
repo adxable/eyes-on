@@ -40,8 +40,8 @@ correctness bug even when everything still passes:
   from the permitted comment update by one path segment and simply has no
   operation, so no vector for it exists. This replaced an allow-list that
   parsed the vector, and the reason is the shape rather than the two bugs: the
-  parser had to reproduce `gh api`'s own argument semantics, and three rounds
-  found three divergences - `-XPATCH` read as a GET, then the implicit method,
+  parser had to reproduce `gh api`'s own argument semantics, and two rounds
+  found two divergences - `-XPATCH` read as a GET, then the implicit method,
   where `--input` with no `--method` is sent as a POST. `argvFor` validates the
   only tokens a caller influences, the slug and the number, before placing
   them, and `assertAllowed` checks the finished vector against the same table;

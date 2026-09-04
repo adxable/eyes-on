@@ -32,8 +32,8 @@ import {
  *
  * This shape replaced a parser, and the reason is worth keeping. The parser had
  * to decide read from write by reproducing `gh api`'s own argument semantics,
- * and three review rounds found three ways that reproduction diverged from gh:
- * the attached shorthand `-XPATCH` read as a GET, and then the implicit method,
+ * and two review rounds found two ways that reproduction diverged from gh: the
+ * attached shorthand `-XPATCH` read as a GET, and then the implicit method,
  * where a vector carrying `--input` and no `--method` is sent as a POST. Each
  * fix was correct and the next round found another. A defence that must model
  * another program's parser is only as good as the model; a defence that emits
@@ -58,10 +58,10 @@ const COMMENT_PATH = new RegExp(`^repos/${OWNER}/${REPO}/issues/comments/\\d+$`)
  * A caller names an operation; this module owns the argument vector. That is
  * the same move `model.agent` makes for the coding agent, and it is here for
  * the same reason it was needed there: narrowing one dimension at a time did
- * not hold. Three review rounds found three ways an argument vector could be
- * read as something other than what gh would do with it - the attached
- * shorthand `-XPATCH` parsed as a GET, then `gh api`'s implicit method, which
- * turns a vector carrying `--input` into a POST with no `--method` in sight.
+ * not hold. Two review rounds found two ways an argument vector could be read
+ * as something other than what gh would do with it - the attached shorthand
+ * `-XPATCH` parsed as a GET, then `gh api`'s implicit method, which turns a
+ * vector carrying `--input` into a POST with no `--method` in sight.
  *
  * A defence that has to reproduce another program's argument semantics is only
  * ever as good as that reproduction. So the semantics are removed instead: the
@@ -437,7 +437,11 @@ export function parseComments(text: string): IssueComment[] {
     for (const entry of parsed) {
       if (entry === null || typeof entry !== 'object') continue;
       const map = entry as Record<string, unknown>;
-      if (typeof map.id !== 'number') continue;
+      // The id is interpolated into the update vector, so it is checked where
+      // it enters rather than at the builder, which would refuse it as a vector
+      // eyes-on could not have written. A comment whose id eyes-on cannot
+      // address is not eyes-on's comment.
+      if (typeof map.id !== 'number' || !Number.isSafeInteger(map.id) || map.id <= 0) continue;
       comments.push({
         id: map.id,
         body: typeof map.body === 'string' ? map.body : '',

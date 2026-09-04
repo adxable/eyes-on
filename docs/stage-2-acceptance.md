@@ -303,7 +303,7 @@ operation, so no vector for it can be built.
 
 This replaced an allow-list that parsed the vector, and the reason is the shape
 rather than the two bugs it had. To decide read from write, that parser had to
-reproduce `gh api`'s own argument semantics, and three review rounds found three
+reproduce `gh api`'s own argument semantics, and two review rounds found two
 divergences: pflag's attached shorthand `-XPATCH` read as a GET of a read path,
 and then the implicit method, where a vector carrying `--input` and no
 `--method` is sent by gh as a POST and was validated against the read table.

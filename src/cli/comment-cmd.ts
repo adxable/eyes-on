@@ -1,6 +1,6 @@
 import type { Context } from './context.js';
 import { assertMayMutate } from './context.js';
-import { flagBool, flagString } from './args.js';
+import { flagBool, flagCount, flagString, type ParsedArgs } from './args.js';
 import { emitDoc, progress, EXIT_OK, EXIT_ERROR, EXIT_USAGE, UserFacingError } from './output.js';
 import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
@@ -39,7 +39,7 @@ import { carriedEvidence, driftProvenanceSentence, unverifiedSentence } from '..
 export async function commentCommand(context: Context): Promise<number> {
   assertMayMutate(context, 'comment');
 
-  const number = parsePr(flagString(context.args, 'pr'));
+  const number = parsePr(context.args);
   const dryRun = flagBool(context.args, 'dry-run');
 
   const risk = riskContext(context);
@@ -234,9 +234,18 @@ function hitsFor(db: NonNullable<ReturnType<typeof riskContext>['db']>, id: stri
   return [...byGlob.values()];
 }
 
-function parsePr(raw: string | null): number {
-  const number = Number.parseInt(raw ?? '', 10);
-  if (!Number.isFinite(number) || number <= 0) {
+/**
+ * The pull request to publish on.
+ *
+ * Validated here, where the flag is read and where the mistake is the user's,
+ * so a mistyped number is a usage error with a remedy that works rather than a
+ * refusal raised deep inside the gh operation builder - which would be true
+ * about a vector eyes-on cannot write, and false about whose fault it is.
+ */
+function parsePr(args: ParsedArgs): number {
+  const raw = flagString(args, 'pr');
+  const number = flagCount(args, 'pr');
+  if (number === null) {
     throw new UserFacingError(
       raw === null ? 'comment needs --pr <n>' : `--pr ${raw} is not a pull request number`,
       ['Pass the pull request number, for example `eyes-on comment --pr 42`'],
