@@ -16,9 +16,9 @@ import {
  * either lose eyes-on's paragraph on the next push or overwrite no-mistakes'.
  *
  * The enforcement is structural rather than careful, and the structure is that
- * **no caller anywhere writes an argument vector**. A caller names one of six
- * operations (`GhOperation`); this module holds the six vectors literally, and
- * `gh()` - which is module-private - is the only thing that builds one. Four of
+ * **no caller anywhere writes an argument vector**. A caller names one of seven
+ * operations (`GhOperation`); this module holds the seven vectors literally, and
+ * `gh()` - which is module-private - is the only thing that builds one. Five of
  * them read and two write, both issue comments:
  *
  *   - `POST   repos/<owner>/<repo>/issues/<n>/comments`
@@ -37,7 +37,7 @@ import {
  * where a vector carrying `--input` and no `--method` is sent as a POST. Each
  * fix was correct and the next round found another. A defence that must model
  * another program's parser is only as good as the model; a defence that emits
- * six fixed vectors has nothing to model. That is why the set is closed rather
+ * a fixed table of vectors has nothing to model. That is why the set is closed rather
  * than filtered - the same move `model.agent` makes for the coding agent, where
  * narrowing one dimension at a time did not hold either.
  *
@@ -59,7 +59,7 @@ const COMMENTS_PATH = new RegExp(`^repos/${OWNER}/${REPO}/issues/\\d+/comments$`
 const COMMENT_PATH = new RegExp(`^repos/${OWNER}/${REPO}/issues/comments/\\d+$`);
 
 /**
- * Everything eyes-on can ask gh to do. There is no seventh.
+ * Everything eyes-on can ask gh to do. There is no eighth.
  *
  * A caller names an operation and never an argument vector; the header above
  * says why the set is closed rather than filtered.
@@ -71,6 +71,14 @@ export type GhOperation =
   | { op: 'auth-status' }
   /** The head commit of a pull request. */
   | { op: 'pull-head'; slug: string; number: number }
+  /**
+   * The whole pull request, for the ledger: whether it merged, as which commit,
+   * and when. A GET of the same path `pull-head` reads, asking for no `--jq` at
+   * all - the fields are picked out and checked in TypeScript, where a name
+   * GitHub did not send is reported as missing rather than arriving as a silent
+   * `null` from a jq expression nobody can see failing.
+   */
+  | { op: 'pull-record'; slug: string; number: number }
   /** Every comment on an issue or pull request. */
   | { op: 'list-comments'; slug: string; number: number }
   /** Post eyes-on's comment. One of the two writes. */
@@ -98,6 +106,7 @@ const EMITTED_VECTORS: readonly (readonly Slot[])[] = [
   ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'],
   ['auth', 'status'],
   ['api', PULL_PATH, '--jq', '.head.sha'],
+  ['api', PULL_PATH],
   ['api', '--paginate', COMMENTS_PATH],
   ['api', '--method', 'POST', COMMENTS_PATH, '--input', '-'],
   ['api', '--method', 'PATCH', COMMENT_PATH, '--input', '-'],
@@ -137,7 +146,7 @@ export type GhFailure =
 const REMOTE_HELP: readonly string[] = [
   'gh ran and GitHub answered, so this is a state of the pull request or of your access to it rather than a defect in eyes-on',
   'Check that the pull request number exists and that you can see it, and run `gh auth status` if it should be visible',
-  '`--dry-run` does not get past this: it publishes nothing, but it reads the pull request the same way before rendering the comment',
+  '`--dry-run` does not get past this: it writes nothing, but it reads the pull request the same way before rendering its answer',
 ];
 
 export class GhError extends Error {
@@ -281,6 +290,8 @@ export function argvFor(operation: GhOperation): string[] {
       return ['auth', 'status'];
     case 'pull-head':
       return ['api', `repos/${slug(operation.slug)}/pulls/${count(operation.number, 'pull request number')}`, '--jq', '.head.sha'];
+    case 'pull-record':
+      return ['api', `repos/${slug(operation.slug)}/pulls/${count(operation.number, 'pull request number')}`];
     case 'list-comments':
       return ['api', '--paginate', `repos/${slug(operation.slug)}/issues/${count(operation.number, 'pull request number')}/comments`];
     case 'create-comment':
@@ -398,6 +409,96 @@ export function pullHeadSHA(clonePath: string, slug: string, number: number): st
   if (result.status !== 0) return null;
   const sha = result.stdout.trim();
   return /^[0-9a-f]{7,40}$/.test(sha) ? sha : null;
+}
+
+/**
+ * A merged pull request as GitHub knows it: the ledger's half of the chain.
+ *
+ * The other half is git's - the default-branch commit whose subject ends in
+ * `(#N)` - and `src/ledger/link.ts` is what compares them. Nothing here reads
+ * the no-mistakes database, which is the whole point of the stage 3 acceptance
+ * condition: the chain from a run to a pull request to the commit that landed
+ * it is reconstructible from git and GitHub alone.
+ */
+export interface PullRecord {
+  number: number;
+  /** `open` or `closed`, as GitHub reports it. */
+  state: string | null;
+  /** True only when GitHub says the pull request merged. A closed pull request
+   *  that was never merged is a different fact and must not be read as one. */
+  merged: boolean;
+  /** When it merged, seconds since the epoch, or null when it did not. */
+  merged_at: number | null;
+  /** The commit the merge produced on the base branch. Null when GitHub named
+   *  none, which is every unmerged pull request. */
+  merge_commit_sha: string | null;
+  /** The tip of the branch that was proposed. */
+  head_sha: string | null;
+  base_ref: string | null;
+  title: string | null;
+  url: string | null;
+}
+
+/**
+ * The pull request record, or null when gh answered nothing usable.
+ *
+ * Every field is read out of the JSON here rather than by a `--jq` expression
+ * in the argument vector, and each is checked for its own shape: a sha that is
+ * not a sha and a timestamp GitHub did not send arrive as null rather than as
+ * a string that later reads as a commit nobody has.
+ *
+ * `merge_commit_sha` is populated by GitHub for an *unmerged* pull request too
+ * - it names the test-merge commit GitHub computes - so it is only carried
+ * when `merged` is true. Reading it unconditionally would hand the ledger a
+ * commit that is on no branch as the commit that landed the change.
+ */
+export function pullRecord(clonePath: string, slug: string, number: number): PullRecord | null {
+  const result = gh({ op: 'pull-record', slug, number }, { cwd: clonePath });
+  if (result.status !== 0) {
+    throw GhError.remote(`gh could not read ${slug}#${number}`, result.status, result.stderr);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const map = parsed as Record<string, unknown>;
+  if (typeof map.number !== 'number' || map.number !== number) return null;
+  const merged = map.merged === true || typeof map.merged_at === 'string';
+  return {
+    number,
+    state: typeof map.state === 'string' ? map.state : null,
+    merged,
+    merged_at: typeof map.merged_at === 'string' ? epochOf(map.merged_at) : null,
+    merge_commit_sha: merged ? sha(map.merge_commit_sha) : null,
+    head_sha: sha(field(map.head, 'sha')),
+    base_ref: typeof field(map.base, 'ref') === 'string' ? (field(map.base, 'ref') as string) : null,
+    title: typeof map.title === 'string' ? map.title : null,
+    url: typeof map.html_url === 'string' ? map.html_url : null,
+  };
+}
+
+/** One key of a nested object GitHub sent, or undefined when it sent no such
+ *  object. `head` and `base` are the only two the record reaches into. */
+function field(value: unknown, key: string): unknown {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)[key]
+    : undefined;
+}
+
+/** A full commit sha, or null for anything that is not one. */
+function sha(value: unknown): string | null {
+  return typeof value === 'string' && /^[0-9a-f]{40}$/.test(value) ? value : null;
+}
+
+/** An ISO 8601 instant as seconds since the epoch, or null when it is not one.
+ *  A merge time that cannot be read is the absence of a time, never zero: the
+ *  leak window is measured from it. */
+function epochOf(value: string): number | null {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
 }
 
 export function listComments(clonePath: string, slug: string, number: number): IssueComment[] {

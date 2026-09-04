@@ -8,9 +8,9 @@
  * instruction that is maintained by hand disagrees with the CLI within a week.
  *
  * `stage` records which delivery stage owns the command, and `implemented`
- * whether it does anything yet. Stages 0 and 1 are built; a stage-2 or stage-3
- * command that is listed but not built says so plainly and exits non-zero; it
- * never pretends to have an answer.
+ * whether it does anything yet. Stages 0 through 3 are built; a command that is
+ * listed and not built says so plainly and exits non-zero, naming the stage
+ * that owns it - it never pretends to have an answer.
  */
 
 export type Stage = 0 | 1 | 2 | 3;
@@ -148,27 +148,30 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'label',
-    usage: 'eyes-on label --pr <n>',
-    summary: 'Record the channel, the decision and the merge commit in the ledger after a merge.',
+    usage: 'eyes-on label --pr <n> [--check-id <id>] [--default-branch <ref>] [--dry-run]',
+    summary:
+      'Append one register line for a merged change: the channel it merged under, the gate decision and the hits it answered, the drift grade and the intent it was measured against, and the commit that landed it. The chain from the change to that commit is reconstructed from the `(#N)` subject on the default branch and from GitHub, and the record says whether the two agree. Append-only; --dry-run reconstructs everything and writes nothing.',
     stage: 3,
     mutating: true,
-    implemented: false,
+    implemented: true,
   },
   {
     name: 'leaks',
-    usage: 'eyes-on leaks [--window 14d] [--since 90d]',
-    summary: 'Report post-merge fixes per channel - the line-level variant only.',
+    usage: 'eyes-on leaks [--window 14d] [--since 90d] [--default-branch <ref>]',
+    summary:
+      'Report, per channel, how often a registered merge was followed by a fix whose blame names it - the line-level variant only, because the file-level one has a base rate of 45-73% and can argue for no threshold. Below a hundred merges in a channel the header says the numbers are directional. Exits 0 whatever they are.',
     stage: 3,
     mutating: false,
-    implemented: false,
+    implemented: true,
   },
   {
     name: 'calibrate',
-    usage: 'eyes-on calibrate',
-    summary: 'Propose thresholds from the ledger by sweeping them over recorded history.',
+    usage: 'eyes-on calibrate [--window 14d] [--since 90d] [--default-branch <ref>]',
+    summary:
+      'Sweep a grid of thresholds over the register: what each pair would have sent to a human, and how much of what it let through leaked. Writes nothing - the thresholds live on the default branch, which eyes-on reads and never writes.',
     stage: 3,
-    mutating: true,
-    implemented: false,
+    mutating: false,
+    implemented: true,
   },
 ];
 

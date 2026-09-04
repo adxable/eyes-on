@@ -43,8 +43,16 @@ export interface ChangedFile {
 
 export interface CommitRecord {
   sha: string;
-  /** Author timestamp, seconds since the epoch. */
+  /** Author timestamp, seconds since the epoch. Every history signal reads
+   *  this: it is when the work was written. */
   timestamp: number;
+  /**
+   * Committer timestamp, which for a squash merge is when the change **landed**
+   * while the author timestamp is when its first commit was written. The two
+   * are days apart on an ordinary branch, and the register's leak window starts
+   * at the landing, so it reads this one.
+   */
+  committed: number;
   subject: string;
   parents: string[];
   files: ChangedFile[];
@@ -157,6 +165,26 @@ export class RepoReader {
       args.push(`--max-count=${options.maxCount}`);
     }
     args.push(options.until);
+    return parseLog(this.readOrThrow(args));
+  }
+
+  /**
+   * The branch's own commits, newest first, with no diff at all.
+   *
+   * `--first-parent` is the whole point: on a repository that merges without
+   * squashing, the commits of a merged branch are reachable from the tip but
+   * none of them landed a pull request *on this branch*, and counting them
+   * would give the register several candidate merge commits per pull request.
+   *
+   * No `--numstat`, unlike `history()`: the ledger asks which pull request each
+   * commit landed, and reading every file of every commit to answer that is the
+   * difference between a second and a minute on a repository of any size.
+   */
+  firstParentLog(anchorSHA: string, options: { sinceSeconds?: number; maxCount?: number } = {}): CommitRecord[] {
+    const args = ['log', '--first-parent', '--date=unix', `--format=${LOG_FORMAT}`];
+    if (options.sinceSeconds !== undefined) args.push(`--since=${Math.floor(options.sinceSeconds)}`);
+    if (options.maxCount !== undefined) args.push(`--max-count=${options.maxCount}`);
+    args.push(anchorSHA);
     return parseLog(this.readOrThrow(args));
   }
 
@@ -342,7 +370,7 @@ const C_ESCAPES: Record<string, number> = {
 /** ASCII record separator: it cannot appear in a commit subject, so a subject
  *  containing a newline still splits into exactly one record. */
 const RECORD = '\u001e';
-const LOG_FORMAT = `${RECORD}%H%x09%at%x09%P%x09%s`;
+const LOG_FORMAT = `${RECORD}%H%x09%at%x09%ct%x09%P%x09%s`;
 
 function parseNumstat(text: string): ChangedFile[] {
   const files: ChangedFile[] = [];
@@ -378,11 +406,17 @@ export function parseLog(text: string): CommitRecord[] {
     const newline = chunk.indexOf('\n');
     const header = newline < 0 ? chunk : chunk.slice(0, newline);
     const body = newline < 0 ? '' : chunk.slice(newline + 1);
-    const [sha, at, parents, ...subjectParts] = header.split('\t');
+    const [sha, at, committed, parents, ...subjectParts] = header.split('\t');
     if (!sha || !/^[0-9a-f]{40}$/.test(sha)) continue;
+    const authored = Number.parseInt(at ?? '0', 10) || 0;
     records.push({
       sha,
-      timestamp: Number.parseInt(at ?? '0', 10) || 0,
+      timestamp: authored,
+      // A commit whose committer date git did not report falls back to the
+      // author date rather than to zero: the epoch would put every leak window
+      // fifty-six years in the past, which is a wrong answer wearing the shape
+      // of a right one.
+      committed: Number.parseInt(committed ?? '0', 10) || authored,
       subject: subjectParts.join('\t'),
       parents: (parents ?? '').split(' ').filter((entry) => entry.length > 0),
       files: parseNumstat(body),

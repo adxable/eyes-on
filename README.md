@@ -9,21 +9,25 @@ the code being good; eyes-on is responsible for a human reading the part that
 matters, and for making it possible to check afterwards whether the threshold
 was set correctly.
 
-## Status: stage 2
+## Status: stage 3
 
-Stage 2 answers the second half of the question. Stage 1 says *whether* a human
-has to read a change; stage 2 says *what* - three to five fragments, ranked from
-the repository's history and then chosen by one model call - compares the diff
-with the intent its author stated, parks a change a hard rule protects until
-somebody records a decision about it, and publishes the result as a single
-sticky pull-request comment.
+Stage 1 says *whether* a human has to read a change. Stage 2 says *what* - three
+to five fragments, ranked from the repository's history and then chosen by one
+model call - compares the diff with the intent its author stated, parks a change
+a hard rule protects until somebody records a decision, and publishes the result
+as a single sticky pull-request comment.
 
-The ledger and the leak measurement (`label`, `leaks`, `calibrate`) arrive in
-stage 3. Commands that belong to it are listed and report the stage that owns
-them; they never return a made-up answer.
+Stage 3 is the part that says whether any of those thresholds are set right. A
+merged change leaves one append-only line in `ledger.jsonl` carrying the channel
+it merged under; `leaks` reports how often a channel's merges were followed by a
+fix that blames them, and `calibrate` sweeps a grid of thresholds over that
+register. Below a hundred merges in a channel both say in their header that the
+numbers are directional, because at the observed leak rates that is the size at
+which two channels can be told apart rather than merely ranked.
 
-Measured acceptance results: [stage 2](docs/stage-2-acceptance.md),
-[stage 1](docs/stage-1-acceptance.md), [stage 0](docs/stage-0-acceptance.md).
+Measured acceptance results: [stage 3](docs/stage-3-acceptance.md),
+[stage 2](docs/stage-2-acceptance.md), [stage 1](docs/stage-1-acceptance.md),
+[stage 0](docs/stage-0-acceptance.md).
 
 ## Install
 
@@ -55,10 +59,13 @@ leaves a healthy install alone. `eyes-on init --watch` additionally installs a
 | `eyes-on rules --check [--strict] [--base <ref>] [--head <ref>] [--default-branch <ref>]` | The hard rules alone, read from the default branch |
 | `eyes-on export-path-instructions [--min-risk <0-100>] [--default-branch <ref>]` | A `review.path_instructions` block for `.no-mistakes.yaml` |
 | `eyes-on backtest --split <date>[,<date>...] [--horizon <days>] [--default-branch <ref>]` | Whether the signal knew anything, on this repository's own history |
+| `eyes-on label --pr <n> [--check-id <id>] [--default-branch <ref>] [--dry-run]` | One append-only register line for a merged change: the channel it merged under and the commit that landed it |
+| `eyes-on leaks [--window 14d] [--since 90d] [--default-branch <ref>]` | Per channel, how often a registered merge was followed by a fix that blames it |
+| `eyes-on calibrate [--window 14d] [--since 90d] [--default-branch <ref>]` | What each pair of thresholds would have caught, and what it would have let through |
 | `eyes-on axi {status\|check\|logs [--lines <n>]\|respond --action read\|waive --reason "..." [--check-id <id>] [--by <name>]\|abort} [--base <ref>] [--head <ref>] [--default-branch <ref>]` | The agent surface, including the `must_read` gate. `abort` answers that there is no in-flight run to stop |
 
-`label`, `leaks` and `calibrate` arrive in stage 3. `eyes-on help` prints the
-full surface with the stage that owns each one.
+That is the whole surface. `eyes-on help` prints it with the stage that owns
+each command.
 
 ## What to read, and whether it matches the intent
 
@@ -105,7 +112,7 @@ eyes-on axi respond --action waive --reason "why this is safe to merge unread"
 
 A waiver with no reason is refused. The decision, the reason, who gave it and
 **which rule hits it answered** are written down, which is what turns the channel
-label from a declaration into evidence - and is what stage 3's ledger reads. A
+label from a declaration into evidence - and is what the register reads. A
 decision answers the rules it was shown: answer a change no rule matched, then
 add a rule that reaches it, and the change parks again rather than arriving
 pre-waived.
@@ -216,6 +223,41 @@ is honoured only when `model: { allow_any_command: true }` is set in
 Without it a repository carrying `model.command` is refused by name and the
 command falls back to stage one.
 
+## After the merge: the register
+
+A merged change leaves one line in `ledger.jsonl`, appended and never rewritten:
+
+```sh
+eyes-on label --pr 42         # after the merge; --dry-run reconstructs and writes nothing
+eyes-on leaks --window 14d    # per channel, how often a merge was followed by a fix that blames it
+eyes-on calibrate             # what each pair of thresholds would have caught, and let through
+```
+
+`label` reconstructs the chain from the change to the commit that landed it from
+**git and GitHub alone**: the `(#N)` suffix a squash merge leaves in the subject
+on the default branch, and GitHub's own `merge_commit_sha`. Both are recorded,
+and so is whether they agree - a row naming one of two contradictory commits
+would be worse than one saying it does not know which. Nothing here reads the
+no-mistakes database, and nothing here can.
+
+The line carries what each fact was recorded against: the score with the maximum
+its weights could produce, the band with whether a hard rule forced it and
+whether the configuration behind it was readable, the gate decision with the set
+of rule hits it answered, the drift grade with the intent it was measured
+against. `label` refuses to write a line for a change eyes-on never assessed -
+a register row inventing a channel would put that change into the very
+comparison the register exists to make - and `leaks` reports coverage, so a
+partial register cannot read as a complete one.
+
+`leaks` reports the **line-level** variant only: a later fix commit whose blame,
+taken on that fix's parent, names the merge commit of a registered change. There
+is no flag for the file-level variant and asking for one is refused by name. Its
+base rate is 45-73%, so nearly every merge "leaks" by that definition, every
+channel scores nearly the same, and no threshold can be argued from it.
+
+Neither command blocks anything and neither has a `--strict`: the register
+reports on the past.
+
 ## Output contract
 
 - Machine payload on **stdout**: TOON by default under `axi`, Markdown elsewhere;
@@ -239,9 +281,9 @@ process: a working directory under its own state root, one prompt on stdin, and
 nothing that points at your clone.
 
 The pull-request prohibition is enforced rather than intended: no caller
-anywhere writes a `gh` argument vector. A caller names one of six operations and
-eyes-on holds the six vectors literally - four read, two write, and both writes
-are issue comments. The endpoint that would edit a pull request body differs
+anywhere writes a `gh` argument vector. A caller names one of seven operations
+and eyes-on holds the seven vectors literally - five read, two write, and both
+writes are issue comments. The endpoint that would edit a pull request body differs
 from the comment update by a single path segment and has no operation, so no
 vector for it can be built. The body belongs to no-mistakes, which regenerates
 it on every update; eyes-on writes one comment, finds it again by its marker,

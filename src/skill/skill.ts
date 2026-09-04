@@ -24,12 +24,27 @@ function commandTable(): string {
   return lines.join('\n');
 }
 
-function plannedTable(): string {
-  const lines: string[] = [];
-  for (const command of plannedCommands()) {
-    lines.push(`| \`${command.usage}\` | stage ${command.stage} | ${command.summary} |`);
-  }
-  return lines.join('\n');
+/**
+ * The planned-command section, or nothing at all.
+ *
+ * With every command in the registry built there is no such section, and an
+ * empty table under a heading promising one would tell an agent that eyes-on
+ * has surfaces it is withholding. The section appears exactly when there is
+ * something in it.
+ */
+function plannedSection(): string {
+  const planned = plannedCommands();
+  if (planned.length === 0) return '';
+  const rows = planned.map((command) => `| \`${command.usage}\` | stage ${command.stage} | ${command.summary} |`);
+  return `## Commands that are planned but not built yet
+
+Calling one of these prints \`error:\` with the stage that owns it and exits 1. It never returns a made-up answer.
+
+| Command | Stage | What it will do |
+|---|---|---|
+${rows.join('\n')}
+
+`;
 }
 
 export function skillMarkdown(): string {
@@ -59,15 +74,7 @@ this skill tells you what a reviewer must look at.
 |---|---|
 ${commandTable()}
 
-## Commands that are planned but not built yet
-
-Calling one of these prints \`error:\` with the stage that owns it and exits 1. It never returns a made-up answer.
-
-| Command | Stage | What it will do |
-|---|---|---|
-${plannedTable()}
-
-## The order these commands go in
+${plannedSection()}## The order these commands go in
 
 \`\`\`sh
 eyes-on check --intent "why this change was made, not what it changes"
@@ -93,6 +100,27 @@ eyes-on axi respond --action waive --reason "why this is safe to merge unread"
 A waiver without a reason is refused. **The park holds nothing up outside eyes-on** - no exit code
 changes, no push waits, no pull request goes red. What it does is record that somebody was told and what
 they decided, so the channel label is evidence rather than a declaration.
+
+## After the merge: the register
+
+A merged change leaves one append-only line in the register, and that line is what makes the thresholds
+arguable later rather than merely set:
+
+\`\`\`sh
+eyes-on label --pr 42          # after the merge; --dry-run reconstructs and writes nothing
+eyes-on leaks --window 14d     # per channel: how often a merge was followed by a fix that blames it
+eyes-on calibrate              # what each pair of thresholds would have caught, and let through
+\`\`\`
+
+\`label\` reconstructs the chain from the change to the commit that landed it using the \`(#N)\` subject a
+squash merge leaves and GitHub's own answer, and records whether the two agree. It refuses to write a
+line for a change eyes-on never assessed, because a register row inventing a channel would put that
+change into the very comparison the register exists to make.
+
+\`leaks\` reports the **line-level** variant only - a later fix whose blame names the merge commit. There
+is no flag for the file-level one and asking for it is refused: its base rate is 45-73%, so every channel
+scores nearly the same and no threshold can be argued from it. Below a hundred merges in a channel both
+commands say in their header that the numbers are directional. Neither blocks anything.
 
 ## Output contract
 

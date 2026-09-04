@@ -97,6 +97,12 @@ export function flagString(args: ParsedArgs, name: string): string | null {
         'which reads "1e9" as 1 and "42abc" as 42',
     );
   }
+  if (DURATION_FLAGS.has(name)) {
+    throw new Error(
+      `--${name} is a duration flag: read it with flagDuration. Handing back the raw token invites Number.parseInt, ` +
+        'which reads "14d" as 14 without ever seeing the unit',
+    );
+  }
   const value = args.flags.get(name);
   return typeof value === 'string' ? value : null;
 }
@@ -157,6 +163,58 @@ export function flagCount(args: ParsedArgs, name: string, spec: CountFlag): numb
   if (spec.min !== undefined && value < spec.min) return refuse();
   if (spec.max !== undefined && value > spec.max) return refuse();
   return value;
+}
+
+/**
+ * Every flag whose value is a length of time.
+ *
+ * The same declaration `NUMERIC_FLAGS` is, for the same reason and against a
+ * sharper edge: `Number.parseInt('14d')` is 14 and throws nothing away
+ * visibly, so a caller who read `--window` as a string would silently get days
+ * whatever unit was written. Naming the flag here makes `flagString` refuse it,
+ * so `flagDuration` is the only way to read one.
+ */
+export const DURATION_FLAGS: ReadonlySet<string> = new Set(['window', 'since']);
+
+/** What a duration flag accepts, and what to say when it does not. */
+export interface DurationFlag {
+  /** Completes "--<flag> <value> is not ...". */
+  what: string;
+  help: readonly string[];
+  /** Bounds in seconds, when the flag names them. */
+  min?: number;
+  max?: number;
+}
+
+const DURATION_UNITS: Record<string, number> = { h: 3_600, d: 86_400, w: 604_800 };
+
+/**
+ * A duration flag's value in seconds, or null when the caller did not name it.
+ *
+ * The unit is required. A bare number is refused rather than read as days,
+ * because the two flags this serves mean different spans by default - a
+ * fourteen-day leak window and a ninety-day history - and a caller who wrote
+ * one number meaning the other unit would get an answer over a period the
+ * report header names correctly and they did not intend.
+ */
+export function flagDuration(args: ParsedArgs, name: string, spec: DurationFlag): number | null {
+  if (!DURATION_FLAGS.has(name)) {
+    throw new Error(`--${name} is read as a duration but is not in DURATION_FLAGS, so flagString would still serve it`);
+  }
+  const raw = args.flags.get(name);
+  if (typeof raw !== 'string') return null;
+  const refuse = (): never => {
+    throw new UserFacingError(`--${name} ${raw} is not ${spec.what}`, [...spec.help], EXIT_USAGE);
+  };
+  const match = /^(\d+)([hdw])$/.exec(raw.trim());
+  if (!match?.[1] || !match[2]) return refuse();
+  const count = Number.parseInt(match[1], 10);
+  if (!Number.isSafeInteger(count) || count <= 0) return refuse();
+  const seconds = count * (DURATION_UNITS[match[2]] as number);
+  if (!Number.isSafeInteger(seconds)) return refuse();
+  if (spec.min !== undefined && seconds < spec.min) return refuse();
+  if (spec.max !== undefined && seconds > spec.max) return refuse();
+  return seconds;
 }
 
 const FORMATS: readonly Format[] = ['toon', 'json', 'md'];

@@ -37,11 +37,12 @@ const SLUG = 'acme/widgets';
 const PR = 42;
 
 test('the allow-list refuses everything that could touch a pull request', () => {
-  // Permitted: exactly the six vectors eyes-on emits, whole and in order.
+  // Permitted: exactly the seven vectors eyes-on emits, whole and in order.
   for (const operation of [
     { op: 'repo-slug' },
     { op: 'auth-status' },
     { op: 'pull-head', slug: SLUG, number: PR },
+    { op: 'pull-record', slug: SLUG, number: PR },
     { op: 'list-comments', slug: SLUG, number: PR },
     { op: 'create-comment', slug: SLUG, number: PR },
     { op: 'update-comment', slug: SLUG, id: 9 },

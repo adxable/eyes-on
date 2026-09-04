@@ -78,10 +78,28 @@ test('the skill states the boundary with no-mistakes rather than implying overla
   assert.ok(markdown.includes('~/.no-mistakes'));
 });
 
-test('unimplemented commands are declared as such, so no agent expects an answer', () => {
+/**
+ * The planned section exists exactly when there is something planned.
+ *
+ * Both directions matter and only one of them used to be asserted. A command
+ * named on the surface and not built has to be declared as such, or an agent
+ * calling it expects an answer. And with every command built, a heading
+ * promising planned surfaces above an empty table tells that same agent there
+ * are things eyes-on is withholding - which, with stage 3 delivered, is not
+ * true of anything.
+ */
+test('unimplemented commands are declared as such, and the section is absent when there are none', () => {
   const markdown = skillMarkdown();
+  const planned = COMMANDS.filter((entry) => !entry.implemented);
+  if (planned.length === 0) {
+    assert.ok(
+      !markdown.includes('planned but not built yet'),
+      'every command is built, so the skill must not promise a section of ones that are not',
+    );
+    return;
+  }
   assert.ok(markdown.includes('planned but not built yet'));
-  for (const command of COMMANDS.filter((entry) => !entry.implemented)) {
+  for (const command of planned) {
     assert.ok(markdown.includes(`| stage ${command.stage} |`), `stage missing for ${command.name}`);
   }
 });
