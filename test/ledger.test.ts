@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { captureCli, pathWithGitOnly, sandboxEnv, stubAgent, stubGh, tempRepo, type StubGh, type TempRepo } from './helpers.js';
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/output.js';
@@ -72,6 +72,7 @@ interface LabelDoc {
   drift: number | null;
   drift_intent: string | null;
   excluded_from_leaks?: string | null;
+  classified_since?: string;
   exit_code: number;
   help: string[];
 }
@@ -603,7 +604,9 @@ test('a row older than the default history span is told a wider --since counts i
   assert.equal(doc.excluded_from_leaks, 'outside --since');
   const line = doc.help.find((entry) => entry.includes('outside --since'));
   assert.ok(line, `label must say what leaks will do with the row: ${JSON.stringify(doc.help)}`);
-  assert.match(line, /a wider one does: pass a longer `--since` to count it/);
+  assert.match(line, /`--since 90d`/, 'the span this classification used is named in the advice');
+  assert.match(line, /longer than 90d/);
+  assert.equal(doc.classified_since, '90d', 'and the payload carries it beside the reason');
   // And that advice is only offered because nothing more binding applies: this
   // row is a squash merge in the store, so widening the range really does count
   // it.
@@ -931,6 +934,53 @@ test('a gh error over a pull request git already placed records the row from git
   assert.equal(records.length, 1);
   assert.equal(records[0]?.merge_sha, merge);
   assert.equal(records[0]?.link.agreement, 'git-only');
+});
+
+/**
+ * A gh that never reached GitHub is not GitHub answering.
+ *
+ * `gh-error` means one thing - gh ran, named the repository, and GitHub replied
+ * with a 404, a 403 or a rate limit - and the row appended for it carries that
+ * sentence into an append-only file no later run can correct in place. A
+ * timeout, or a process something else killed, is a state of this machine, so
+ * the honest answer is the one this command gave before the degradation
+ * existed: stop, and say what happened.
+ */
+test('a gh that was killed rather than answered aborts instead of recording a row', async (t) => {
+  const { repo, merge, parent } = mergedRepo('label-ghkilled');
+  const env = sandboxEnv('label-ghkilled');
+  await initRepo(t, repo, env);
+  await captureCli(['check', '--base', parent, '--head', merge, '--format', 'json'], { cwd: repo.path, env });
+
+  // `repo view` answers, so the slug is named and the failure is on the pull
+  // request read - and the process dies from a signal rather than a status,
+  // which is what a killed or timed-out gh looks like to the runner.
+  const dir = pathWithGitOnly('label-ghkilled-path');
+  writeFileSync(
+    join(dir, 'gh'),
+    `#!/bin/sh
+if [ "$1" = repo ] && [ "$2" = view ]; then echo '${SLUG}'; exit 0; fi
+kill -9 $$
+`,
+    { mode: 0o755 },
+  );
+
+  const result = await captureCli(['label', '--pr', '7', '--format', 'json'], {
+    cwd: repo.path,
+    env: { ...env, PATH: dir },
+  });
+
+  assert.notEqual(result.code, EXIT_OK, 'GitHub never answered, so no row may claim it did');
+  assert.equal(
+    existsSync(join(env.EYES_HOME as string, 'ledger.jsonl')),
+    false,
+    'the register is append-only, so a wrong provenance sentence could never be corrected in place',
+  );
+  const failure = JSON.parse(result.out) as { error: string };
+  assert.ok(
+    !failure.error.includes('GitHub answered'),
+    `the refusal describes what happened to gh, not an answer nobody received: ${failure.error}`,
+  );
 });
 
 /**

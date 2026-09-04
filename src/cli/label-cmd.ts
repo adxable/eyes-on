@@ -165,7 +165,9 @@ interface Observation {
  * gh being absent, gh naming no repository and GitHub answering with an error
  * are three different states of the machine - only the first is fixed by
  * installing anything - and they are told apart here where the difference is
- * known. None of the three stops the command *when git named the merge commit*:
+ * known. A gh that never reached GitHub is a fourth, and it is not one of the
+ * three: it aborts, because a row saying GitHub answered is a claim about a
+ * conversation that never happened. None of the three stops the command *when git named the merge commit*:
  * git alone still names it through the `(#N)` subject, and the link records
  * that only one source answered rather than presenting a confirmed chain it
  * never confirmed. Self-sufficiency that aborts on a rate limit half way
@@ -184,7 +186,7 @@ function observePull(clonePath: string, number: number, gitNamedMerge: boolean):
     if (error instanceof GhError && error.spawnFailure === 'missing') {
       return { slug: null, record: null, unread: 'gh-missing', unreadDetail: null };
     }
-    if (error instanceof GhError && gitNamedMerge) {
+    if (remoteAnswer(error) && gitNamedMerge) {
       return { slug: null, record: null, unread: 'gh-error', unreadDetail: error.message };
     }
     throw error;
@@ -193,11 +195,26 @@ function observePull(clonePath: string, number: number, gitNamedMerge: boolean):
   try {
     return { slug, record: pullRecord(clonePath, slug, number), unread: null, unreadDetail: null };
   } catch (error) {
-    if (error instanceof GhError && gitNamedMerge) {
+    if (remoteAnswer(error) && gitNamedMerge) {
       return { slug, record: null, unread: 'gh-error', unreadDetail: error.message };
     }
     throw error;
   }
+}
+
+/**
+ * Whether GitHub itself answered, as opposed to gh never reaching it.
+ *
+ * `gh-error` means one thing - gh ran, named the repository, and GitHub replied
+ * with a 404, a 403 or a rate limit - and a register line is appended with that
+ * sentence inside it. A timeout, a killed process or output too large is a
+ * state of this machine and not an answer from GitHub, so filing one under that
+ * reason would write a claim into an append-only file that no later run can
+ * correct in place. `GhError` already separates the two; the degradation reads
+ * that separation rather than treating every failure as the remote kind.
+ */
+function remoteAnswer(error: unknown): error is GhError {
+  return error instanceof GhError && error.kind === 'remote';
 }
 
 /**
@@ -495,6 +512,11 @@ function recordedDoc(record: LedgerRecord, options: DocOptions): ToonObject {
     // good, or null. A row inside its window is not reported here: that is the
     // ordinary state of a change that just merged, and it resolves itself.
     excluded_from_leaks: permanentlyUnmeasurable(record, options),
+    // The range that classification was made over. `leaks` prints its own
+    // `--since` beside the same wording; a reader told to widen a flag has to
+    // be told what it is being widened from.
+    classified_since: defaultSinceLabel(),
+    classified_window: defaultWindowLabel(),
     drift_sentence: driftProvenanceSentence(evidence),
     intent: record.intent,
     exit_code: EXIT_OK,
@@ -518,10 +540,15 @@ function permanentlyUnmeasurable(record: LedgerRecord, options: DocOptions): Exc
   return !verdict.eligible && verdict.permanent ? verdict.reason : null;
 }
 
-/** The default window, written as the flag that produces it. `label` reports
- *  what `leaks` does when nobody passes one. */
+/** The default window and history span, written as the flags that produce
+ *  them. `label` reports what `leaks` does when nobody passes either, so the
+ *  advice to widen one has to name the value it is widening from. */
 function defaultWindowLabel(): string {
   return `${DEFAULT_WINDOW_SECONDS / 86_400}d`;
+}
+
+function defaultSinceLabel(): string {
+  return `${DEFAULT_SINCE_SECONDS / 86_400}d`;
 }
 
 function helpLines(record: LedgerRecord, options: DocOptions): string[] {
@@ -572,7 +599,7 @@ function helpLines(record: LedgerRecord, options: DocOptions): string[] {
   // measured, which nothing else on this surface says.
   const unmeasurable = permanentlyUnmeasurable(record, options);
   if (unmeasurable !== null) {
-    lines.push(exclusionSentence(unmeasurable, defaultWindowLabel()));
+    lines.push(exclusionSentence(unmeasurable, { window: defaultWindowLabel(), since: defaultSinceLabel() }));
   }
   if (options.unread === 'gh-missing') {
     lines.push('Install the GitHub CLI and run `gh auth login` to confirm the merge commit from GitHub as well as from git');

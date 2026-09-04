@@ -12,6 +12,7 @@ import {
   EXCLUSION_KINDS,
   DEFAULT_SINCE_SECONDS,
   DEFAULT_WINDOW_SECONDS,
+  type ExclusionRange,
 } from '../ledger/population.js';
 import { MIN_MERGES_PER_CHANNEL } from '../ledger/sample.js';
 
@@ -204,6 +205,12 @@ function renderDoc(report: LeaksReport, options: DocOptions): ToonObject {
   };
 }
 
+/** The two spans this run measured over, as the flags that produce them. Every
+ *  sentence that tells a reader to widen one names the value it widens from. */
+function ranges(options: DocOptions): ExclusionRange {
+  return { window: days(options.windowSeconds), since: days(options.sinceSeconds) };
+}
+
 function helpLines(report: LeaksReport, options: DocOptions): string[] {
   const lines: string[] = [];
   if (options.ledgerAbsent) {
@@ -237,7 +244,7 @@ function helpLines(report: LeaksReport, options: DocOptions): string[] {
   // One line per reason present, generated from the same table that says
   // whether the reason is one time undoes. Written per reason here is what let
   // a structural exclusion carry a promise of return for a whole review round.
-  lines.push(...exclusionHelpLines(report.excluded, days(options.windowSeconds)));
+  lines.push(...exclusionHelpLines(report.excluded, ranges(options)));
   if (report.unverified > 0) {
     lines.push(
       `${report.unverified} of the merges in this table were assessed while the trusted configuration could not be read, so their channel is a floor and they may belong in a higher one`,
@@ -248,7 +255,9 @@ function helpLines(report: LeaksReport, options: DocOptions): string[] {
       `${report.parked} of them merged with the gate still parked: a hard rule fired and no decision answers it`,
     );
   }
-  lines.push(report.sample.sentence);
+  // The sample sentence is not a help line: the Markdown leads with it and the
+  // payload carries it as `sample_sentence`. A caveat printed twice on one page
+  // is a caveat that reads as boilerplate the second time.
   lines.push(
     'A leak is a later fix commit whose blame, taken on that fix\'s parent, names the merge commit of a registered change. Only the line-level variant exists: the file-level one has a base rate of 45-73% and can argue for no threshold',
   );
@@ -292,7 +301,10 @@ function renderMarkdown(report: LeaksReport, doc: ToonObject): string {
       // below it did.
       lines.push(
         `- #${entry.pr}${entry.merge_sha ? ` (\`${entry.merge_sha.slice(0, 12)}\`)` : ''}: ${entry.reason}. ` +
-          exclusionOutlook(entry.reason, { plural: false, windowLabel: String(doc.window) }),
+          exclusionOutlook(entry.reason, {
+            plural: false,
+            range: { window: String(doc.window), since: String(doc.since) },
+          }),
       );
     }
   }

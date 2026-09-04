@@ -95,9 +95,11 @@ export interface ExclusionKind {
    * explicit fact that nothing does, with whatever qualifier makes the claim
    * true. This is the only place any surface takes those words from.
    *
-   * `{them}`, `{they}` and `{window}` are the three substitutions a renderer
-   * makes - "them"/"it", "they"/"it" and the window as the flag would be
-   * written. Every sentence here reads correctly under both numbers.
+   * `{them}`, `{they}`, `{window}` and `{since}` are the four substitutions a
+   * renderer makes - "them"/"it", "they"/"it", and the window and history span
+   * as the flags would be written. Every sentence here reads correctly under
+   * both numbers, and a sentence that tells a reader to widen a range names the
+   * range it is widening from.
    */
   outlook: string;
 }
@@ -126,7 +128,7 @@ export const EXCLUSION_KINDS: Record<ExclusionReason, ExclusionKind> = {
     permanent: true,
     because: 'the merge is older than the period this report covers',
     outlook:
-      'No run over this `--since` admits {them}, however long anyone waits - but a wider one does: pass a longer `--since` to count {them}.',
+      'No run over `--since {since}` admits {them}, however long anyone waits - but a wider one does: pass a `--since` longer than {since} to count {them}.',
   },
   'merge commit introduces no line': {
     // A property of the commit. Nothing about this run, this clone or this
@@ -162,18 +164,29 @@ export const EXCLUSION_KINDS: Record<ExclusionReason, ExclusionKind> = {
  * Every surface calls this rather than writing a sentence beside the flag. The
  * count decides only the pronouns.
  */
-export function exclusionOutlook(reason: ExclusionReason, options: { plural: boolean; windowLabel: string }): string {
+export interface ExclusionRange {
+  /** The window, as `--window` would be written. */
+  window: string;
+  /** The history span, as `--since` would be written. */
+  since: string;
+}
+
+export function exclusionOutlook(
+  reason: ExclusionReason,
+  options: { plural: boolean; range: ExclusionRange },
+): string {
   return EXCLUSION_KINDS[reason].outlook
     .replaceAll('{them}', options.plural ? 'them' : 'it')
     .replaceAll('{they}', options.plural ? 'they' : 'it')
-    .replaceAll('{window}', options.windowLabel);
+    .replaceAll('{window}', options.range.window)
+    .replaceAll('{since}', options.range.since);
 }
 
 /** What `leaks` will do with one registered merge, in the reason's own words. */
-export function exclusionSentence(reason: ExclusionReason, windowLabel: string): string {
+export function exclusionSentence(reason: ExclusionReason, range: ExclusionRange): string {
   return (
     `\`eyes-on leaks\` leaves this row out of the denominator as \`${reason}\`: ${EXCLUSION_KINDS[reason].because}. ` +
-    exclusionOutlook(reason, { plural: false, windowLabel })
+    exclusionOutlook(reason, { plural: false, range })
   );
 }
 
@@ -306,10 +319,10 @@ export interface PopulationState {
  * as a temporary one for a whole review round, and a recoverable one be
  * reported as final in the round after.
  */
-export function exclusionHelpLines(excluded: readonly ExcludedMerge[], windowLabel: string): string[] {
+export function exclusionHelpLines(excluded: readonly ExcludedMerge[], range: ExclusionRange): string[] {
   return countExclusions(excluded).map((entry) => {
     const many = entry.merges !== 1;
     const head = `${entry.merges} registered merge${many ? 's are' : ' is'} outside the denominator as \`${entry.reason}\`: ${EXCLUSION_KINDS[entry.reason].because}`;
-    return `${head}. ${exclusionOutlook(entry.reason, { plural: many, windowLabel })}`;
+    return `${head}. ${exclusionOutlook(entry.reason, { plural: many, range })}`;
   });
 }

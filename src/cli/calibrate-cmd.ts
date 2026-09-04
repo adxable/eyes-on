@@ -223,7 +223,7 @@ function helpLines(report: CalibrateReport, options: DocOptions): string[] {
       `${setAside} registered merges were scored under a different maximum than the current ${report.score_max} and are outside the sweep: a score is only comparable with a threshold under the weights it was computed with`,
     );
   }
-  lines.push(report.sample.sentence);
+  // Said once, in the header the Markdown opens with and in `sample_sentence`.
   lines.push(
     'The objective is the research report\'s: hold the `auto` channel at or below the leak rate it has now, and pay the least human reading for it',
   );

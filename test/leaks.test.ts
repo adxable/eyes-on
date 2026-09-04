@@ -1066,6 +1066,65 @@ test('a duration flag can only be read with its unit, and reading one as a strin
   assert.throws(() => parseArgs(['leaks', '--window', '-3d']), /flag --window needs a value/);
 });
 
+
+/**
+ * A caveat printed twice on one page reads as boilerplate the second time.
+ *
+ * The acceptance condition is that the report *header* says the numbers are
+ * directional, so the header copy is the one that cannot move; the machine
+ * payload carries the same sentence as `sample_sentence`, so nothing is lost by
+ * saying it once.
+ */
+test('the honesty header is printed once per report, not again in the help list', async (t) => {
+  const { repo, widget, gadget, at } = leakyRepo('sample-once');
+  const env = sandboxEnv('sample-once');
+  await initRepo(t, repo, env);
+  writeLedger(repo, env, (repoId) => [
+    record({ repo: repoId, pr: 7, merge_sha: widget, score: 20, band: 'auto', merged_at: at(40) }),
+    record({ repo: repoId, pr: 8, merge_sha: gadget, score: 90, band: 'pelna', merged_at: at(39) }),
+  ]);
+
+  for (const command of ['leaks', 'calibrate']) {
+    const doc = JSON.parse(
+      (await captureCli([command, '--format', 'json'], { cwd: repo.path, env })).out,
+    ) as { sample_sentence: string; help: string[] };
+    assert.ok(doc.sample_sentence.length > 0, `${command} still carries the sentence in its payload`);
+    assert.ok(
+      !doc.help.includes(doc.sample_sentence),
+      `${command} says the caveat once: ${JSON.stringify(doc.help)}`,
+    );
+
+    const markdown = (await captureCli([command, '--format', 'md'], { cwd: repo.path, env })).out;
+    const occurrences = markdown.split(doc.sample_sentence).length - 1;
+    assert.equal(occurrences, 1, `${command} prints the header sentence once, not ${occurrences} times`);
+  }
+});
+
+/**
+ * Advice to widen a range has to name the range it is widening from.
+ *
+ * `leaks` prints its own `--since` beside the table; the sentence itself now
+ * carries it too, so a reader can tell whether a longer span would be enough
+ * without matching two numbers across a page.
+ */
+test('the widen-the-range remedy names the range the row was measured against', async (t) => {
+  const { repo, widget, at } = leakyRepo('leaks-since-named');
+  const env = sandboxEnv('leaks-since-named');
+  await initRepo(t, repo, env);
+  writeLedger(repo, env, (repoId) => [
+    record({ repo: repoId, pr: 7, merge_sha: widget, band: 'auto', merged_at: at(200) }),
+  ]);
+
+  const doc = JSON.parse(
+    (await captureCli(['leaks', '--since', '120d', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as LeaksDoc;
+  assert.equal(doc.excluded[0]?.reason, 'outside --since');
+  const line = doc.help.find((entry) => entry.includes('outside --since'));
+  assert.ok(line, `the exclusion is explained: ${JSON.stringify(doc.help)}`);
+  assert.match(line, /`--since 120d`/, 'the span this run used is named, not only the advice to widen it');
+  assert.match(line, /longer than 120d/);
+});
+
 /* ------------------------------------------------------------------ *
  * The sweep.
  * ------------------------------------------------------------------ */
