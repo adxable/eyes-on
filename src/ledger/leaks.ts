@@ -47,6 +47,14 @@ import { sampleVerdict, type ChannelSize, type SampleVerdict } from './sample.js
  * leak is understated by however many of them there are - and every report says
  * how many it excluded and why.
  *
+ * The parent count is one rule, asked once, of whichever source can answer it:
+ * the register row when it carries one, and otherwise the object store, which
+ * the exclusion above it has just established holds the commit. A row written
+ * from GitHub's `merge_commit_sha` alone carries none - nothing on the default
+ * branch named that commit - and on a repository that merges with `--no-ff`
+ * that is every row, which is exactly the repository this exclusion exists
+ * for.
+ *
  * ## A merge that has not had its window yet is under-observed, not clean
  *
  * The same argument settles the other end of the range. A merge that landed
@@ -56,6 +64,11 @@ import { sampleVerdict, type ChannelSize, type SampleVerdict } from './sample.js
  * change or two a day that is a tenth of the denominator, understating every
  * channel at once. Those merges leave the denominator with `window has not
  * elapsed` recorded against them and return to it on the next run.
+ *
+ * That promise is why the permanent exclusions are decided first. A true merge
+ * commit that landed this morning is both structurally unattributable and
+ * inside its window, and reporting the second reason would tell a reader it
+ * comes back in a fortnight, which it never does.
  *
  * ## Both ends of the window are landing times
  *
@@ -203,19 +216,25 @@ export function measureLeaks(options: LeakOptions): LeaksReport {
       excluded.push({ pr: record.pr, merge_sha: mergeSHA, reason: 'outside --since' });
       continue;
     }
+    // The two permanent exclusions are decided before the temporal one; see the
+    // header.
+    if (!options.reader.has(mergeSHA)) {
+      excluded.push({ pr: record.pr, merge_sha: mergeSHA, reason: 'commit not in this repository' });
+      continue;
+    }
+    // A true merge commit introduces no line; see the header. A row written
+    // from GitHub alone carries no parent count, because no default-branch
+    // subject named the commit - so the count comes from the object store this
+    // run has already established holds it.
+    const parents = record.merge_parents ?? options.reader.commit(mergeSHA)?.parents.length ?? null;
+    if (parents !== null && parents > 1) {
+      excluded.push({ pr: record.pr, merge_sha: mergeSHA, reason: 'merge commit introduces no line' });
+      continue;
+    }
     // Not yet observable for as long as everything else in the denominator was;
     // see the header.
     if (record.merged_at + options.windowSeconds > options.nowSeconds) {
       excluded.push({ pr: record.pr, merge_sha: mergeSHA, reason: 'window has not elapsed' });
-      continue;
-    }
-    // A true merge commit introduces no line; see the header.
-    if (record.merge_parents !== null && record.merge_parents > 1) {
-      excluded.push({ pr: record.pr, merge_sha: mergeSHA, reason: 'merge commit introduces no line' });
-      continue;
-    }
-    if (!options.reader.has(mergeSHA)) {
-      excluded.push({ pr: record.pr, merge_sha: mergeSHA, reason: 'commit not in this repository' });
       continue;
     }
     eligible.push({ record, mergeSHA, mergedAt: record.merged_at });

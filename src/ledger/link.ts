@@ -170,24 +170,28 @@ export interface LinkInput {
  */
 export function linkPull(input: LinkInput): PullLink {
   const link = decideLink(input);
-  return { ...link, sentence: `${link.sentence}${candidateSentence(input)}` };
+  return { ...link, sentence: `${link.sentence}${candidateSentence(input, link.merge_sha !== null)}` };
 }
 
 /**
  * What a second default-branch commit carrying the same `(#N)` adds to the
  * sentence, when there is one.
  *
- * It is appended to every agreement rather than to one of them, because the
- * choice was made before the comparison with GitHub: `fromGit[0]` is the newest
- * candidate whichever source ends up naming the merge commit.
+ * The count is said in every state, because it is a fact about the branch. What
+ * was *done* with it is not: on a disagreement no merge commit is recorded at
+ * all, and a sentence saying the newest was taken would contradict the sentence
+ * it is appended to and the null the row carries.
  */
-function candidateSentence(input: LinkInput): string {
+function candidateSentence(input: LinkInput, recorded: boolean): string {
   if (input.fromGit.length < 2) return '';
   const others = input.fromGit
     .slice(1)
     .map((commit) => commit.sha.slice(0, 12))
     .join(', ');
-  return ` ${input.fromGit.length} commits on the default branch carry a \`(#${input.number})\` subject - the newest was taken and the ${input.fromGit.length === 2 ? 'other is' : 'others are'} ${others}, so this row names a choice between candidates rather than the only one there was.`;
+  const rest = `the ${input.fromGit.length === 2 ? 'other is' : 'others are'} ${others}`;
+  return recorded
+    ? ` ${input.fromGit.length} commits on the default branch carry a \`(#${input.number})\` subject - the newest was taken and ${rest}, so this row names a choice between candidates rather than the only one there was.`
+    : ` ${input.fromGit.length} commits on the default branch carry a \`(#${input.number})\` subject - the newest is ${(input.fromGit[0] as MergeCommit).sha.slice(0, 12)} and ${rest} - and no merge commit was recorded here, so none of them was chosen.`;
 }
 
 function decideLink(input: LinkInput): PullLink {

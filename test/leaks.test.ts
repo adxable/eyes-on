@@ -446,6 +446,76 @@ test('a history walk can be asked for commits without their per-file line counts
   assert.deepEqual(without[0]?.files, [], 'and the cheap walk asks git for none of it');
 });
 
+
+/**
+ * The parent count is one rule asked of whichever source can answer it.
+ *
+ * A row GitHub alone placed carries none: no default-branch subject named that
+ * commit, which is every row on a repository that merges with `--no-ff` - the
+ * repository this exclusion exists for. Reading it from the object store there
+ * keeps one predicate and repairs rows written before it.
+ */
+test('a true merge commit is excluded even when the register row carries no parent count', async (t) => {
+  const repo = tempRepo('leaks-noparents');
+  const clock = fixtureClock();
+  repo.commitFiles('chore: set up', { 'src/a.ts': 'export const a = 1;\n' }, clock.iso(60));
+  repo.git(['checkout', '-q', '-b', 'side']);
+  repo.commitFiles('feat: the widget', { 'src/widget.ts': 'export const w = 1;\n' }, clock.iso(50));
+  repo.git(['checkout', '-q', 'main']);
+  // No `(#N)` in the subject: git names no candidate, so a real `label` run
+  // over this pull request records GitHub's merge commit and no parent count.
+  repo.git(['merge', '--no-ff', '-q', '-m', 'Merge pull request from side', 'side']);
+  const merge = repo.git(['rev-parse', 'HEAD']).trim();
+
+  const env = sandboxEnv('leaks-noparents');
+  await initRepo(t, repo, env);
+  writeLedger(repo, env, (repoId) => [
+    record({ repo: repoId, pr: 9, merge_sha: merge, merge_parents: null, band: 'auto', merged_at: clock.at(30) }),
+  ]);
+
+  const doc = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env })).out) as LeaksDoc;
+  assert.equal(doc.merges, 0, 'blame can never name this commit, whichever source told eyes-on about it');
+  assert.deepEqual(doc.excluded, [
+    { pr: 9, merge: merge.slice(0, 12), reason: 'merge commit introduces no line' },
+  ]);
+});
+
+/**
+ * A structural exclusion dressed as a temporary one is a message stronger than
+ * the code: the window help line promises the row returns once the window has
+ * passed, and for a commit blame can never name, or one this object store does
+ * not hold, it never does.
+ */
+test('a merge that is both inside its window and structurally excluded is reported under the permanent reason', async (t) => {
+  const repo = tempRepo('leaks-order');
+  const clock = fixtureClock();
+  repo.commitFiles('chore: set up', { 'src/a.ts': 'export const a = 1;\n' }, clock.iso(60));
+  repo.git(['checkout', '-q', '-b', 'side']);
+  repo.commitFiles('feat: the widget', { 'src/widget.ts': 'export const w = 1;\n' }, clock.iso(50));
+  repo.git(['checkout', '-q', 'main']);
+  repo.git(['merge', '--no-ff', '-q', '-m', 'feat: land the widget (#9)', 'side']);
+  const merge = repo.git(['rev-parse', 'HEAD']).trim();
+  const absent = 'c'.repeat(40);
+
+  const env = sandboxEnv('leaks-order');
+  await initRepo(t, repo, env);
+  // Both landed yesterday, so both are inside the fourteen-day window as well.
+  writeLedger(repo, env, (repoId) => [
+    record({ repo: repoId, pr: 9, merge_sha: merge, merge_parents: 2, band: 'auto', merged_at: clock.at(1) }),
+    record({ repo: repoId, pr: 10, merge_sha: absent, merge_parents: 1, band: 'auto', merged_at: clock.at(1) }),
+  ]);
+
+  const doc = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env })).out) as LeaksDoc;
+  assert.deepEqual(doc.excluded, [
+    { pr: 9, merge: merge.slice(0, 12), reason: 'merge commit introduces no line' },
+    { pr: 10, merge: absent.slice(0, 12), reason: 'commit not in this repository' },
+  ]);
+  assert.ok(
+    !doc.help.some((line) => line.includes('not had the whole window')),
+    `neither row comes back once the window passes, so nothing may promise it: ${JSON.stringify(doc.help)}`,
+  );
+});
+
 /* ------------------------------------------------------------------ *
  * Honesty.
  * ------------------------------------------------------------------ */

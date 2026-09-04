@@ -66,6 +66,9 @@ export async function labelCommand(context: Context): Promise<number> {
   const observed = observePull(risk.clonePath, number);
   const link = linkPull({ number, fromGit, fromGitHub: observed.record, unread: observed.unread });
   progress(context.writers, link.sentence);
+  // Read once, so a dry run and a real one cannot report different parent
+  // counts for one commit.
+  const mergeParents = link.git?.parents ?? parentsFromStore(risk, link.merge_sha);
 
   const found = findAssessment(db, risk, number, link, flagString(context.args, 'check-id'));
   // Read before anything is appended, so the count is of what was there before
@@ -88,7 +91,7 @@ export async function labelCommand(context: Context): Promise<number> {
     emitDoc(
       context.writers,
       context.format,
-      unrecordableDoc(number, link, found, failure),
+      unrecordableDoc(number, link, mergeParents, found, failure),
       () => renderUnrecordable(number, link, failure),
     );
     return EXIT_OK;
@@ -99,6 +102,7 @@ export async function labelCommand(context: Context): Promise<number> {
     risk,
     number,
     link,
+    mergeParents,
     slug: observed.slug,
     check: found.check,
     source: found.source as CheckSource,
@@ -154,6 +158,20 @@ function observePull(clonePath: string, number: number): Observation {
   }
   if (slug === null) return { slug: null, record: null, unread: 'no-repository' };
   return { slug, record: pullRecord(clonePath, slug, number), unread: null };
+}
+
+/**
+ * How many parents the recorded merge commit has, read from the object store.
+ *
+ * The git side already carries the count when a default-branch subject named
+ * the commit. When only GitHub did - every row on a repository that merges with
+ * `--no-ff` - the commit itself is the remaining source, and the count is what
+ * decides whether `leaks` can attribute anything to it. Null when no commit was
+ * recorded, or when this clone does not hold it.
+ */
+function parentsFromStore(risk: RiskContext, mergeSHA: string | null): number | null {
+  if (mergeSHA === null) return null;
+  return risk.reader.commit(mergeSHA)?.parents.length ?? null;
 }
 
 /* ------------------------------------------------------------------ *
@@ -282,6 +300,8 @@ function buildRecord(input: {
   risk: RiskContext;
   number: number;
   link: PullLink;
+  /** Parents of the recorded merge commit, resolved by the caller. */
+  mergeParents: number | null;
   slug: string | null;
   check: CheckRow;
   source: CheckSource;
@@ -305,7 +325,7 @@ function buildRecord(input: {
     merge_sha: link.merge_sha,
     merge_subject: mergeCommit?.subject ?? null,
     merge_parent_sha: mergeCommit?.parent ?? null,
-    merge_parents: mergeCommit?.parents ?? null,
+    merge_parents: input.mergeParents,
     head_sha: github?.head_sha ?? null,
     // GitHub's own merge time when it answered; otherwise the committer date of
     // the commit on the default branch, which is when it landed. Never the
@@ -459,7 +479,9 @@ function helpLines(record: LedgerRecord, options: DocOptions): string[] {
   }
   if (record.link.git_candidates > 1) {
     lines.push(
-      `${record.link.git_candidates} commits on the default branch carry a \`(#${record.pr})\` subject; the newest was recorded as the merge commit, and \`eyes-on leaks\` blames every later fix against that one. Check which of them landed this change`,
+      record.merge_sha === null
+        ? `${record.link.git_candidates} commits on the default branch carry a \`(#${record.pr})\` subject, and no merge commit was recorded for this row, so \`eyes-on leaks\` leaves it out of the denominator with the reason \`no merge commit\`. Check which of them landed this change`
+        : `${record.link.git_candidates} commits on the default branch carry a \`(#${record.pr})\` subject; the newest was recorded as the merge commit, and \`eyes-on leaks\` blames every later fix against that one. Check which of them landed this change`,
     );
   }
   if (options.unread === 'gh-missing') {
@@ -491,7 +513,13 @@ function helpLines(record: LedgerRecord, options: DocOptions): string[] {
   return lines;
 }
 
-function unrecordableDoc(number: number, link: PullLink, found: Found, failure: UserFacingError): ToonObject {
+function unrecordableDoc(
+  number: number,
+  link: PullLink,
+  mergeParents: number | null,
+  found: Found,
+  failure: UserFacingError,
+): ToonObject {
   return {
     pr: number,
     dry_run: true,
@@ -508,7 +536,7 @@ function unrecordableDoc(number: number, link: PullLink, found: Found, failure: 
     git_candidates: link.git_candidates,
     merge_sha: link.merge_sha,
     merge_parent_sha: link.git?.parent ?? null,
-    merge_parents: link.git?.parents ?? null,
+    merge_parents: mergeParents,
     head_sha: link.github?.head_sha ?? null,
     merged_at: link.github?.merged_at ?? link.git?.committed ?? null,
     github_read: link.unread === null,

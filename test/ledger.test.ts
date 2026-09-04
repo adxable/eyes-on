@@ -390,6 +390,104 @@ test('two default-branch commits carrying one pull request number is recorded as
   assert.ok(!single.help.some((line) => line.includes('commits on the default branch carry')));
 });
 
+/**
+ * The register row carries the parent count of the commit it names, whichever
+ * source named it.
+ *
+ * On a repository that merges with `--no-ff` no default-branch subject carries
+ * `(#N)`, so GitHub is the only source and the git side contributes nothing -
+ * and the parent count is exactly what decides whether `leaks` can attribute
+ * anything to that commit.
+ */
+test('a row GitHub alone placed still carries the merge commit\'s parent count', async (t) => {
+  const repo = tempRepo('label-noff');
+  const base = repo.commitFiles('chore: set up', { 'src/a.ts': 'export const a = 1;\n' });
+  repo.git(['checkout', '-q', '-b', 'side']);
+  repo.commitFiles('feat(widget): add the widget', { 'src/widget.ts': 'export const w = 1;\n' });
+  repo.git(['checkout', '-q', 'main']);
+  repo.git(['merge', '--no-ff', '-q', '-m', 'Merge pull request #7 from side', 'side']);
+  const merge = repo.git(['rev-parse', 'HEAD']).trim();
+
+  const env = sandboxEnv('label-noff');
+  await initRepo(t, repo, env);
+  await captureCli(['check', '--base', base, '--head', merge, '--format', 'json'], { cwd: repo.path, env });
+
+  const gh = mergedGh('label-noff', { mergeSHA: merge });
+  const result = await captureCli(['label', '--pr', '7', '--format', 'json'], {
+    cwd: repo.path,
+    env: { ...env, PATH: gh.path },
+  });
+  const doc = JSON.parse(result.out) as LabelDoc;
+  const record = ledgerLines(env)[0] as LedgerRecord;
+
+  assert.equal(result.code, EXIT_OK);
+  assert.equal(doc.link, 'github-only', 'no default-branch subject carries the (#7) a squash merge leaves');
+  assert.equal(doc.git_merge_sha, null);
+  assert.equal(doc.merge_sha, merge);
+  assert.equal(doc.merge_parents, 2, 'the count comes from the commit itself when no subject named it');
+  assert.equal(record.merge_parents, 2);
+
+  // A dry run reads the same commit and reports the same count: the answer does
+  // not depend on which surface asked.
+  const dry = JSON.parse(
+    (
+      await captureCli(['label', '--pr', '7', '--dry-run', '--format', 'json'], {
+        cwd: repo.path,
+        env: { ...env, PATH: gh.path },
+      })
+    ).out,
+  ) as LabelDoc;
+  assert.equal(dry.merge_parents, 2);
+});
+
+/**
+ * The count of candidates is a fact about the branch and is said in every
+ * state. What was done with it is not: on a disagreement no merge commit is
+ * recorded, `leaks` leaves the row out with `no merge commit`, and a sentence
+ * saying the newest was taken and blamed against would be stronger than the
+ * code.
+ */
+test('with two candidates and a disagreement, nothing claims the newest was taken', async (t) => {
+  const { repo, merge, parent } = mergedRepo('label-candidates-split');
+  const relanded = repo.commitFiles('fix(widget): re-land the widget (#7)', {
+    'src/widget.ts': 'export function widget(): number {\n  return 2;\n}\n',
+  });
+
+  const env = sandboxEnv('label-candidates-split');
+  await initRepo(t, repo, env);
+  const check = await captureCli(['check', '--base', parent, '--head', merge, '--format', 'json'], {
+    cwd: repo.path,
+    env,
+  });
+  const checkId = (JSON.parse(check.out) as { check_id: string }).check_id;
+
+  // GitHub names neither of the two default-branch candidates.
+  const gh = mergedGh('label-candidates-split', { mergeSHA: 'f'.repeat(40) });
+  const result = await captureCli(['label', '--pr', '7', '--check-id', checkId, '--format', 'json'], {
+    cwd: repo.path,
+    env: { ...env, PATH: gh.path },
+  });
+  const doc = JSON.parse(result.out) as LabelDoc;
+
+  assert.equal(doc.link, 'disagrees');
+  assert.equal(doc.merge_sha, null);
+  assert.equal(doc.git_candidates, 2, 'the count is a fact about the branch and is said whatever was recorded');
+  assert.ok(doc.link_sentence.includes(relanded.slice(0, 12)) && doc.link_sentence.includes(merge.slice(0, 12)));
+  assert.ok(
+    !doc.link_sentence.includes('the newest was taken'),
+    `nothing was taken: ${doc.link_sentence}`,
+  );
+  assert.match(doc.link_sentence, /no merge commit was recorded here, so none of them was chosen/);
+  assert.ok(
+    !doc.help.some((line) => line.includes('blames every later fix against that one')),
+    `leaks excludes this row rather than blaming against it: ${JSON.stringify(doc.help)}`,
+  );
+  assert.ok(
+    doc.help.some((line) => line.includes('no merge commit was recorded for this row')),
+    `the reader is told what leaks will do with it: ${JSON.stringify(doc.help)}`,
+  );
+});
+
 test('a drift grade on the register carries the intent it was measured against', async (t) => {
   const { repo, merge, parent } = mergedRepo('label-drift');
   const env = sandboxEnv('label-drift');
