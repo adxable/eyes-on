@@ -391,19 +391,57 @@ test('acceptance: no gh invocation can edit a pull request, merge one, or review
     ['api', '--method', 'PUT', 'repos/acme/widgets/pulls/7/merge'],
     ['api', '--method', 'POST', 'repos/acme/widgets/pulls/7/reviews'],
     ['api', '--method', 'DELETE', 'repos/acme/widgets/issues/comments/9'],
+    // Every spelling gh accepts for the method, not only the one eyes-on
+    // writes. The attached shorthand is pflag's, and a parser that knew only
+    // the separated form read this as a GET of a pull request - a read path -
+    // and let the endpoint that edits a pull request body through.
+    ['api', '-XPATCH', 'repos/acme/widgets/pulls/7'],
+    ['api', '-XPATCH', 'repos/acme/widgets/issues/7'],
+    ['api', '--method=PATCH', 'repos/acme/widgets/pulls/7'],
+    ['api', '-X', 'PATCH', 'repos/acme/widgets/pulls/7'],
+    ['api', '-XPUT', 'repos/acme/widgets/pulls/7/merge'],
+    ['api', '-XPOST', 'repos/acme/widgets/pulls/7/reviews'],
   ];
   for (const argv of forbidden) {
     assert.throws(() => assertAllowed(argv), /refusing to run/, `gh ${argv.join(' ')} reached a process`);
   }
 
-  // And the four invocations the product actually needs, so the allow-list is
-  // shown to be a door rather than a wall.
+  // The general property, which is what makes the next spelling nobody has
+  // thought of fail closed: a vector this parser cannot interpret with
+  // certainty is refused rather than read as a GET.
+  for (const argv of [
+    // An option outside the set eyes-on itself passes.
+    ['api', '--slurp', 'repos/acme/widgets/issues/7/comments'],
+    ['api', '--hostname', 'ghe.internal', 'repos/acme/widgets/issues/7/comments'],
+    ['api', '-i', 'repos/acme/widgets/issues/7/comments'],
+    // An option given no value, so what it would have been cannot be known.
+    ['api', 'repos/acme/widgets/issues/7/comments', '--method'],
+    // A value attached to an option that takes none.
+    ['api', '--paginate=repos/x/y/pulls/1', 'repos/acme/widgets/issues/7/comments'],
+    // Two operands: which endpoint this calls cannot be determined.
+    ['api', 'repos/acme/widgets/issues/7/comments', 'repos/acme/widgets/pulls/7'],
+    // And the reading commands are parsed too, rather than passed through.
+    ['repo', 'view', '--web'],
+    ['repo', 'view', 'someone/else'],
+    ['auth', 'login'],
+    ['auth', 'status', '--hostname', 'ghe.internal'],
+  ]) {
+    assert.throws(() => assertAllowed(argv), /refusing to run/, `gh ${argv.join(' ')} was interpreted rather than refused`);
+  }
+
+  // And every invocation the product actually needs, so the allow-list is shown
+  // to be a door rather than a wall. `auth status` is here because `doctor`'s
+  // credential probe goes through the same door as the rest - the guarantee
+  // above has no exception to remember.
   for (const argv of [
     ['repo', 'view', '--json', 'nameWithOwner'],
+    ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'],
+    ['auth', 'status'],
+    ['api', 'repos/acme/widgets/pulls/7', '--jq', '.head.sha'],
     ['api', '--paginate', 'repos/acme/widgets/issues/7/comments'],
     ['api', '--method', 'POST', 'repos/acme/widgets/issues/7/comments', '--input', '-'],
     ['api', '--method', 'PATCH', 'repos/acme/widgets/issues/comments/9', '--input', '-'],
   ]) {
-    assert.doesNotThrow(() => assertAllowed(argv));
+    assert.doesNotThrow(() => assertAllowed(argv), `gh ${argv.join(' ')} is an invocation the product makes`);
   }
 });

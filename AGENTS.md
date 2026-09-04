@@ -32,11 +32,16 @@ correctness bug even when everything still passes:
   root, a prompt on stdin, and nothing pointing at the clone. Do not restate
   this as "nothing eyes-on runs writes into a clone";
 - never edit a pull request body, open, merge or review a pull request. `gh()`
-  in `src/gh/gh.ts` is module-private, so every invocation passes `assertAllowed`
-  first: two reads and exactly two writes, both issue-comment endpoints, matched
-  as whole paths. `PATCH repos/o/r/issues/<n>` - the pull-request body - differs
-  from the permitted comment update by one path segment, which is why the
-  allow-list is not a list of forbidden verbs;
+  in `src/gh/gh.ts` is module-private, so every invocation eyes-on makes -
+  including `doctor`'s credential probe, which is why `ghAuthenticated` lives
+  there - passes `assertAllowed` first: three reads and exactly two writes, both
+  issue-comment endpoints, matched as whole paths. `PATCH repos/o/r/issues/<n>` -
+  the pull-request body - differs from the permitted comment update by one path
+  segment, which is why the allow-list is not a list of forbidden verbs. The
+  argument vector is parsed **default-deny**: an option outside the table
+  eyes-on itself uses, a value it cannot pair with an option, or a second
+  operand is refused rather than read as a GET, because `-XPATCH` - pflag's
+  attached shorthand - once fell through a parser that only knew `-X PATCH`;
 - no eyes-on process may have a working directory under a foreign worktree - the
   daemon's cwd is always its own state root.
 

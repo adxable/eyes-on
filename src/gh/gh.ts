@@ -33,6 +33,11 @@ import {
  * repos/<owner>/<repo>/issues/<n>` is the endpoint that edits a pull request's
  * body, and it differs from the permitted update by one path segment. That is
  * why the paths are matched whole.
+ *
+ * The three reads are `gh repo view`, `gh auth status` and two `gh api`
+ * endpoints. `doctor`'s credential probe is here rather than in `doctor` so
+ * that "every gh invocation eyes-on makes passes `assertAllowed`" has no
+ * exception: a rule with one is enforced by memory rather than by shape.
  */
 
 const OWNER = String.raw`[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?`;
@@ -84,7 +89,7 @@ export type GhFailure =
 const REMOTE_HELP: readonly string[] = [
   'gh ran and GitHub answered, so this is a state of the pull request or of your access to it rather than a defect in eyes-on',
   'Check that the pull request number exists and that you can see it, and run `gh auth status` if it should be visible',
-  'Use `eyes-on comment --pr <n> --dry-run` to see the comment without calling GitHub at all',
+  '`--dry-run` does not get past this: it publishes nothing, but it reads the pull request the same way before rendering the comment',
 ];
 
 export class GhError extends Error {
@@ -191,18 +196,130 @@ export function assertAllowed(args: readonly string[]): void {
   }
 }
 
+/**
+ * The options eyes-on itself passes to `gh api`, and whether each takes a
+ * value. Everything else is refused.
+ *
+ * This is an allow-list of **spellings**, not only of endpoints, and it is
+ * default-deny for the reason the endpoint list is: a parser that has to
+ * understand its whole input is only as good as the forms it knows. `methodOf`
+ * used to recognise `--method X`, `-X X` and `--method=X` and not pflag's
+ * attached shorthand `-XPATCH`, which gh accepts - so `gh api -XPATCH
+ * repos/o/r/pulls/7` fell through to GET, matched a read path, and was allowed.
+ * That is the one endpoint this product promises it structurally cannot reach.
+ *
+ * Refusing what cannot be interpreted with certainty is what makes the next
+ * spelling nobody anticipated fail closed instead of being read as a GET.
+ */
+interface FlagSpec {
+  /** What the option means, so a shorthand and its long form are one fact. */
+  name: string;
+  takesValue: boolean;
+}
+
+const API_FLAGS: Readonly<Record<string, FlagSpec>> = {
+  '--method': { name: 'method', takesValue: true },
+  '-X': { name: 'method', takesValue: true },
+  '--input': { name: 'input', takesValue: true },
+  '--jq': { name: 'jq', takesValue: true },
+  '-q': { name: 'jq', takesValue: true },
+  '--paginate': { name: 'paginate', takesValue: false },
+};
+
+/** The same, for `gh repo view`. It has no writing form, but a vector eyes-on
+ *  cannot read is refused there too rather than passed through unexamined. */
+const REPO_VIEW_FLAGS: Readonly<Record<string, FlagSpec>> = {
+  '--json': { name: 'json', takesValue: true },
+  '--jq': { name: 'jq', takesValue: true },
+  '-q': { name: 'jq', takesValue: true },
+};
+
+interface ParsedArgv {
+  /** Option name to the last value given for it. */
+  values: Map<string, string>;
+  /** Everything that is not an option or an option's value. */
+  operands: string[];
+}
+
+/**
+ * Reads an argument vector, or says why it cannot.
+ *
+ * Handles every form gh accepts for the options above - `--long value`,
+ * `--long=value`, `-s value` and the attached `-svalue` - and refuses anything
+ * outside the table, an option given no value, and a value attached to an
+ * option that takes none.
+ */
+function parseArgv(args: readonly string[], table: Readonly<Record<string, FlagSpec>>): ParsedArgv | { refusal: string } {
+  const values = new Map<string, string>();
+  const operands: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] as string;
+    if (arg === '-' || !arg.startsWith('-')) {
+      operands.push(arg);
+      continue;
+    }
+    let token = arg;
+    let attached: string | null = null;
+    const equals = arg.indexOf('=');
+    if (arg.startsWith('--') && equals > 0) {
+      token = arg.slice(0, equals);
+      attached = arg.slice(equals + 1);
+    } else if (!arg.startsWith('--') && arg.length > 2) {
+      // pflag's attached shorthand: `-XPATCH` is `-X PATCH`. This is the form
+      // that was missed, and it is why the table is consulted rather than a
+      // list of literal tokens.
+      token = arg.slice(0, 2);
+      attached = arg.slice(2);
+    }
+    const spec = Object.hasOwn(table, token) ? table[token] : undefined;
+    if (!spec) {
+      return {
+        refusal: `${token} is not an option eyes-on passes to gh, and a vector eyes-on cannot interpret with certainty is refused rather than read as a GET`,
+      };
+    }
+    if (!spec.takesValue) {
+      if (attached !== null) return { refusal: `${token} takes no value, so "${arg}" is not a vector eyes-on can interpret` };
+      continue;
+    }
+    const value = attached ?? args[index + 1];
+    if (value === undefined) return { refusal: `${token} was given no value` };
+    if (attached === null) index += 1;
+    values.set(spec.name, value);
+  }
+  return { values, operands };
+}
+
 /** The reason an invocation is refused, or null when it is allowed. */
 export function refusalFor(args: readonly string[]): string | null {
   const verb = args[0];
+  if (verb === undefined) return 'no gh command was given';
+
   // `gh repo view` reads; it has no writing form.
-  if (verb === 'repo' && args[1] === 'view') return null;
+  if (verb === 'repo' && args[1] === 'view') {
+    const parsed = parseArgv(args.slice(2), REPO_VIEW_FLAGS);
+    if ('refusal' in parsed) return parsed.refusal;
+    return parsed.operands.length === 0
+      ? null
+      : `gh repo view names ${parsed.operands[0]}; eyes-on reads only the clone it is run in`;
+  }
+  // `gh auth status` reads a credential and names no repository. It is here so
+  // that `doctor`'s readiness probe goes through this door like everything
+  // else, rather than being the one invocation the guarantee excepts.
+  if (verb === 'auth' && args[1] === 'status') {
+    return args.length === 2 ? null : 'gh auth status is run with no options here';
+  }
   if (verb !== 'api') {
-    return `only \`gh api\` and \`gh repo view\` are permitted; ${verb ?? '(nothing)'} is not`;
+    return `only \`gh api\`, \`gh repo view\` and \`gh auth status\` are permitted; ${verb} is not`;
   }
 
-  const method = methodOf(args);
-  const path = pathOf(args);
-  if (path === null) return 'no endpoint path was given';
+  const parsed = parseArgv(args.slice(1), API_FLAGS);
+  if ('refusal' in parsed) return parsed.refusal;
+  if (parsed.operands.length === 0) return 'no endpoint path was given';
+  if (parsed.operands.length > 1) {
+    return `gh api takes one endpoint and ${parsed.operands.length} were given, so which one this would call cannot be determined`;
+  }
+  const path = parsed.operands[0] as string;
+  const method = (parsed.values.get('method') ?? 'GET').toUpperCase();
 
   if (method === 'GET') {
     return READ_PATHS.some((pattern) => pattern.test(path))
@@ -217,30 +334,6 @@ export function refusalFor(args: readonly string[]): string | null {
     // The message names the one mistake that would actually matter, because a
     // path that is nearly right is the way this prohibition would be broken.
     return `${method} ${path} is not a comment endpoint; eyes-on never edits a pull request body, merges, or files a review`;
-  }
-  return null;
-}
-
-function methodOf(args: readonly string[]): string {
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index] as string;
-    if (arg === '--method' || arg === '-X') return (args[index + 1] ?? '').toUpperCase();
-    if (arg.startsWith('--method=')) return arg.slice('--method='.length).toUpperCase();
-  }
-  return 'GET';
-}
-
-/** The first bare operand after `api`: the endpoint. */
-function pathOf(args: readonly string[]): string | null {
-  const valued = new Set(['--method', '-X', '-f', '-F', '-H', '--field', '--raw-field', '--header', '--input', '--jq', '-q', '--template', '-t', '--cache']);
-  for (let index = 1; index < args.length; index += 1) {
-    const arg = args[index] as string;
-    if (valued.has(arg)) {
-      index += 1;
-      continue;
-    }
-    if (arg.startsWith('-')) continue;
-    return arg;
   }
   return null;
 }
@@ -271,6 +364,27 @@ function gh(args: readonly string[], options: { cwd?: string; input?: string; ti
     );
   }
   return { status: result.status as number, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+}
+
+/**
+ * Whether gh holds a usable credential.
+ *
+ * `doctor`'s readiness probe, and it lives here so that the guarantee above has
+ * no exception: it used to spawn gh directly, which meant one invocation in the
+ * product reached a process without passing `assertAllowed` and without the
+ * output ceiling. An absolute rule is enforceable by shape; one with an
+ * exception is enforceable only by memory.
+ *
+ * Never throws: reporting an unreachable toolchain is what `doctor` is for, and
+ * it cannot do that from a stack trace.
+ */
+export function ghAuthenticated(): boolean {
+  try {
+    return gh(['auth', 'status'], { timeoutMs: 10_000 }).status === 0;
+  } catch (error) {
+    if (error instanceof GhError) return false;
+    throw error;
+  }
 }
 
 export interface IssueComment {

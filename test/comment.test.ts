@@ -672,7 +672,19 @@ test('a pull request GitHub refuses is reported as GitHub answering, not as an e
     'a pull request number nobody can read is not a defect in eyes-on',
   );
   assert.ok(doc.help.some((line) => line.includes('gh auth status')), 'the remedy is one that works in this state');
-  assert.ok(doc.help.some((line) => line.includes('--dry-run')));
+
+  // --dry-run is named in this help, so what it says about it has to be true.
+  // It reads the pull request before rendering, so it fails identically here -
+  // and the help must not offer it as a way past this.
+  const dry = await captureCli(['comment', '--pr', '12345', '--dry-run', '--format', 'json'], { cwd: repo.path, env });
+  const dryDoc = JSON.parse(dry.out) as { error: string; help: string[] };
+  assert.equal(dry.code, EXIT_ERROR, '--dry-run takes the same path, so it fails the same way');
+  assert.equal(dryDoc.error, doc.error);
+  assert.ok(
+    doc.help.every((line) => !/--dry-run.*without calling GitHub/.test(line)),
+    'a remedy that reproduces the failure is not a remedy',
+  );
+  assert.ok(doc.help.some((line) => line.includes('--dry-run') && line.includes('does not get past this')));
 });
 
 /**
