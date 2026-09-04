@@ -1,6 +1,7 @@
 import { classify } from '../core/guard.js';
 import { ToonEncodeError } from './toon.js';
 import { GitError } from '../git/git.js';
+import { GhError } from '../gh/gh.js';
 import { parseArgs, parseArgsLenient, flagString, flagBool, resolveFormat, type ParsedArgs } from './args.js';
 import {
   emitError,
@@ -127,14 +128,15 @@ export async function run(argv: readonly string[], writers: Writers = processWri
       emitError(writers, format, error.message, error.help);
       return error.code;
     }
-    // git absent from PATH is a condition of the machine, not a defect, so it
-    // is reported as itself rather than as an eyes-on bug. `doctor` tolerates
-    // it and completes; every other command needs git and stops here.
-    if (error instanceof GitError && error.spawnFailed) {
-      emitError(writers, format, error.message, [
-        'Install git and make sure it is on PATH',
-        'Run `eyes-on doctor` to see what eyes-on can and cannot reach from here',
-      ]);
+    // A subprocess that never produced a status is a condition of the machine,
+    // not a defect, so it is reported as itself rather than as an eyes-on bug.
+    // Which condition it is - git or gh absent, a read too large to buffer, a
+    // call that timed out - was decided where the failure was classified, and
+    // the error carries both the sentence and the help that works in it. This
+    // dispatcher does not re-derive either, so a caller that grows a new spawn
+    // cannot get the wrong remedy printed for it.
+    if ((error instanceof GitError || error instanceof GhError) && error.spawnFailure !== null) {
+      emitError(writers, format, error.message, error.help);
       return EXIT_ERROR;
     }
     // A payload the encoder has no rendering for is a defect in the command

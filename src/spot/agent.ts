@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
+import { MAX_OUTPUT_BYTES, spawnFailureKindOf, spawnFailureMessage } from '../core/spawn.js';
 
 /**
  * The single door to a local coding agent.
@@ -209,19 +210,22 @@ export function askModel(prompt: string, options: ModelOptions): ModelOutcome {
     cwd: options.cwd,
     env: options.env ?? process.env,
     timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    maxBuffer: 32 * 1024 * 1024,
+    maxBuffer: MAX_OUTPUT_BYTES,
   });
   const elapsed = Math.round(Number(process.hrtime.bigint() - started) / 1e6);
 
   if (result.error) {
-    const timedOut = (result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT' || result.signal === 'SIGTERM';
+    const kind = result.signal === 'SIGTERM' ? 'timeout' : spawnFailureKindOf(result.error);
     return {
       state: 'failed',
       command,
       elapsed_ms: elapsed,
-      detail: timedOut
-        ? `${command[0]} did not answer within ${Math.round((options.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000)}s`
-        : `${command[0]} could not be run: ${result.error.message}`,
+      // An agent that wrote more than eyes-on reads is not an agent that could
+      // not be run, and only one of those is worth trying to install.
+      detail:
+        kind === 'timeout'
+          ? `${command[0]} did not answer within ${Math.round((options.timeoutMs ?? DEFAULT_TIMEOUT_MS) / 1000)}s`
+          : spawnFailureMessage(command[0] as string, kind, result.error.message),
     };
   }
   if (result.status !== 0) {

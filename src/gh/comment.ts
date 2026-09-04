@@ -1,6 +1,6 @@
 import type { CheckRow } from '../db/checks.js';
 import type { DecisionRow, DriftItemRow, SpotRow } from '../db/gate.js';
-import { bandLabel, driftProvenanceSentence, unverifiedSentence, type Band } from '../risk/signals.js';
+import { bandLabel, carriedEvidence, driftProvenanceSentence, unverifiedSentence, type Band } from '../risk/signals.js';
 
 /**
  * The single sticky comment (report Appendix C.4).
@@ -160,7 +160,7 @@ export function renderComment(input: CommentInput): string {
     // grade above is always one an earlier run took of this same change. The
     // sentence comes from the same place every other surface takes it from.
     lines.push(
-      `<sub>${driftProvenanceSentence({ provenance: 'carried', grade: check.drift, intent: check.drift_intent })}</sub>`,
+      `<sub>${driftProvenanceSentence(carriedEvidence(check))}</sub>`,
     );
   }
 

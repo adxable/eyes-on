@@ -11,6 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { MAX_OUTPUT_BYTES } from '../src/core/spawn.js';
 
 /** A temporary directory removed when the test process exits. */
 export function tempDir(prefix: string): string {
@@ -113,6 +114,10 @@ export function run(cwd: string, args: string[], env?: NodeJS.ProcessEnv): strin
   const result = spawnSync('git', args, {
     cwd,
     encoding: 'utf8',
+    // The same ceiling the product reads at. Node's 1 MiB default would make a
+    // fixture large enough to exercise the size condition fail here first, in
+    // the helper that builds it.
+    maxBuffer: MAX_OUTPUT_BYTES,
     env: env ? { ...process.env, ...env } : process.env,
   });
   if (result.status !== 0) {
@@ -331,19 +336,27 @@ const args = process.argv.slice(2);
 fs.appendFileSync(path.join(dir, 'calls.jsonl'), JSON.stringify(args) + '\\n');
 const state = JSON.parse(fs.readFileSync(store, 'utf8'));
 const save = () => fs.writeFileSync(store, JSON.stringify(state));
-const out = (value) => process.stdout.write(JSON.stringify(value));
+// Written with a synchronous loop rather than process.stdout.write: a write
+// to a pipe followed immediately by process.exit truncates, and the listing of
+// a busy pull request is exactly where that shows up.
+const writeAll = (text) => {
+  const buffer = Buffer.from(text);
+  let offset = 0;
+  while (offset < buffer.length) offset += fs.writeSync(1, buffer, offset, buffer.length - offset);
+};
+const out = (value) => writeAll(JSON.stringify(value));
 const method = (() => {
   const at = args.indexOf('--method');
   return at >= 0 ? args[at + 1] : 'GET';
 })();
 const endpoint = args.find((arg, index) => index > 0 && !arg.startsWith('-') && args[index - 1] !== '--method' && args[index - 1] !== '--jq');
 if (args[0] === 'repo' && args[1] === 'view') {
-  process.stdout.write(state.slug + '\\n');
+  writeAll(state.slug + '\\n');
   process.exit(0);
 }
 if (args[0] !== 'api' || !endpoint) { process.stderr.write('unsupported: ' + args.join(' ') + '\\n'); process.exit(1); }
 if (method === 'GET' && endpoint === 'repos/' + state.slug + '/pulls/' + state.number) {
-  process.stdout.write(state.headSHA + '\\n');
+  writeAll(state.headSHA + '\\n');
   process.exit(0);
 }
 if (method === 'GET' && endpoint === 'repos/' + state.slug + '/issues/' + state.number + '/comments') {

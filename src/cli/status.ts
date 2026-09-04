@@ -7,7 +7,7 @@ import { currentBranch, headSHA, toplevel } from '../git/git.js';
 import { canonicalPath, repoID } from '../core/repoid.js';
 import { Database, findRepoByPath } from '../db/db.js';
 import { latestCheck, type CheckRow } from '../db/checks.js';
-import { bandLabel, driftProvenanceSentence, unverifiedSentence, type Band, type DriftEvidence } from '../risk/signals.js';
+import { bandLabel, carriedEvidence, driftProvenanceSentence, unverifiedSentence, type Band } from '../risk/signals.js';
 
 /**
  * `eyes-on status` - read-only, and required to keep working from inside a
@@ -61,7 +61,7 @@ export async function statusCommand(context: Context): Promise<number> {
           // earlier run took of this same change. Naming that keeps the four
           // facts here saying exactly what they can prove.
           drift_intent: assessment.drift_intent,
-          drift_provenance: assessment.drift === null ? 'none' : 'carried',
+          drift_provenance: carriedEvidence(assessment).provenance,
           drift_sentence: driftProvenanceSentence(carriedEvidence(assessment)),
           status: assessment.status,
           when: new Date(assessment.updated_at * 1000).toISOString(),
@@ -79,16 +79,6 @@ export async function statusCommand(context: Context): Promise<number> {
 
   emitDoc(context.writers, context.format, doc, renderMarkdown(doc, assessment));
   return 0;
-}
-
-/** The recorded grade as this command can honestly describe it: `status`
- *  measures nothing, so any grade it shows was taken by an earlier run. */
-function carriedEvidence(assessment: CheckRow): DriftEvidence {
-  return {
-    provenance: assessment.drift === null ? 'none' : 'carried',
-    grade: assessment.drift,
-    intent: assessment.drift_intent,
-  };
 }
 
 /** Whether the repository has a row in the state database. */

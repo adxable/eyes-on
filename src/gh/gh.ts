@@ -1,4 +1,11 @@
 import { spawnSync } from 'node:child_process';
+import {
+  MAX_OUTPUT_BYTES,
+  spawnFailureHelp,
+  spawnFailureKindOf,
+  spawnFailureMessage,
+  type SpawnFailureKind,
+} from '../core/spawn.js';
 
 /**
  * Every `gh` invocation eyes-on makes goes through here, and the reason is the
@@ -45,15 +52,32 @@ const WRITE_PATHS: Readonly<Record<string, readonly RegExp[]>> = {
 export class GhError extends Error {
   readonly status: number;
   readonly stderr: string;
-  /** True when gh could not be executed at all - absent from PATH. */
-  readonly spawnFailed: boolean;
-  constructor(message: string, status: number, stderr: string, spawnFailed = false) {
-    super(message);
+  /** Why gh never produced a status, or null when it ran. Only `missing` is a
+   *  host without the GitHub CLI; a listing too large to buffer and a call that
+   *  timed out are states of a machine where gh is installed and working. */
+  readonly spawnFailure: SpawnFailureKind | null;
+  /** The remedies that work in the state this error describes. */
+  readonly help: string[];
+  constructor(message: string, status: number, stderr: string, spawnFailure: SpawnFailureKind | null = null) {
+    super(spawnFailure === null ? message : spawnFailureMessage('gh', spawnFailure, stderr.trim()));
     this.name = 'GhError';
     this.status = status;
     this.stderr = stderr;
-    this.spawnFailed = spawnFailed;
+    this.spawnFailure = spawnFailure;
+    this.help = spawnFailure === null ? [] : spawnFailureHelp('gh', spawnFailure, ghRemedy(spawnFailure));
   }
+}
+
+/**
+ * What a caller can actually do about a gh spawn failure.
+ *
+ * A call that timed out has one: try it again once gh can reach GitHub. A
+ * listing too large to buffer has none eyes-on can offer - the pull request is
+ * as big as it is and no flag here makes it smaller - so the help says only
+ * what it can prove, which is that nothing is missing.
+ */
+function ghRemedy(kind: SpawnFailureKind): string | null {
+  return kind === 'timeout' ? 'Check `gh auth status` and that GitHub is reachable, then run the command again' : null;
 }
 
 export interface GhResult {
@@ -141,10 +165,15 @@ function gh(args: readonly string[], options: { cwd?: string; input?: string; ti
     input: options.input,
     encoding: 'utf8',
     timeout: options.timeoutMs ?? 60_000,
+    // `gh api --paginate` concatenates a page of comments per request, so this
+    // grows with the pull request and crosses Node's 1 MiB default on a busy
+    // one. Without this a large pull request fails as "gh could not be
+    // executed" - which it was.
+    maxBuffer: MAX_OUTPUT_BYTES,
     env: { ...process.env, GH_PAGER: 'cat', GH_PROMPT_DISABLED: '1', CLICOLOR: '0' },
   });
   if (result.error) {
-    throw new GhError(`gh could not be executed: ${result.error.message}`, -1, String(result.error.message), true);
+    throw new GhError('', -1, String(result.error.message), spawnFailureKindOf(result.error));
   }
   return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }

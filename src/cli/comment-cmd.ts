@@ -8,7 +8,7 @@ import { checkByID, checkID, type CheckRow } from '../db/checks.js';
 import { driftItemsFor, recordedDecisionCovering, recordComment, spotsFor } from '../db/gate.js';
 import { findAllMarked, renderComment, MARKER_PREFIX } from '../gh/comment.js';
 import { createComment, listComments, pullHeadSHA, repoSlug, updateComment, GhError } from '../gh/gh.js';
-import { driftProvenanceSentence, unverifiedSentence } from '../risk/signals.js';
+import { carriedEvidence, driftProvenanceSentence, unverifiedSentence } from '../risk/signals.js';
 
 /**
  * `eyes-on comment --pr <n>` - one sticky comment, and nothing else.
@@ -151,12 +151,8 @@ export async function commentCommand(context: Context): Promise<number> {
     // earlier run took of this same change. Same three states, same sentence,
     // one source - `check` and `status` report it the same way.
     drift_intent: check.drift_intent,
-    drift_provenance: check.drift === null ? 'none' : 'carried',
-    drift_sentence: driftProvenanceSentence({
-      provenance: check.drift === null ? 'none' : 'carried',
-      grade: check.drift,
-      intent: check.drift_intent,
-    }),
+    drift_provenance: carriedEvidence(check).provenance,
+    drift_sentence: driftProvenanceSentence(carriedEvidence(check)),
     body: finalBody,
     exit_code: EXIT_OK,
     help: helpLines(dryRun, stale, spots.length, check, markedFound) as ToonValue,
@@ -225,7 +221,12 @@ function resolveSlug(clonePath: string): string | null {
   try {
     return repoSlug(clonePath);
   } catch (error) {
-    if (error instanceof GhError && error.spawnFailed) {
+    // Only absence is answered here, with the one remedy that is specific to
+    // this command: a comment can still be seen without gh. Every other spawn
+    // failure - a listing too large to buffer, a call that timed out - already
+    // carries its own sentence and help, and re-describing it as "gh is not on
+    // PATH" is the failure this classification exists to prevent.
+    if (error instanceof GhError && error.spawnFailure === 'missing') {
       throw new UserFacingError('gh is not on PATH, and eyes-on publishes its comment through gh', [
         'Install the GitHub CLI and run `gh auth login`',
         'Use `eyes-on comment --pr <n> --dry-run` to see the comment without publishing it',

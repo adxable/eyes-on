@@ -13,7 +13,7 @@ import {
   recordedHits,
   type GateAction,
 } from '../db/gate.js';
-import { bandLabel, driftProvenanceSentence, unverifiedSentence, type Band } from '../risk/signals.js';
+import { bandLabel, carriedEvidence, driftProvenanceSentence, unverifiedSentence, type Band } from '../risk/signals.js';
 
 /**
  * `eyes-on axi respond` - the answer to a parked run.
@@ -125,12 +125,8 @@ export async function respondCommand(context: Context): Promise<number> {
     band_label: check.band ? bandLabel(check.band as Band) : null,
     drift: check.drift,
     drift_intent: check.drift_intent,
-    drift_provenance: check.drift === null ? 'none' : 'carried',
-    drift_sentence: driftProvenanceSentence({
-      provenance: check.drift === null ? 'none' : 'carried',
-      grade: check.drift,
-      intent: check.drift_intent,
-    }),
+    drift_provenance: carriedEvidence(check).provenance,
+    drift_sentence: driftProvenanceSentence(carriedEvidence(check)),
     exit_code: EXIT_OK,
     help: helpLines(check, previous !== undefined) as ToonValue,
   };

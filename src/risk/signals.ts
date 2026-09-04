@@ -150,6 +150,28 @@ export interface DriftEvidence {
 }
 
 /**
+ * The evidence a surface that took no measurement can honestly present.
+ *
+ * `status`, `comment`, `axi respond` and the pull-request comment all read a
+ * recorded row and none of them runs the two passes, so any grade they show was
+ * measured by an earlier run of this same change and the intent it answers is
+ * the one recorded beside it. That is one fact, and it was being rebuilt in four
+ * places - each of them repeating the same `drift === null ? 'none' : 'carried'`
+ * a second time for its own provenance field. It lives here, beside the sentence
+ * every one of them already takes from here, so the two cannot drift apart.
+ *
+ * The parameter is the shape rather than `CheckRow`: this module is upstream of
+ * the database layer and stays that way.
+ */
+export function carriedEvidence(recorded: { drift: number | null; drift_intent: string | null }): DriftEvidence {
+  return {
+    provenance: recorded.drift === null ? 'none' : 'carried',
+    grade: recorded.drift,
+    intent: recorded.drift_intent,
+  };
+}
+
+/**
  * The one sentence that says where the grade came from and what it answers,
  * written here rather than in each renderer so no surface can claim more than
  * another.
