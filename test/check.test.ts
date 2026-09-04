@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import { run as runCli } from '../src/cli/run.js';
-import { EXIT_ERROR, EXIT_OK, type Writers } from '../src/cli/output.js';
+import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, type Writers } from '../src/cli/output.js';
 import { stateRoot, tempDir, tempRepo, type TempRepo } from './helpers.js';
 
 /**
@@ -336,7 +336,10 @@ test('an unusable --min-risk is refused rather than silently replaced', async (t
   for (const argument of ['--min-risk abc', '--min-risk=-5', '--min-risk 150']) {
     const argv = ['export-path-instructions', ...argument.split(' '), '--format', 'json'];
     const result = await cli(argv, { cwd: repo.path, env });
-    assert.equal(result.code, EXIT_ERROR, `${argument} must be refused`);
+    // A mistyped flag is the caller's mistake, so it is a usage error (2) and
+    // not a run that failed (1): `flagCount` is now the one place every numeric
+    // flag is read, and it answers all of them the same way.
+    assert.equal(result.code, EXIT_USAGE, `${argument} must be refused`);
     const doc = JSON.parse(result.out) as { error: string; help: string[] };
     // The guard enforces the range its own message names: a risk score is 0 to
     // 100 by construction, and 150 would empty the history half of the export
