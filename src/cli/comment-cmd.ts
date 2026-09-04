@@ -57,7 +57,13 @@ export async function commentCommand(context: Context): Promise<number> {
   // pull request has moved on to another commit is part of what the comment
   // says. Rendering first and patching afterwards would be two renderings that
   // can disagree.
-  const slug = resolveSlug(risk.clonePath);
+  const slug = resolveSlug(risk.clonePath, dryRun);
+  // Whether eyes-on got to look at the pull request at all. A dry run on a host
+  // without gh, and one where gh cannot name the repository, both reach the end
+  // of this command having read nothing from GitHub - so every field describing
+  // what is on the pull request has to say "not checked" rather than "none".
+  // Zero comments and a comment nobody looked for are different facts.
+  const checked = slug !== null;
   let prHead: string | null = null;
   let existingId: number | null = null;
   let existingUrl: string | null = null;
@@ -104,7 +110,12 @@ export async function commentCommand(context: Context): Promise<number> {
   let commentId = existingId;
 
   if (dryRun) {
-    progress(context.writers, `dry run: would ${action} the eyes-on comment on #${number}`);
+    progress(
+      context.writers,
+      checked
+        ? `dry run: would ${action} the eyes-on comment on #${number}`
+        : `dry run: eyes-on could not reach #${number} through gh, so whether its comment would be created or updated was never checked`,
+    );
   } else if (slug === null) {
     throw new UserFacingError('gh could not tell eyes-on which GitHub repository this clone belongs to', [
       'Run `gh auth login`, or `gh repo view` in this clone to see what gh reports',
@@ -123,16 +134,21 @@ export async function commentCommand(context: Context): Promise<number> {
   const doc: ToonObject = {
     pr: number,
     repo: slug,
-    action: dryRun ? `would ${action}` : `${action}d`,
+    action: checked ? (dryRun ? `would ${action}` : `${action}d`) : 'would create or update',
     dry_run: dryRun,
+    // Whether the pull request was read at all. False makes the three counts
+    // below null rather than zero, because a run that never called gh knows
+    // nothing about what is on the pull request and must not report a number it
+    // did not measure.
+    pull_request_checked: checked,
     comment_id: commentId,
     comment_url: url,
     marker: MARKER_PREFIX.trim(),
     // How many eyes-on comments were on the pull request *before* this run.
     // Zero on the first publish and one on every later one; two would be the
     // defect this field exists to make visible.
-    eyes_on_comments_found: markedFound,
-    comments_on_pr: comments,
+    eyes_on_comments_found: checked ? markedFound : null,
+    comments_on_pr: checked ? comments : null,
     check_id: check.id,
     head: check.head_sha.slice(0, 12),
     pr_head: prHead ? prHead.slice(0, 12) : null,
@@ -155,16 +171,29 @@ export async function commentCommand(context: Context): Promise<number> {
     drift_sentence: driftProvenanceSentence(carriedEvidence(check)),
     body: finalBody,
     exit_code: EXIT_OK,
-    help: helpLines(dryRun, stale, spots.length, check, markedFound) as ToonValue,
+    help: helpLines(dryRun, stale, spots.length, check, markedFound, checked) as ToonValue,
   };
 
   emitDoc(context.writers, context.format, doc, () => `${finalBody}\n`);
   return EXIT_OK;
 }
 
-function helpLines(dryRun: boolean, stale: boolean, fragments: number, check: CheckRow, markedFound: number): string[] {
+function helpLines(
+  dryRun: boolean,
+  stale: boolean,
+  fragments: number,
+  check: CheckRow,
+  markedFound: number,
+  checked: boolean,
+): string[] {
   const lines: string[] = [];
   if (dryRun) lines.push('Nothing was published: --dry-run prints the comment and calls no writing endpoint');
+  if (!checked) {
+    lines.push(
+      'gh could not name this repository, so eyes-on never looked at the pull request: whether an eyes-on comment is already there is unknown, and the comment counts are null rather than zero',
+    );
+    lines.push('Install the GitHub CLI and run `gh auth login` to publish; the comment above is rendered from what was recorded and does not need gh');
+  }
   if (fragments === 0) lines.push('The comment has no fragments to read: run `eyes-on spotlight` and publish again');
   if (stale) {
     lines.push(
@@ -215,18 +244,28 @@ function parsePr(raw: string | null): number {
   return number;
 }
 
-/** The repository slug, or null when gh cannot say - which `--dry-run` tolerates
- *  and a real publish does not. */
-function resolveSlug(clonePath: string): string | null {
+/**
+ * The repository slug, or null when gh cannot say.
+ *
+ * A dry run is a preview of a comment assembled entirely from what was
+ * recorded, so it needs gh for exactly one thing - looking at the pull request
+ * to see whether an eyes-on comment is already there - and that is a fact it
+ * can honestly report as unchecked. Refusing the whole command on a host
+ * without the GitHub CLI made the publish path's own advice ("use --dry-run")
+ * name a command that failed the same way, which is the state-the-code-is-not-in
+ * failure this product is built around avoiding. So absence returns null here
+ * and the refusal stays on the publish path, where it is true.
+ */
+function resolveSlug(clonePath: string, dryRun: boolean): string | null {
   try {
     return repoSlug(clonePath);
   } catch (error) {
-    // Only absence is answered here, with the one remedy that is specific to
-    // this command: a comment can still be seen without gh. Every other spawn
-    // failure - a listing too large to buffer, a call that timed out - already
-    // carries its own sentence and help, and re-describing it as "gh is not on
-    // PATH" is the failure this classification exists to prevent.
+    // Only absence is answered here. Every other spawn failure - a listing too
+    // large to buffer, a call that timed out - already carries its own sentence
+    // and help, and re-describing it as "gh is not on PATH" is the failure that
+    // classification exists to prevent.
     if (error instanceof GhError && error.spawnFailure === 'missing') {
+      if (dryRun) return null;
       throw new UserFacingError('gh is not on PATH, and eyes-on publishes its comment through gh', [
         'Install the GitHub CLI and run `gh auth login`',
         'Use `eyes-on comment --pr <n> --dry-run` to see the comment without publishing it',

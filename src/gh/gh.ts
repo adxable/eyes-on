@@ -49,6 +49,35 @@ const WRITE_PATHS: Readonly<Record<string, readonly RegExp[]>> = {
   PATCH: [new RegExp(`^repos/${OWNER}/${REPO}/issues/comments/\\d+$`)],
 };
 
+/**
+ * The three states a failed `gh` invocation can be in, which are three
+ * different things about the machine and want three different sentences.
+ */
+export type GhFailure =
+  /** Refused by the allow-list before a process existed. Only eyes-on's own
+   *  code builds an argument vector, so reaching this is a defect in eyes-on
+   *  and is deliberately left to be reported as one. */
+  | 'refused'
+  /** gh never produced a status; `spawnFailure` says which state that is. */
+  | 'spawn'
+  /** gh ran, reached GitHub, and the call came back non-zero. A pull request
+   *  that does not exist, one the user cannot see, one that is locked - all of
+   *  them are answers about the pull request rather than about eyes-on. */
+  | 'remote';
+
+/**
+ * What to do about a call GitHub refused.
+ *
+ * Every remote failure eyes-on can produce comes from the one command that
+ * talks to GitHub, so the last line names it. None of these ask anyone to
+ * report a bug, because gh ran and answered.
+ */
+const REMOTE_HELP: readonly string[] = [
+  'gh ran and GitHub answered, so this is a state of the pull request or of your access to it rather than a defect in eyes-on',
+  'Check that the pull request number exists and that you can see it, and run `gh auth status` if it should be visible',
+  'Use `eyes-on comment --pr <n> --dry-run` to see the comment without calling GitHub at all',
+];
+
 export class GhError extends Error {
   readonly status: number;
   readonly stderr: string;
@@ -56,16 +85,38 @@ export class GhError extends Error {
    *  host without the GitHub CLI; a listing too large to buffer and a call that
    *  timed out are states of a machine where gh is installed and working. */
   readonly spawnFailure: SpawnFailureKind | null;
-  /** The remedies that work in the state this error describes. */
+  readonly kind: GhFailure;
+  /** The remedies that work in the state this error describes, empty when the
+   *  honest report is the generic one. The dispatcher renders this rather than
+   *  deciding again what kind of failure it is looking at. */
   readonly help: string[];
   constructor(message: string, status: number, stderr: string, spawnFailure: SpawnFailureKind | null = null) {
-    super(spawnFailure === null ? message : spawnFailureMessage('gh', spawnFailure, stderr.trim()));
+    const kind: GhFailure = spawnFailure !== null ? 'spawn' : status < 0 ? 'refused' : 'remote';
+    const said = firstLine(stderr);
+    super(
+      kind === 'spawn'
+        ? spawnFailureMessage('gh', spawnFailure as SpawnFailureKind, stderr.trim())
+        : kind === 'remote'
+          ? `${message}: gh exited ${status}${said.length > 0 ? ` - ${said}` : ''}`
+          : message,
+    );
     this.name = 'GhError';
     this.status = status;
     this.stderr = stderr;
     this.spawnFailure = spawnFailure;
-    this.help = spawnFailure === null ? [] : spawnFailureHelp('gh', spawnFailure, ghRemedy(spawnFailure));
+    this.kind = kind;
+    this.help =
+      kind === 'spawn'
+        ? spawnFailureHelp('gh', spawnFailure as SpawnFailureKind, ghRemedy(spawnFailure as SpawnFailureKind))
+        : kind === 'remote'
+          ? [...REMOTE_HELP]
+          : [];
   }
+}
+
+/** What gh said, in one line, so the message carries GitHub's own words. */
+function firstLine(text: string): string {
+  return (text.split('\n').find((line) => line.trim().length > 0) ?? '').trim();
 }
 
 /**

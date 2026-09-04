@@ -1,7 +1,7 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { delimiter } from 'node:path';
-import { captureCli, sandboxEnv, stubAgent, stubGh, tempRepo, type StubAgent, type TempRepo } from './helpers.js';
+import { captureCli, pathWithGitOnly, sandboxEnv, stubAgent, stubGh, tempRepo, type StubAgent, type TempRepo } from './helpers.js';
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/output.js';
 import { findMarked, marker, MARKER_PREFIX, renderComment } from '../src/gh/comment.js';
 import { parseComments, refusalFor } from '../src/gh/gh.js';
@@ -570,4 +570,90 @@ test('publishing an assessment nobody made says so instead of inventing one', as
   const missing = await captureCli(['comment', '--format', 'json'], { cwd: repo.path, env });
   assert.equal(missing.code, EXIT_USAGE);
   assert.match(missing.out, /comment needs --pr/);
+});
+
+/**
+ * gh, in the three states it can actually be in.
+ *
+ * The suite used to put a fake gh on PATH for every one of these tests, so a
+ * host without the GitHub CLI and a pull request GitHub refuses were both
+ * uncovered - and both were reported as something they were not.
+ */
+
+function repoWithoutModel(prefix: string): TempRepo {
+  const repo = tempRepo(prefix);
+  repo.commitFiles('chore: configure eyes-on', {
+    '.eyes-on.yml': 'schema: eyes-on/v1\n',
+    'src/a.ts': 'export const a = 1;\n',
+  });
+  repo.git(['checkout', '-q', '-b', 'work']);
+  repo.commitFiles('feat: change one thing', { 'src/a.ts': 'export const a = 2;\nexport const b = 3;\n' });
+  return repo;
+}
+
+test('--dry-run really is a preview without gh, and says what it could not check', async (t) => {
+  const repo = repoWithoutModel('comment-nogh');
+  // git and nothing else: this is the host the publish path's own advice - "use
+  // --dry-run" - has to be true on.
+  const env: Record<string, string> = { ...sandboxEnv('comment-nogh'), PATH: pathWithGitOnly('comment-nogh-path') };
+  await initRepo(t, repo, env);
+  await captureCli(['check', '--no-model', '--format', 'json'], { cwd: repo.path, env });
+
+  const preview = await captureCli(['comment', '--pr', String(PR), '--dry-run', '--format', 'json'], {
+    cwd: repo.path,
+    env,
+  });
+  const doc = JSON.parse(preview.out) as CommentDoc & {
+    pull_request_checked: boolean;
+    comments_on_pr: number | null;
+    eyes_on_comments_found: number | null;
+    repo: string | null;
+  };
+
+  assert.equal(preview.code, EXIT_OK, `--dry-run must work without gh: ${preview.err}`);
+  // The comment itself is assembled from what was recorded, which needs nothing
+  // from GitHub.
+  assert.ok(doc.body.startsWith(MARKER_PREFIX));
+  assert.match(doc.body, /eyes-on - /);
+
+  // And the price is stated rather than guessed at.
+  assert.equal(doc.pull_request_checked, false);
+  assert.notEqual(doc.action, 'would create', 'nothing looked at the pull request, so neither verb is known');
+  assert.equal(doc.action, 'would create or update');
+  assert.equal(doc.comments_on_pr, null, 'a count nobody read is not zero');
+  assert.equal(doc.eyes_on_comments_found, null);
+  assert.equal(doc.repo, null);
+  assert.ok(doc.help.some((line) => line.includes('never looked at the pull request')));
+  assert.match(preview.err, /never checked/);
+
+  // The publish path still refuses, because there the refusal is true.
+  const publish = await captureCli(['comment', '--pr', String(PR), '--format', 'json'], { cwd: repo.path, env });
+  assert.equal(publish.code, EXIT_ERROR);
+  assert.match(publish.out, /gh is not on PATH/);
+});
+
+test('a pull request GitHub refuses is reported as GitHub answering, not as an eyes-on bug', async (t) => {
+  const agent = stubAgent('comment-404', [SPOTLIGHT_ANSWER]);
+  const repo = repoWith(agent);
+  const head = repo.git(['rev-parse', 'HEAD']).trim();
+  // The fake gh knows about PR 42 only, so every call about another number
+  // exits non-zero - which is what a 404 or a pull request nobody may see looks
+  // like from here.
+  const gh = stubGh('comment-404', { slug: SLUG, number: PR, headSHA: head, body: BODY });
+  const env: Record<string, string> = { ...sandboxEnv('comment-404'), PATH: `${agent.dir}${delimiter}${gh.path}` };
+  await initRepo(t, repo, env);
+  await captureCli(['check', '--format', 'json'], { cwd: repo.path, env });
+
+  const result = await captureCli(['comment', '--pr', '12345', '--format', 'json'], { cwd: repo.path, env });
+  const doc = JSON.parse(result.out) as { error: string; help: string[] };
+
+  assert.equal(result.code, EXIT_ERROR);
+  assert.match(doc.error, /gh could not read the comments of acme\/widgets#12345/);
+  assert.match(doc.error, /gh exited 1/, 'the status gh actually returned');
+  assert.ok(
+    doc.help.every((line) => !line.includes('eyes-on bug')),
+    'a pull request number nobody can read is not a defect in eyes-on',
+  );
+  assert.ok(doc.help.some((line) => line.includes('gh auth status')), 'the remedy is one that works in this state');
+  assert.ok(doc.help.some((line) => line.includes('--dry-run')));
 });

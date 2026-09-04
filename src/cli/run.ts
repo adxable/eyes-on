@@ -128,14 +128,16 @@ export async function run(argv: readonly string[], writers: Writers = processWri
       emitError(writers, format, error.message, error.help);
       return error.code;
     }
-    // A subprocess that never produced a status is a condition of the machine,
-    // not a defect, so it is reported as itself rather than as an eyes-on bug.
-    // Which condition it is - git or gh absent, a read too large to buffer, a
-    // call that timed out - was decided where the failure was classified, and
-    // the error carries both the sentence and the help that works in it. This
-    // dispatcher does not re-derive either, so a caller that grows a new spawn
-    // cannot get the wrong remedy printed for it.
-    if ((error instanceof GitError || error instanceof GhError) && error.spawnFailure !== null) {
+    // A failure of a program eyes-on runs is a condition of the machine or of
+    // the remote, not a defect, so it is reported as itself rather than as an
+    // eyes-on bug. Which condition it is - git or gh absent, a read too large to
+    // buffer, a call that timed out, a pull request GitHub refused to show - was
+    // decided where the failure was classified, and an error that carries help
+    // carries the sentence that goes with it. This dispatcher does not re-derive
+    // either, so a caller that grows a new spawn or a new endpoint cannot get
+    // the wrong remedy printed for it. An error with no help is one whose honest
+    // report is the generic one, and it falls through on purpose.
+    if ((error instanceof GitError || error instanceof GhError) && error.help.length > 0) {
       emitError(writers, format, error.message, error.help);
       return EXIT_ERROR;
     }
