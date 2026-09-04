@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { run as runCli } from '../src/cli/run.js';
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, type Writers } from '../src/cli/output.js';
 import { COMMANDS } from '../src/cli/commands.js';
+import { flagString, parseArgs, NUMERIC_FLAGS } from '../src/cli/args.js';
 import { shortDir, stateRoot, tempDir, tempRepo } from './helpers.js';
 import { MAX_SOCKET_PATH_BYTES } from '../src/core/paths.js';
 
@@ -108,6 +109,95 @@ test('an unimplemented command names the stage that owns it and exits 1', async 
     const result = await cli([command.name, '--format', 'toon'], { cwd: repo.path, env: sandbox() });
     assert.equal(result.code, EXIT_ERROR, `${command.name} should exit 1`);
     assert.match(result.out, new RegExp(`not implemented yet: it is delivered in stage ${command.stage}`));
+  }
+});
+
+/**
+ * One rule for every numeric flag, checked against the list rather than against
+ * the flags somebody remembered.
+ *
+ * Four review rounds found the same defect in four commands, each one over from
+ * the one just fixed: `--n abc` was a usage error while `--n 42abc` was read by
+ * `Number.parseInt` as 42, `--top 1e9` as 1, `--lines 1e9` as 1. The structural
+ * answer is that `flagString` refuses a name in `NUMERIC_FLAGS`, so `flagCount`
+ * is the only way to read one - and this walks that set, so a flag added
+ * without a case here fails rather than being missed a fifth time.
+ *
+ * Out of range is a separate question and the two kinds answer it differently
+ * on purpose: a contract refuses, a preference clamps.
+ */
+const NUMERIC_FLAG_COMMANDS: Readonly<Record<string, string[]>> = {
+  pr: ['comment'],
+  n: ['spotlight'],
+  lines: ['axi', 'logs'],
+  top: ['why'],
+  'min-risk': ['export-path-instructions'],
+  horizon: ['backtest'],
+};
+
+test('every numeric flag is read whole, and no command reads one any other way', async () => {
+  assert.deepEqual(
+    Object.keys(NUMERIC_FLAG_COMMANDS).sort(),
+    [...NUMERIC_FLAGS].sort(),
+    'a numeric flag was declared without a case here, which is how the last four rounds missed one',
+  );
+
+  const repo = tempRepo('cli-flags');
+  const env = sandbox();
+  await cli(['init'], { cwd: repo.path, env });
+  try {
+    for (const [flag, argv] of Object.entries(NUMERIC_FLAG_COMMANDS)) {
+      // Three spellings of one mistake. `abc` is not a number at all; the other
+      // two are the ones `Number.parseInt` reads as 42 and as 1.
+      for (const value of ['abc', '42abc', '1e9']) {
+        const result = await cli([...argv, `--${flag}`, value, '--format', 'json'], { cwd: repo.path, env });
+        assert.equal(result.code, EXIT_USAGE, `--${flag} ${value} was not refused by ${argv.join(' ')}`);
+        assert.match(result.out, new RegExp(`--${flag} ${value} is not `), `--${flag} ${value} was refused for the wrong reason`);
+      }
+    }
+
+    // And the reader is the only route: asking for a numeric flag as text is a
+    // programming error rather than a value somebody can then parse.
+    for (const flag of NUMERIC_FLAGS) {
+      assert.throws(() => flagString(parseArgs([`--${flag}`, '7']), flag), /read it with flagCount/);
+    }
+  } finally {
+    await cli(['daemon', 'stop'], { cwd: repo.path, env });
+  }
+});
+
+test('a preference clamps out of range and says what was asked for; a contract refuses', async () => {
+  const repo = tempRepo('cli-range');
+  const env = sandbox();
+  await cli(['init'], { cwd: repo.path, env });
+  try {
+    // `--n` is a preference: 99 is brought into the report's three-to-five
+    // range, and the payload reports both numbers rather than the clamp under
+    // the name of the request.
+    const many = JSON.parse(
+      (await cli(['spotlight', '--n', '99', '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
+    ) as { asked_for: number | null; fragments_max: number };
+    assert.equal(many.asked_for, 99, 'the field named for the request must carry the request');
+    assert.equal(many.fragments_max, 5, 'and the clamp is reported beside it, not instead of it');
+
+    const unasked = JSON.parse(
+      (await cli(['spotlight', '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
+    ) as { asked_for: number | null; fragments_max: number };
+    assert.equal(unasked.asked_for, null, 'nobody asked, so no number is reported as having been asked for');
+    assert.equal(unasked.fragments_max, 5);
+
+    const tail = JSON.parse((await cli(['axi', 'logs', '--lines', '5000', '--format', 'json'], { cwd: repo.path, env })).out) as {
+      lines: number;
+    };
+    assert.equal(tail.lines, 1000);
+
+    // `--top` is a contract: a count outside the range is refused rather than
+    // quietly turned into a different question.
+    const zero = await cli(['why', '--top', '0', '--format', 'json'], { cwd: repo.path, env });
+    assert.equal(zero.code, EXIT_USAGE);
+    assert.match(zero.out, /--top 0 is not a positive count/);
+  } finally {
+    await cli(['daemon', 'stop'], { cwd: repo.path, env });
   }
 });
 
@@ -340,4 +430,88 @@ test('an artificially deep TMPDIR does not reach the suite\'s state roots', asyn
     await cli(['daemon', 'stop'], { cwd: repo.path, env });
   });
   assert.equal(result.code, EXIT_OK, result.err);
+});
+
+/**
+ * The values of every `key[N]: ...` scalar list in a TOON document, in order.
+ *
+ * TOON is the payload contract eyes-on emits on stdout, so decoding it is
+ * reading what an agent reads. The declared count is checked against the row,
+ * because a list an agent cannot count is the failure `[N]` exists to prevent.
+ */
+function toonLists(out: string, key: string): string[][] {
+  const lists: string[][] = [];
+  for (const line of out.split('\n')) {
+    const match = /^\s*([A-Za-z_][\w-]*)\[(\d+)\]:\s?(.*)$/.exec(line);
+    if (!match || match[1] !== key) continue;
+    const values = toonCells(match[3] ?? '');
+    assert.equal(values.length, Number(match[2]), `the declared count disagrees with the row: ${line}`);
+    lists.push(values);
+  }
+  return lists;
+}
+
+function toonCells(payload: string): string[] {
+  if (payload.length === 0) return [];
+  const cells: string[] = [];
+  let current = '';
+  let quoted = false;
+  let escaped = false;
+  for (const char of payload) {
+    if (escaped) {
+      current += char === 'n' ? '\n' : char === 'r' ? '\r' : char;
+      escaped = false;
+    } else if (quoted && char === '\\') {
+      escaped = true;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (char === ',' && !quoted) {
+      cells.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  cells.push(current);
+  return cells;
+}
+
+/**
+ * `eyes-on axi logs` in the format the axi subtree actually defaults to.
+ *
+ * A log tail is a list of lines, and a line can contain any separator, so this
+ * is the one payload in the product whose shape the TOON table form cannot
+ * hold. It used to reach the agent as a TypeError instead of a payload.
+ */
+test('axi logs returns each log tail as a list, in its own default format', async () => {
+  const env = sandbox();
+  const root = env.EYES_HOME as string;
+  mkdirSync(join(root, 'logs'), { recursive: true });
+  const daemonLines = ['started', 'listening on socket, ready', 'a line with "quotes"'];
+  writeFileSync(join(root, 'logs', 'daemon.log'), `${daemonLines.join('\n')}\n`);
+  // An empty log is ordinary: it was written to and then rotated away.
+  writeFileSync(join(root, 'logs', 'cli.log'), '');
+
+  const result = await cli(['axi', 'logs'], { env });
+
+  assert.equal(result.code, EXIT_OK);
+  assert.equal(result.err, '');
+  assert.doesNotMatch(result.out, /^error: /m);
+  assert.deepEqual(
+    toonLists(result.out, 'lines'),
+    [daemonLines, []],
+    'both tails come back as lists, the commas and quotes inside a line intact',
+  );
+  assert.match(result.out, /^ {2}daemon:$/m);
+  assert.match(result.out, /^ {2}cli:$/m);
+});
+
+test('axi logs reports a log that was never written as absent rather than empty', async () => {
+  const env = sandbox();
+  const result = await cli(['axi', 'logs'], { env });
+
+  assert.equal(result.code, EXIT_OK);
+  assert.deepEqual(toonLists(result.out, 'lines'), [[], []]);
+  // "not there" and "empty" are different diagnoses, and only one is a problem.
+  assert.equal((result.out.match(/^ {4}present: false$/gm) ?? []).length, 2);
 });

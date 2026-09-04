@@ -1,4 +1,12 @@
 import { spawnSync } from 'node:child_process';
+import {
+  MAX_OUTPUT_BYTES,
+  signalDetail,
+  spawnFailureHelp,
+  spawnFailureMessage,
+  spawnFailureOf,
+  type SpawnFailureKind,
+} from '../core/spawn.js';
 
 /**
  * Every git invocation eyes-on makes goes through here, and the reason is
@@ -46,22 +54,33 @@ export const CLONE_READ_ONLY_SUBCOMMANDS: readonly string[] = [
   'version',
 ];
 
+/** The one line only git's callers can offer for a read that did not fit or did
+ *  not finish: every command that reads a diff takes the range as flags. */
+const NARROWER_RANGE =
+  'Assess a narrower range: `--base <a commit closer to the head>` reads a smaller diff';
+
 export class GitError extends Error {
   readonly status: number;
   readonly stderr: string;
-  /** True when git could not be executed at all, rather than having run and
-   *  exited non-zero. A host without git on PATH produces exactly this. */
-  readonly spawnFailed: boolean;
-  constructor(args: string[], status: number, stderr: string, spawnFailed = false) {
+  /** Why git never produced a status, or null when it ran and exited non-zero.
+   *  Only `missing` is a host without git on PATH; a read too large to buffer
+   *  and a read that timed out are states of a machine where git is present and
+   *  working, and no remedy that installs anything reaches them. */
+  readonly spawnFailure: SpawnFailureKind | null;
+  /** The remedies that work in the state this error describes. Built here so
+   *  the dispatcher renders it rather than re-deciding it. */
+  readonly help: string[];
+  constructor(args: string[], status: number, stderr: string, spawnFailure: SpawnFailureKind | null = null) {
     super(
-      spawnFailed
-        ? `git could not be executed: ${stderr.trim()}`
-        : `git ${args.join(' ')} failed (${status}): ${stderr.trim()}`,
+      spawnFailure === null
+        ? `git ${args.join(' ')} failed (${status}): ${stderr.trim()}`
+        : spawnFailureMessage('git', spawnFailure, stderr.trim()),
     );
     this.name = 'GitError';
     this.status = status;
     this.stderr = stderr;
-    this.spawnFailed = spawnFailed;
+    this.spawnFailure = spawnFailure;
+    this.help = spawnFailure === null ? [] : spawnFailureHelp('git', spawnFailure, NARROWER_RANGE);
   }
 }
 
@@ -87,6 +106,9 @@ function git(args: string[], options: GitOptions = {}): GitResult {
     cwd: options.cwd,
     encoding: 'utf8',
     timeout: options.timeoutMs ?? 60_000,
+    // Node's default is 1 MiB, which a whole-branch patch crosses on its own.
+    // Without this a large change fails as "git could not be executed".
+    maxBuffer: MAX_OUTPUT_BYTES,
     env: {
       ...process.env,
       // Never let a repo-local or global hook, pager, or editor run inside a
@@ -96,14 +118,17 @@ function git(args: string[], options: GitOptions = {}): GitResult {
       GIT_OPTIONAL_LOCKS: '0',
     },
   });
-  if (result.error) {
-    // Could not be executed at all - git absent from PATH is exactly this.
-    // Distinct from a non-zero exit, because a probe may answer "no git" while
-    // every caller that needs git still fails loudly.
-    throw new GitError(full, -1, String(result.error.message ?? result.error), true);
+  // Asked over the whole result rather than over `result.error`, because a git
+  // killed from outside sets no error at all and would otherwise arrive here
+  // looking like a success with no status. Past this point `result.status` is a
+  // number, so nothing below needs a sentinel for the absence of one.
+  const failure = spawnFailureOf(result);
+  if (failure !== null) {
+    const detail = failure === 'signalled' ? signalDetail(result) : String(result.error?.message ?? result.error ?? '');
+    throw new GitError(full, -1, detail, failure);
   }
   const out: GitResult = {
-    status: result.status ?? -1,
+    status: result.status as number,
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
   };
@@ -283,9 +308,9 @@ export function gitVersion(): string | null {
   } catch (error) {
     // The one probe that must survive a host without git: reporting a missing
     // toolchain is `doctor`'s job, and it cannot do it from a stack trace. Only
-    // a spawn failure is absence; anything else is still a failure worth
-    // raising.
-    if (error instanceof GitError && error.spawnFailed) return null;
+    // absence is absence; a git that ran and failed some other way is still a
+    // failure worth raising.
+    if (error instanceof GitError && error.spawnFailure === 'missing') return null;
     throw error;
   }
 }

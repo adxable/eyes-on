@@ -84,10 +84,156 @@ export function bandLabel(band: Band): string {
   }
 }
 
+/**
+ * The one sentence for a check recorded `unverified`.
+ *
+ * `unverified` is a sixth fact about an assessment, beside the score, its
+ * maximum, the band and the drift grade: eyes-on could not read the trusted
+ * configuration, so **no** hard rule was evaluated and the band is a floor
+ * rather than a measurement. Every surface that shows the assessment shows it,
+ * and takes the sentence from here so none of them can say less than another.
+ */
+export function unverifiedSentence(): string {
+  return 'The trusted configuration could not be read, so no hard rule was evaluated and this band is a lower bound.';
+}
+
 export function bandFor(score: number, thresholds: RepoConfig['thresholds']): Band {
   if (score >= thresholds.full_review) return 'pelna';
   if (score >= thresholds.read_fragments) return 'wskazane';
   return 'auto';
+}
+
+/**
+ * Where the drift grade in a score came from.
+ *
+ * A check is keyed on (repository, base, head), so a grade recorded against a
+ * row is a measurement of *this* diff and a later run that measured none keeps
+ * it rather than erasing it. That is the right arithmetic and the wrong
+ * evidence unless the reader is told: a score carrying a grade this invocation
+ * did not take is claiming more than this invocation measured. So the three
+ * states are named and distinguished everywhere the score is shown.
+ */
+export type DriftProvenance =
+  /** This invocation ran the two passes and got the grade. */
+  | 'measured'
+  /** The grade is the one already recorded for this same base..head. Every
+   *  command that only reads the row - `status`, `comment` - is always here. */
+  | 'carried'
+  /** There is no grade at all. */
+  | 'none';
+
+/**
+ * A grade, where it came from, and the intent it answers.
+ *
+ * The last of those is not decoration. A drift grade is a measurement of the
+ * pair (diff, intent), and the row it lives on is keyed by (repository, base,
+ * head) - the intent is outside that key. So a reader has to be able to see
+ * that the grade in front of them answers the intent in front of them, and
+ * every surface takes the sentence from here rather than writing its own.
+ */
+export interface DriftEvidence {
+  provenance: DriftProvenance;
+  grade: number | null;
+  /** The intent the grade answers, or the intent this run stated when there is
+   *  no grade. */
+  intent: string | null;
+  /** A grade this run dropped because it stated a different intent: what it
+   *  was, and what it answered. */
+  superseded?: { grade: number; intent: string | null } | null;
+  /** Whether there is a recorded assessment for this change. Absent means yes,
+   *  which is every caller that reads a row. `drift` run before any `check` on
+   *  the same base..head is the one caller that sets it false: the two passes
+   *  ran and the grade is real, but there is no score for it to be a signal of,
+   *  and a sentence saying the score contains it would name a number that does
+   *  not exist. */
+  scored?: boolean;
+}
+
+/**
+ * The evidence a surface that took no measurement can honestly present.
+ *
+ * `status`, `comment`, `axi respond` and the pull-request comment all read a
+ * recorded row and none of them runs the two passes, so any grade they show was
+ * measured by an earlier run of this same change and the intent it answers is
+ * the one recorded beside it. That is one fact, and it was being rebuilt in four
+ * places - each of them repeating the same `drift === null ? 'none' : 'carried'`
+ * a second time for its own provenance field. It lives here, beside the sentence
+ * every one of them already takes from here, so the two cannot drift apart.
+ *
+ * The parameter is the shape rather than `CheckRow`: this module is upstream of
+ * the database layer and stays that way.
+ */
+export function carriedEvidence(recorded: { drift: number | null; drift_intent: string | null }): DriftEvidence {
+  return {
+    provenance: recorded.drift === null ? 'none' : 'carried',
+    grade: recorded.drift,
+    intent: recorded.drift_intent,
+  };
+}
+
+/**
+ * The one sentence that says where the grade came from and what it answers,
+ * written here rather than in each renderer so no surface can claim more than
+ * another.
+ */
+export function driftProvenanceSentence(evidence: DriftEvidence): string {
+  const against = (intent: string | null): string =>
+    intent === null ? 'an intent nobody recorded' : `the intent "${shortIntent(intent)}"`;
+  const scored = evidence.scored !== false;
+  const inScore = scored
+    ? 'the score contains it as S7'
+    : 'there is no recorded assessment for this change to fold it into as S7';
+  const zero = scored ? ', so S7 is zero' : '';
+
+  if (evidence.provenance === 'none' || evidence.grade === null) {
+    if (evidence.superseded) {
+      return (
+        `No drift grade for ${against(evidence.intent)}: the recorded ${evidence.superseded.grade}/5 was measured ` +
+        `against ${against(evidence.superseded.intent)} and answers a different question${zero}.`
+      );
+    }
+    // Nobody stating an intent and an intent that was never compared are two
+    // different states, and only one of them is fixed by running a model.
+    if (evidence.intent === null) {
+      return `No drift grade: no intent was stated for this change, so nothing was compared with the diff${zero}.`;
+    }
+    return `No drift grade for ${against(evidence.intent)}: it was not compared with this diff${zero}.`;
+  }
+  if (evidence.provenance === 'carried') {
+    return (
+      `Drift ${evidence.grade}/5 is carried from an earlier measurement of this same change against ` +
+      `${against(evidence.intent)} - nothing was measured now - and ${inScore}.`
+    );
+  }
+  return `Drift ${evidence.grade}/5 was measured for this change against ${against(evidence.intent)}, and ${inScore}.`;
+}
+
+/** An intent short enough to sit in one sentence, whole when it already is. */
+export function shortIntent(intent: string): string {
+  const flat = normalizeIntent(intent);
+  return flat.length <= 80 ? flat : `${flat.slice(0, 79)}\u2026`;
+}
+
+/**
+ * The one reading of an intent a run was given: whitespace alone states
+ * nothing, so it is the same as not passing the flag at all.
+ *
+ * Every consumer takes the value from here. Four places used to decide this
+ * separately and three of them agreed, so `--intent ""` reached `carryDrift` as
+ * a *different* question and dropped a grade measured of this same change.
+ * Blank and absent cannot come apart while there is one reading.
+ */
+export function statedIntent(intent: string | null): string | null {
+  if (intent === null) return null;
+  return intent.trim().length === 0 ? null : intent;
+}
+
+/** Two intents are the same question when they differ only in whitespace. The
+ *  comparison is on the whole text, never on the shortened display form: two
+ *  intents that agree for eighty characters and diverge after are two
+ *  questions. */
+export function normalizeIntent(intent: string): string {
+  return intent.replace(/\s+/g, ' ').trim();
 }
 
 /** The raw measurement of each signal, before weights and the curve. */
@@ -100,13 +246,25 @@ export const SIGNAL_UNITS: Record<SignalName, string> = {
   spread: 'directories the change reaches into',
   no_test: 'share of changed code files with no test changed alongside',
   recency: 'days of freshness (30 = touched today, 0 = untouched for a month)',
-  drift: 'intent-versus-diff drift, 1 to 5',
+  drift: 'grades of intent-versus-diff drift above an aligned 1 of 5',
 };
 
 export interface Score {
   score: number;
   band: Band;
   signals: SignalValue[];
+}
+
+/**
+ * The largest score these weights can produce.
+ *
+ * Not a constant 100. The seven default weights sum to 1.20 once drift is
+ * scored (see the note in `repoconfig.ts`), and a repository may set its own
+ * weights anyway, so the only honest denominator is the one the weights imply.
+ * Every rendering that shows a score out of something reads it from here.
+ */
+export function maxScore(config: RepoConfig): number {
+  return Math.round(SIGNAL_NAMES.reduce((sum, name) => sum + config.weights[name], 0) * 100);
 }
 
 /** Applies the weights and the curve. The only place a score is produced. */
@@ -165,4 +323,84 @@ function formatRaw(signal: SignalValue): string {
 
 function format(value: number): string {
   return value.toFixed(2);
+}
+
+/**
+ * Which grade a run should score with, and what to record, when it measured
+ * one or did not.
+ *
+ * A drift grade is a measurement of the pair (diff, intent). The row it lives
+ * on is keyed by (repository, base, head), so the intent is outside the key and
+ * every command that touches the row has to answer the same question: does the
+ * grade already recorded here answer the question being asked now? Three cases,
+ * and they are decided in one place because four commands read them.
+ */
+export interface CarryInput {
+  /** The grade this invocation measured, or null when it measured none. */
+  measured: number | null;
+  /** The intent this invocation was given, or null when it was given none. */
+  intent: string | null;
+  /** The grade on the recorded row, and the intent it was measured against. */
+  recordedGrade: number | null;
+  recordedIntent: string | null;
+  /** The row's own `intent` column, which is not always the grade's: a row
+   *  written before eyes-on recorded `drift_intent` has one and not the other,
+   *  and a run that states no intent must keep what the row already says rather
+   *  than blanking it because the grade named nothing. */
+  recordedRowIntent: string | null;
+}
+
+export interface CarryDecision extends DriftEvidence {
+  /** The intent that belongs on the row after this run. */
+  rowIntent: string | null;
+  /** True when the recorded drift facts answer a different question and must be
+   *  replaced by an entry for the new intent carrying no grade. */
+  supersede: boolean;
+}
+
+export function carryDrift(input: CarryInput): CarryDecision {
+  if (input.measured !== null) {
+    return {
+      provenance: 'measured',
+      grade: input.measured,
+      intent: input.intent,
+      rowIntent: input.intent,
+      supersede: false,
+    };
+  }
+
+  // This run asked no drift question, so it decides nothing about drift: the
+  // recorded grade is still a measurement of this same diff against the intent
+  // on the row, and the row keeps that intent rather than being blanked.
+  if (input.intent === null) {
+    return {
+      provenance: input.recordedGrade === null ? 'none' : 'carried',
+      grade: input.recordedGrade,
+      intent: input.recordedIntent,
+      rowIntent: input.recordedRowIntent,
+      supersede: false,
+    };
+  }
+
+  const sameQuestion =
+    input.recordedIntent !== null && normalizeIntent(input.recordedIntent) === normalizeIntent(input.intent);
+  if (input.recordedGrade !== null && sameQuestion) {
+    return {
+      provenance: 'carried',
+      grade: input.recordedGrade,
+      intent: input.recordedIntent,
+      rowIntent: input.intent,
+      supersede: false,
+    };
+  }
+
+  return {
+    provenance: 'none',
+    grade: null,
+    intent: input.intent,
+    rowIntent: input.intent,
+    supersede: input.recordedGrade !== null,
+    superseded:
+      input.recordedGrade === null ? null : { grade: input.recordedGrade, intent: input.recordedIntent },
+  };
 }

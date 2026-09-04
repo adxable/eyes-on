@@ -1,5 +1,7 @@
 import { classify } from '../core/guard.js';
+import { ToonEncodeError } from './toon.js';
 import { GitError } from '../git/git.js';
+import { GhError } from '../gh/gh.js';
 import { parseArgs, parseArgsLenient, flagString, flagBool, resolveFormat, type ParsedArgs } from './args.js';
 import {
   emitError,
@@ -23,6 +25,9 @@ import { whyCommand } from './why.js';
 import { rulesCommand } from './rules-cmd.js';
 import { backtestCommand } from './backtest-cmd.js';
 import { exportPathInstructionsCommand } from './export-cmd.js';
+import { spotlightCommand } from './spotlight-cmd.js';
+import { driftCommand } from './drift-cmd.js';
+import { commentCommand } from './comment-cmd.js';
 import { stubCommand } from './stubs.js';
 import { version, PRODUCT_NAME } from '../core/version.js';
 
@@ -61,6 +66,9 @@ const HANDLERS = new Map<string, Handler>([
   ['rules', rulesCommand],
   ['backtest', backtestCommand],
   ['export-path-instructions', exportPathInstructionsCommand],
+  ['spotlight', spotlightCommand],
+  ['drift', driftCommand],
+  ['comment', commentCommand],
 ]);
 
 /** Commands whose machine payload is the primary output, so TOON is the default. */
@@ -120,14 +128,25 @@ export async function run(argv: readonly string[], writers: Writers = processWri
       emitError(writers, format, error.message, error.help);
       return error.code;
     }
-    // git absent from PATH is a condition of the machine, not a defect, so it
-    // is reported as itself rather than as an eyes-on bug. `doctor` tolerates
-    // it and completes; every other command needs git and stops here.
-    if (error instanceof GitError && error.spawnFailed) {
-      emitError(writers, format, error.message, [
-        'Install git and make sure it is on PATH',
-        'Run `eyes-on doctor` to see what eyes-on can and cannot reach from here',
-      ]);
+    // A failure of a program eyes-on runs is a condition of the machine or of
+    // the remote, not a defect, so it is reported as itself rather than as an
+    // eyes-on bug. Which condition it is - git or gh absent, a read too large to
+    // buffer, a call that timed out, a pull request GitHub refused to show - was
+    // decided where the failure was classified, and an error that carries help
+    // carries the sentence that goes with it. This dispatcher does not re-derive
+    // either, so a caller that grows a new spawn or a new endpoint cannot get
+    // the wrong remedy printed for it. An error with no help is one whose honest
+    // report is the generic one, and it falls through on purpose.
+    if ((error instanceof GitError || error instanceof GhError) && error.help.length > 0) {
+      emitError(writers, format, error.message, error.help);
+      return EXIT_ERROR;
+    }
+    // A payload the encoder has no rendering for is a defect in the command
+    // that built it, but it is reported as itself: the message names the field
+    // and the help names a format that can carry it, rather than a TypeError
+    // from inside the encoder.
+    if (error instanceof ToonEncodeError) {
+      emitError(writers, format, error.message, error.help);
       return EXIT_ERROR;
     }
     // An unexpected failure is still reported in the contract's shape: an agent

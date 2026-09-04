@@ -7,7 +7,7 @@ import { currentBranch, headSHA, toplevel } from '../git/git.js';
 import { canonicalPath, repoID } from '../core/repoid.js';
 import { Database, findRepoByPath } from '../db/db.js';
 import { latestCheck, type CheckRow } from '../db/checks.js';
-import { bandLabel, type Band } from '../risk/signals.js';
+import { bandLabel, carriedEvidence, driftProvenanceSentence, unverifiedSentence, type Band } from '../risk/signals.js';
 
 /**
  * `eyes-on status` - read-only, and required to keep working from inside a
@@ -51,7 +51,18 @@ export async function statusCommand(context: Context): Promise<number> {
           branch: assessment.branch,
           head: assessment.head_sha.slice(0, 12),
           score: assessment.score,
+          // The denominator the score was computed under, recorded beside it.
+          // Null on a row written before eyes-on stored it, which is not the
+          // same as 100 and must not be reported as it.
+          score_max: assessment.score_max,
           band: assessment.band,
+          drift: assessment.drift,
+          // This command measures nothing, so any grade it shows is one an
+          // earlier run took of this same change. Naming that keeps the four
+          // facts here saying exactly what they can prove.
+          drift_intent: assessment.drift_intent,
+          drift_provenance: carriedEvidence(assessment).provenance,
+          drift_sentence: driftProvenanceSentence(carriedEvidence(assessment)),
           status: assessment.status,
           when: new Date(assessment.updated_at * 1000).toISOString(),
         } as ToonValue)
@@ -120,11 +131,22 @@ function renderMarkdown(doc: ToonObject, assessment: CheckRow | null): string {
   if (assessment) {
     const head = assessment.head_sha.slice(0, 12);
     const current = String(doc.head) === head ? '' : ' (the head has moved since)';
+    const outOf = assessment.score_max === null ? '' : `/${assessment.score_max}`;
     lines.push(
-      `**${assessment.score ?? 0}/100 - ${bandLabel((assessment.band ?? 'auto') as Band)}** at \`${head}\`${current}.`,
+      `**${assessment.score ?? 0}${outOf} - ${bandLabel((assessment.band ?? 'auto') as Band)}** at \`${head}\`${current}.`,
+      '',
+    );
+    if (assessment.score_max === null) {
+      lines.push(
+        'This assessment was recorded before eyes-on stored the maximum a score can reach, so the number above has no denominator here. Re-run `eyes-on check` to record one.',
+        '',
+      );
+    }
+    lines.push(
+      driftProvenanceSentence(carriedEvidence(assessment)),
       '',
       assessment.status === 'unverified'
-        ? 'Recorded as `unverified`: the trusted configuration could not be read, so the hard rules were not evaluated.'
+        ? unverifiedSentence()
         : 'Run `eyes-on check` to assess the current head.',
     );
   } else {

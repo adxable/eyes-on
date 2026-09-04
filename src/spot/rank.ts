@@ -1,0 +1,223 @@
+import type { RepoReader } from '../git/reader.js';
+import { hunkSize, oldRange, type Hunk } from './hunks.js';
+
+/**
+ * Stage one of the fragment ranking: the arithmetic, with no model in it.
+ *
+ * The report fixes the formula (section 5, P3):
+ *
+ * ```
+ * weight = file_risk x hunk_size x (hard rule x2) x (previously blamed x1.5) x (no test x1.2)
+ * ```
+ *
+ * and fixes the reason it exists at all: the median commit in the reference
+ * repository is 604 lines, so a model asked to read a whole change does not
+ * read it. Twelve candidates is what the second stage is given.
+ *
+ * Two properties are the product rather than the implementation.
+ *
+ * **It never calls a model.** Everything here is git and arithmetic, which is
+ * what makes `--no-model` a real fallback rather than a degraded one: when the
+ * model is rate-limited, unavailable or refused, this is the answer, complete
+ * and honest about being stage one.
+ *
+ * **The multipliers are asymmetric on purpose.** A hard rule doubles a
+ * fragment's weight because the rule is a statement that statistics do not get
+ * a vote on this path. Previously blamed lines are worth half as much again,
+ * because the evidence is real but indirect - the commit that introduced these
+ * lines was later blamed by a fix, which is not the same as these lines being
+ * wrong. A missing test is worth a fifth more, the weakest of the three,
+ * because the signal is a heuristic about file names.
+ */
+
+/**
+ * Floor under the file-risk term.
+ *
+ * The formula is a product, so a file the history has never seen - risk 0 -
+ * would zero every fragment in it, and a brand-new file is not a file without
+ * risk; it is the one place where history cannot help. A floor of one point
+ * keeps such a file ranked by its size and its multipliers instead of dropping
+ * it out of the ranking entirely, which is how a fresh repository would
+ * otherwise produce an empty spotlight.
+ */
+export const MIN_FILE_RISK = 1;
+
+export const HARD_RULE_FACTOR = 2;
+export const BLAMED_FACTOR = 1.5;
+export const NO_TEST_FACTOR = 1.2;
+
+export interface Candidate {
+  file: string;
+  /** Line a reader is sent to, in the coordinates of the side that exists. */
+  line: number;
+  weight: number;
+  /** Every term of the product, so the number can be argued with rather than
+   *  taken on trust - the same discipline the risk score's rationale follows. */
+  file_risk: number;
+  size: number;
+  hard_rule: boolean;
+  previously_blamed: boolean;
+  no_test: boolean;
+  created: boolean;
+  deleted: boolean;
+  /** The hunk itself. Not part of the machine payload: it is what the second
+   *  stage reads, and what a `--format md` rendering can show. */
+  text: string;
+}
+
+export interface RankOptions {
+  hunks: readonly Hunk[];
+  /** Per-file risk from the assessment, 0-100, by path. */
+  fileRisk: ReadonlyMap<string, number>;
+  /** Files a hard rule matched. Matched over the full changed-file list, so a
+   *  `deploy/values.yaml` is in here even though no code filter would keep it. */
+  ruleFiles: ReadonlySet<string>;
+  /** Production code files the change did not bring a test for. */
+  untested: ReadonlySet<string>;
+  /** Hunks whose old-side lines were introduced by a commit some later fix
+   *  blamed. Keyed by `hunkKey`. */
+  blamed: ReadonlySet<string>;
+  /** How many candidates the second stage is given (Appendix C.3: 12). */
+  maxHunks: number;
+  /**
+   * How many fragments one file may occupy in the candidate set.
+   *
+   * A cap is needed because the formula is a product with an unbounded size
+   * term: one large hunk in a high-risk file outweighs every fragment in every
+   * other file, so an uncapped top twelve is routinely twelve fragments of one
+   * file - and a reviewer sent twelve times to the same file has been told
+   * nothing they did not know after the first. See `docs/stage-2-acceptance.md`
+   * for the measurement this default comes from.
+   */
+  maxPerFile: number;
+}
+
+export const DEFAULT_MAX_PER_FILE = 3;
+
+/** Identity of a hunk within a change: both sides, because a pure insertion and
+ *  a pure deletion at the same place share one of them. The separator is a NUL
+ *  because a path may contain a space or a comma, and it is written as an
+ *  escape rather than as the byte itself: a source file carrying a literal NUL
+ *  is binary to git, and no diff of it is ever rendered again. */
+export function hunkKey(hunk: Hunk): string {
+  return `${hunk.path}\u0000${hunk.oldStart},${hunk.oldCount}\u0000${hunk.newStart},${hunk.newCount}`;
+}
+
+export function rankHunks(options: RankOptions): Candidate[] {
+  const scored = options.hunks
+    .map((hunk) => toCandidate(hunk, options))
+    .filter((candidate) => candidate.size > 0)
+    .sort((a, b) => b.weight - a.weight || a.file.localeCompare(b.file) || a.line - b.line);
+
+  return capPerFile(scored, options.maxHunks, options.maxPerFile);
+}
+
+function toCandidate(hunk: Hunk, options: RankOptions): Candidate {
+  const risk = Math.max(MIN_FILE_RISK, options.fileRisk.get(hunk.path) ?? 0);
+  const size = hunkSize(hunk);
+  const rule = options.ruleFiles.has(hunk.path);
+  const blamed = options.blamed.has(hunkKey(hunk));
+  const noTest = options.untested.has(hunk.path);
+  const weight =
+    risk *
+    size *
+    (rule ? HARD_RULE_FACTOR : 1) *
+    (blamed ? BLAMED_FACTOR : 1) *
+    (noTest ? NO_TEST_FACTOR : 1);
+  return {
+    file: hunk.path,
+    line: hunk.anchor,
+    weight: Math.round(weight * 100) / 100,
+    file_risk: risk,
+    size,
+    hard_rule: rule,
+    previously_blamed: blamed,
+    no_test: noTest,
+    created: hunk.created,
+    deleted: hunk.deleted,
+    text: hunk.text,
+  };
+}
+
+/**
+ * Takes the best `limit` candidates, letting no file supply more than
+ * `perFile` of them - and then fills any shortfall from what the cap held back
+ * rather than returning fewer than it could.
+ *
+ * The fill matters: a change that touches one file has nothing to diversify
+ * into, and returning three fragments for it because of a cap meant for wide
+ * changes would be the cap deciding the answer instead of the ranking.
+ */
+export function capPerFile(scored: readonly Candidate[], limit: number, perFile: number): Candidate[] {
+  const taken: Candidate[] = [];
+  const held: Candidate[] = [];
+  const counts = new Map<string, number>();
+  for (const candidate of scored) {
+    const seen = counts.get(candidate.file) ?? 0;
+    if (perFile > 0 && seen >= perFile) {
+      held.push(candidate);
+      continue;
+    }
+    counts.set(candidate.file, seen + 1);
+    taken.push(candidate);
+    if (taken.length >= limit) return taken;
+  }
+  for (const candidate of held) {
+    if (taken.length >= limit) break;
+    taken.push(candidate);
+  }
+  return taken;
+}
+
+/**
+ * Which hunks touch lines a past fix already pointed at.
+ *
+ * The question cannot be answered by comparing line numbers with the SZZ
+ * result directly: SZZ blames each fix against *its own parent*, so its line
+ * numbers are in a revision that no longer exists. What survives coordinate
+ * drift is the set of commits those blames named as introducers. So this blames
+ * the change's own old side at the base and asks whether the commit that put
+ * each line there is one of them.
+ *
+ * One `git blame` per file, not per hunk: the cost of a blame is dominated by
+ * walking the file's history, and `-L` may be repeated.
+ */
+export function blamedHunks(
+  reader: RepoReader,
+  baseSHA: string,
+  hunks: readonly Hunk[],
+  introducers: ReadonlySet<string>,
+): Set<string> {
+  const result = new Set<string>();
+  if (introducers.size === 0) return result;
+
+  const byFile = new Map<string, Hunk[]>();
+  for (const hunk of hunks) {
+    if (hunk.created || oldRange(hunk) === null) continue;
+    const list = byFile.get(hunk.path);
+    if (list) list.push(hunk);
+    else byFile.set(hunk.path, [hunk]);
+  }
+
+  for (const [path, fileHunks] of byFile) {
+    const ranges = fileHunks.map((hunk) => oldRange(hunk)).filter((range): range is { start: number; end: number } => range !== null);
+    const blamed = reader.blameRanges(baseSHA, path, ranges);
+    if (blamed.length === 0) continue;
+    const hit = new Set<number>();
+    for (const entry of blamed) {
+      if (introducers.has(entry.sha)) hit.add(entry.line);
+    }
+    if (hit.size === 0) continue;
+    for (const hunk of fileHunks) {
+      const range = oldRange(hunk);
+      if (!range) continue;
+      for (const line of hit) {
+        if (line >= range.start && line <= range.end) {
+          result.add(hunkKey(hunk));
+          break;
+        }
+      }
+    }
+  }
+  return result;
+}

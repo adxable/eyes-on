@@ -15,14 +15,36 @@ correctness bug even when everything still passes:
   write lives under the state root, so this is enforced where the root is
   resolved: `Paths` refuses a root inside `NM_HOME` (physical-path containment,
   any depth) and no command gets far enough to create it;
-- never write a ref, an index entry, a remote or a config value into a working
-  clone. `git()` in `src/git/git.ts` is module-private, so a clone is reachable
-  only through `gitReadClone()`, which refuses any subcommand outside the
-  allow-list and refuses the write forms of the three that can go either way
-  (`config`, `remote`, `symbolic-ref`), or through `fetchCloneIntoMirror()`,
-  which runs with `--git-dir` set to the mirror and reads the clone as a fetch
-  source. Those two exports are the enforcement point;
-- never edit a pull request body, open, merge or review a pull request;
+- **eyes-on itself** never writes a ref, an index entry, a remote or a config
+  value into a working clone. `git()` in `src/git/git.ts` is module-private, so
+  a clone is reachable only through `gitReadClone()`, which refuses any
+  subcommand outside the allow-list and refuses the write forms of the three
+  that can go either way (`config`, `remote`, `symbolic-ref`), or through
+  `fetchCloneIntoMirror()`, which runs with `--git-dir` set to the mirror and
+  reads the clone as a fetch source. Those two exports plus `Paths` - which
+  every other write goes through - are the enforcement point. This prohibition
+  covers two actors and only one of them is ours to enforce: a spawned agent is
+  a separate process with the user's environment, and no allow-list of ours can
+  stop an arbitrary program from writing to an arbitrary path. eyes-on has no
+  sandbox, so the honest guarantee is stated at the granularity it is enforced
+  at - eyes-on's own writes are structural, and what eyes-on controls about the
+  agent is the environment it hands it: a working directory under its own state
+  root, a prompt on stdin, and nothing pointing at the clone. Do not restate
+  this as "nothing eyes-on runs writes into a clone";
+- never edit a pull request body, open, merge or review a pull request. **No
+  caller anywhere writes a gh argument vector.** A caller names one of six
+  `GhOperation`s and `src/gh/gh.ts` holds the six vectors literally; four read
+  and two write, both issue-comment endpoints. `doctor`'s credential probe is
+  one of the six - `ghAuthenticated` lives there - so the rule has no exception
+  to remember. `PATCH repos/o/r/issues/<n>` - the pull-request body - differs
+  from the permitted comment update by one path segment and simply has no
+  operation, so no vector for it exists. This replaced an allow-list that
+  parsed the vector, and the reason is the shape rather than the two bugs: the
+  parser had to reproduce `gh api`'s own argument semantics, and two rounds
+  found divergences from it - `-XPATCH` read as a GET, then the implicit method,
+  where `--input` with no `--method` is sent as a POST. `argvFor` validates the
+  only tokens a caller influences, the slug and the number, before placing
+  them, and `assertAllowed` checks the finished vector against the same table;
 - no eyes-on process may have a working directory under a foreign worktree - the
   daemon's cwd is always its own state root.
 
@@ -41,18 +63,55 @@ a design violation, not a flaky test.
   `~/Projects/firstmate/projects/no-mistakes`. **Read-only.** Its line numbers in
   comments are from commit `a68298e`; grep for the symbol name rather than
   trusting the line.
-- **Measured results**: `docs/stage-1-acceptance.md` and
-  `docs/stage-0-acceptance.md`. Both are anchored by description rather than by
-  commit id, because a pull-request SHA does not survive the squash-merge that
-  lands it.
+- **Measured results**: `docs/stage-2-acceptance.md`, `docs/stage-1-acceptance.md`
+  and `docs/stage-0-acceptance.md`. All are anchored by description rather than
+  by commit id, because a pull-request SHA does not survive the squash-merge
+  that lands it. `docs/stage-2-locality.mjs` re-derives the stage 2 locality
+  number; it reads the no-mistakes database through `?mode=ro` and writes
+  nothing anywhere.
 
 ## Commands
 
 `npm run build` · `npm run typecheck` · `npm run lint` · `npm test` (builds
 first) · `npm run genskill`.
 
+## Every recorded fact carries what it was recorded against
+
+This governs stage 3 and everything after it, and it is here because the same
+shape broke five review rounds in a row, once per fact:
+
+- a **drift grade** measures the pair (diff, intent), so `drift_intent` is
+  recorded beside it and `carryDrift` decides whether it still answers the
+  question being asked;
+- a **score** is only meaningful against the weights it was computed under, so
+  `score_max` is recorded beside it and no renderer recomputes a denominator;
+- a **gate decision** answers a set of hard-rule hits, so `hits_fingerprint` and
+  `config_sha` are recorded beside it and `decisionCovering` (`src/db/gate.ts`)
+  is what every surface asks - never "is there a decision".
+- a **published comment** carries an assessment, so `prs.check_id` records which
+  one; a head alone does not name a check keyed on (repository, base, head).
+
+When a later run's context differs, the recorded fact **does not apply**: the
+grade is superseded, the run parks again. Adding a column for symmetry is not
+the rule - the rule is about what can come apart. Two facts already carry their
+context and need nothing: `spots` rows carry `check_id` and `source` (which
+assessment, which stage chose the fragment), and `blame_cache` is keyed on the
+fix commit whose blame it holds, which never changes; the trusted config decides
+only whether a commit is a *fix*, and that decision is taken before the cache is
+consulted.
+
 ## Sharp edges
 
+- **A gate decision is evidence about the rules it was shown, and nothing
+  else.** `respond` accepts an answer on a run no rule parked - a deliberate
+  answer about a change nobody had to read is still a fact - so asking only
+  whether a decision row exists let that answer, or one given while the trusted
+  config was unreadable and *no* rule could be evaluated, pre-answer a rule that
+  fired later; the pull request then published a waiver against a rule nobody
+  was shown. `hitsFingerprint` names the set, `recordDecision` stores it and
+  `statusFor` compares it, so a change whose rule set moves parks again while a
+  genuinely answered gate never reopens. `test/gate.test.ts` covers both
+  directions.
 - **Zero runtime dependencies is deliberate** (report section 7). The TOON
   encoder, the YAML subset and the SQLite access layer are hand-written for that
   reason. Do not add a runtime dependency without revisiting that decision.
@@ -76,11 +135,21 @@ first) · `npm run genskill`.
   `doctor` detects that and `init --force` rebuilds it.
 - **The CLI surface lives in one table**, `src/cli/commands.ts`. Dispatch, `help`
   and the `/eyes-on` skill are all generated from it, and `test/skill.test.ts`
-  fails when the checked-in `skills/eyes-on/SKILL.md` drifts. After changing a
-  command, run `npm run genskill`.
-- **Unimplemented commands must stay honest.** A stage 2+ command exits 1 naming
-  its stage. Never make one return an empty-but-plausible result: an agent would
-  report "no risk found" for a change nobody assessed.
+  fails when the checked-in `skills/eyes-on/SKILL.md` drifts. README's table is
+  written by hand, because its right-hand column is prose rather than the
+  registry's summaries, so the same test parses it and fails when its
+  invocations stop matching `implementedCommands()` - four review rounds found a
+  flag in the registry and not in README. After changing a command, run
+  `npm run genskill` and update that table.
+- **A command nobody built and a command that is answered are different, and
+  both must stay honest.** An *unimplemented* stage 2+ command exits 1 naming
+  its stage, and must never return an empty-but-plausible result: an agent would
+  report "no risk found" for a change nobody assessed. `axi abort` is the other
+  case - it is answered, not missing: eyes-on has no in-flight run to abort,
+  because a check is synchronous and a parked gate is released by answering it,
+  so it exits 2 saying that and stays on the command surface for an agent
+  following the report's Appendix C.1. Do not turn that true answer back into a
+  stub promising a stage that has already shipped.
 - **The scoring constants are the report's, not tuning knobs.** Weights,
   saturation constants and the two thresholds live in `src/risk/repoconfig.ts`
   and come from scope report section 5. Changing one is a decision argued from
@@ -99,6 +168,83 @@ first) · `npm run genskill`.
   the point of a hard rule, which must fire for a `deploy/values.yaml` no code
   filter would keep. Both are asserted in `test/check.test.ts` and
   `test/rules.test.ts`.
+- **`--no-model` must be unable to reach a model, not merely choose not to.**
+  `modelOptionsFor` (`src/cli/model-context.ts`) is the only place the flag
+  *decides* anything: it returns `null`, and every caller checks `null` before
+  building a prompt, so there is no branch that reaches `askModel` with the flag
+  set. Three commands read the flag again, but only to choose what their output
+  says about a model they were already unable to call. Keep it that way - a
+  second read that decides reachability would turn a structural guarantee into
+  several `if`s that have to stay in agreement. `test/spotlight.test.ts` asserts
+  it against a fake agent that records every invocation.
+- **A repository picks an agent by name; eyes-on owns the argv.** `.eyes-on.yml`
+  comes from the default branch like every other trusted field, which is the
+  right trust level for deciding which paths need a reviewer and not a reason to
+  let it choose what runs. Narrowing that one dimension at a time did not hold -
+  the program's path, then its name, then its flags - so the choice is closed
+  rather than filtered: `model.agent` names one entry of `AGENT_ARGV`
+  (`src/spot/agent.ts`) and eyes-on holds the whole vector. `AGENT_ARGV` carries
+  only `claude`, because only `claude -p` has been exercised; a recognised name
+  without a vector is refused rather than given a guessed flag. `model.command`
+  runs as given only under `allow_any_command` in `~/.eyes-on/config.yaml`,
+  which no branch can write, and is otherwise refused by name rather than
+  ignored. `isExecutable` resolves against the directory `askModel` spawns in,
+  so the check and the spawn cannot look at two different files.
+  `test/spotlight.test.ts` asserts the argv the stub was actually invoked with.
+- **The agent starts in `Paths.agentDir`, never in the clone.** The working
+  directory is the same vector as the argv in another disguise: a coding agent
+  reads the settings and instruction files of the directory it starts in, so a
+  branch adding `.claude/settings.json` and a `CLAUDE.md` would be configuring
+  the process eyes-on spawns over that same branch's diff. `modelOptionsFor`
+  (`src/cli/model-context.ts`) is the one place a cwd is chosen and it chooses
+  a directory under the state root. The prompt is on stdin and carries the whole
+  input, so the agent needs nothing from the repository; `test/spotlight.test.ts`
+  asserts the directory the stub was actually run in.
+- **A prompt the model cannot see the edge of produces a wrong answer, not a
+  missing one.** The drift description's diff is cut at a size limit and git
+  orders its output by path, so an unmarked cut described a three-thousand-line
+  change from its two documentation files and then reported that four of the
+  five things it did were missing from it. The first pass is given the complete
+  file list, and the prompt says when the diff text is a prefix. Any new prompt
+  that truncates anything owes the model the same sentence.
+- **Drift is two calls or it is nothing.** The first sees the diff and not the
+  intent; the second sees that description and the intent and never the code.
+  Collapsing them into one call leaves a command that runs, costs money and
+  reports an agreement it never checked. `test/drift.test.ts` asserts the
+  separation by reading the prompts that were actually sent.
+- **A drift grade measures the pair (diff, intent); the row is keyed without the
+  intent.** `checks` is keyed on (repository, base, head), so the intent it was
+  measured against is recorded beside the grade in `drift_intent` and travels
+  with it. `carryDrift` (`src/risk/signals.ts`) is the single place that decides
+  between measured, carried and superseded, and `driftProvenanceSentence` is the
+  single place that says which - four commands read both. Not measuring is not
+  changing: a run that took no measurement moves none of the four recorded facts
+  and deletes no `drift_items`. A run stating a *different* intent is the
+  exception, because the previous verdict answers a different question: the
+  grade is dropped through `supersedeDrift` rather than inherited, and that run
+  does move the numbers and must say so. This broke on four consecutive review
+  rounds, once per surface; `test/drift.test.ts` covers all three cases. Do not
+  add a second helper that decides provenance from a grade alone - one that
+  ignored the intent is exactly what was removed.
+- **`unverified` travels with the assessment like the score does.** It means the
+  trusted config could not be read, so `assess` ran with *no* hard rules and the
+  band is a floor - which is exactly what a reader of a published channel cannot
+  guess. `unverifiedSentence()` (`src/risk/signals.ts`) is the single wording,
+  `check`, `status`, `axi respond` and the pull-request comment all print it,
+  and the marker payload carries the flag. `statusFor` gives it precedence over
+  the gate, so `recordDecision` leaves it alone: answering a gate says what a
+  person decided, not that an unreadable configuration became readable.
+- **S7 is the grade minus one, and the score can exceed 100.** Feeding the grade
+  itself would put eight points on every change whose drift was measured and
+  found to be 1 - a change that did exactly what it said. The cost is that S7
+  reaches 18 of its 20 points rather than 20, because the report's saturation
+  constant is 5 and the raw value tops out at 4. Weights now sum to 1.20 with
+  thresholds unchanged, so `maxScore()` - never a literal 100 - is what a
+  rendering divides by.
+- **`spotlight` ranks code files and hard-rule files, nothing else.** Same
+  measured reason as S1/S2: without the code filter a reviewer gets sent to
+  `AGENTS.md`. The hard-rule union is the deliberate exception, because a rule
+  must reach a `deploy/values.yaml` no code filter would keep.
 - **A history walk stops at the base, not the head.** Counting a branch's own
   commits as history lets it raise its own churn signal by committing more often.
 - **Every git read goes through `RepoReader`** (`src/git/reader.ts`): refs are

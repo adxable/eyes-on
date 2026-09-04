@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
-import { COMMANDS } from '../src/cli/commands.js';
+import { COMMANDS, implementedCommands } from '../src/cli/commands.js';
 import { skillMarkdown, SKILL_NAME } from '../src/skill/skill.js';
 import { installSkill, inspectSkill, INSTALL_BASES } from '../src/skill/install.js';
 import { tempDir } from './helpers.js';
@@ -29,6 +29,39 @@ test('every command in the registry appears in the skill with its live usage str
       `the skill does not document \`${command.usage}\` - it would tell an agent the wrong invocation`,
     );
   }
+});
+
+/**
+ * The README's "Available now" table is the human copy of `COMMANDS` - the same
+ * surface the dispatcher, `help` and the generated skill come from. It is
+ * maintained by hand, because its right-hand column is prose written for a
+ * reader rather than the registry's summaries, so this test is what keeps the
+ * left-hand column from drifting: three review rounds found a flag documented
+ * in the registry and the skill but missing from README. The table is parsed
+ * into the set of invocations it claims exist, and that set is compared with
+ * the registry - no substring stands in for the comparison.
+ */
+function readmeCommandTable(): string[] {
+  const readme = readFileSync(join(packageRoot, 'README.md'), 'utf8').split('\n');
+  const header = readme.indexOf('| Command | What it does |');
+  assert.ok(header >= 0, 'README no longer has a command table to compare with the registry');
+  const rows: string[] = [];
+  for (const line of readme.slice(header + 2)) {
+    if (!line.startsWith('|')) break;
+    // Cells are split on unescaped pipes: `daemon` and `axi` carry `\|` inside
+    // their own braces, and splitting on those would cut one invocation in two.
+    const first = line.replace(/^\|/, '').split(/(?<!\\)\|/)[0] ?? '';
+    rows.push(first.replaceAll('\\|', '|').replaceAll('`', '').trim());
+  }
+  return rows;
+}
+
+test('the README command table claims exactly the invocations the registry defines', () => {
+  assert.deepEqual(
+    readmeCommandTable().sort(),
+    implementedCommands().map((command) => command.usage).sort(),
+    'README.md and src/cli/commands.ts disagree about the command surface',
+  );
 });
 
 test('the skill states the output contract the CLI actually implements', () => {

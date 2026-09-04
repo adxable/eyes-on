@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   bandFor,
   bandLabel,
+  maxScore,
   rationale,
   saturate,
   scoreSignals,
@@ -16,10 +17,12 @@ import {
   defaultRepoConfig,
   SIGNAL_NAMES,
 } from '../src/risk/repoconfig.js';
+import { driftSignalValue } from '../src/spot/drift.js';
 
 test('the weights, the saturation constants and the thresholds are the report\'s', () => {
   // Section 5: fix history 0.30 / churn 0.20 / size 0.20 / spread 0.10 /
-  // no test 0.15 / recency 0.05 / drift 0.00, thresholds 35 and 65.
+  // no test 0.15 / recency 0.05 / drift 0.00 -> 0.20, thresholds 35 and 65.
+  // Drift moved to its stage 2 weight when P4 started measuring it.
   assert.deepEqual(DEFAULT_WEIGHTS, {
     fix_history: 0.3,
     churn: 0.2,
@@ -27,7 +30,7 @@ test('the weights, the saturation constants and the thresholds are the report\'s
     spread: 0.1,
     no_test: 0.15,
     recency: 0.05,
-    drift: 0,
+    drift: 0.2,
   });
   assert.deepEqual(DEFAULT_SATURATION, {
     fix_history: 5,
@@ -40,10 +43,18 @@ test('the weights, the saturation constants and the thresholds are the report\'s
   });
   assert.deepEqual(DEFAULT_THRESHOLDS, { read_fragments: 35, full_review: 65 });
 
-  const total = Object.values(DEFAULT_WEIGHTS).reduce((sum, weight) => sum + weight, 0);
-  // A change that saturates every signal must score exactly 100, or the bands
-  // stop meaning what the thresholds say they mean.
-  assert.equal(Math.round(total * 100), 100);
+  // The report keeps the thresholds at 35 and 65 while adding 0.20 for drift,
+  // so the six history signals still reach exactly 100 between them and drift
+  // adds on top of that. The maximum is 120, and `maxScore` - not a literal
+  // 100 - is what every rendering divides by.
+  const withoutDrift = SIGNAL_NAMES.filter((name) => name !== 'drift').reduce(
+    (sum, name) => sum + DEFAULT_WEIGHTS[name],
+    0,
+  );
+  assert.equal(Math.round(withoutDrift * 100), 100);
+  // The ceiling the weights allow. S7 reaches 18 of its 20 in practice; this
+  // is the denominator a rendering divides by, not a score anybody will see.
+  assert.equal(maxScore(defaultRepoConfig()), 120);
 });
 
 test('the saturation curve is min(1, ln(1+x)/ln(1+K))', () => {
@@ -89,15 +100,25 @@ function raw(values: Partial<Record<keyof RawSignals, number>>): RawSignals {
   return out;
 }
 
-test('a change that saturates everything scores 100 and one that moves nothing scores 0', () => {
+test('a change that saturates the six history signals scores 100, and drift adds on top of that', () => {
   const config = defaultRepoConfig();
-  const everything = scoreSignals(
-    raw({ fix_history: 99, churn: 99, size: 9999, spread: 99, no_test: 1, recency: 30, drift: 5 }),
+  const history = scoreSignals(
+    raw({ fix_history: 99, churn: 99, size: 9999, spread: 99, no_test: 1, recency: 30 }),
     config,
   );
-  // drift is weighted 0.00 at stage 1, so a saturated change tops out at 100
-  // exactly - the missing signal is the one that carries no weight yet.
-  assert.equal(everything.score, 100);
+  assert.equal(history.score, 100, 'the six signals computed from history still total exactly 100');
+  assert.equal(history.band, 'pelna');
+
+  const everything = scoreSignals(
+    raw({ fix_history: 99, churn: 99, size: 9999, spread: 99, no_test: 1, recency: 30, drift: driftSignalValue(5) }),
+    config,
+  );
+  // Drift is weighted 0.20 from stage 2 and the report leaves the thresholds
+  // where they were, so a fully drifted change goes above 100 rather than
+  // displacing the other six. It reaches 118 rather than the 120 the weights
+  // allow, because S7's raw value tops out at 4 against a saturation constant
+  // of 5 - see the drift test below for why that direction was chosen.
+  assert.equal(everything.score, 118);
   assert.equal(everything.band, 'pelna');
 
   const nothing = scoreSignals(raw({}), config);
@@ -106,14 +127,36 @@ test('a change that saturates everything scores 100 and one that moves nothing s
   assert.match(rationale(nothing)[0] ?? '', /no signal moved the score/);
 });
 
-test('the drift signal is present, measured and weighted zero rather than absent', () => {
+test('the drift signal is scored at 0.20 and an unmeasured drift contributes nothing', () => {
   const config = defaultRepoConfig();
-  const scored = scoreSignals(raw({ drift: 5 }), config);
+  const scored = scoreSignals(raw({ drift: 4 }), config);
   const drift = scored.signals.find((signal) => signal.name === 'drift');
-  assert.ok(drift, 'drift is one of the seven signals even before stage 2 scores it');
-  assert.equal(drift.weight, 0);
-  assert.equal(drift.contribution, 0);
-  assert.equal(scored.score, 0);
+  assert.ok(drift, 'drift is one of the seven signals');
+  assert.equal(drift.weight, 0.2);
+  // 4 is the raw S7 value of a grade of 5: the grade minus the aligned 1, so a
+  // change that does exactly what it said adds nothing for having been asked.
+  //
+  // The consequence is that S7 tops out at 18 of the 20 points its weight
+  // allows, because the report's saturation constant for drift is 5 and the
+  // raw value can only reach 4. That is the deliberate direction of the error:
+  // the alternative - feeding the grade itself - would put 8 points on every
+  // change whose drift was measured and found to be 1, which is a change that
+  // did exactly what it said.
+  assert.equal(drift.raw, 4);
+  assert.equal(scored.score, 18);
+
+  // The unmeasured case, which is every run without an intent and every run
+  // with --no-model.
+  assert.equal(scoreSignals(raw({}), config).score, 0);
+});
+
+test('an aligned change is not charged for having had its drift measured', () => {
+  const config = defaultRepoConfig();
+  // driftSignalValue(1) is 0: grade 1 means the diff does what the intent said.
+  assert.equal(driftSignalValue(1), 0);
+  assert.equal(driftSignalValue(5), 4);
+  assert.equal(driftSignalValue(null), 0);
+  assert.equal(scoreSignals(raw({ drift: driftSignalValue(1) }), config).score, 0);
 });
 
 test('the rationale names the file behind each signal and drops the ones that did nothing', () => {

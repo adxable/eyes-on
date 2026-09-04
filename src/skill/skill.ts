@@ -67,6 +67,33 @@ Calling one of these prints \`error:\` with the stage that owns it and exits 1. 
 |---|---|---|
 ${plannedTable()}
 
+## The order these commands go in
+
+\`\`\`sh
+eyes-on check --intent "why this change was made, not what it changes"
+eyes-on spotlight              # the three to five fragments to read
+eyes-on comment --pr 42        # one sticky comment on the pull request
+\`\`\`
+
+\`check\` scores the change and, with an intent, measures how far the diff has drifted from it. \`spotlight\`
+ranks fragments in two stages: arithmetic over the repository's history narrows the diff to twelve
+candidates, and one model call picks three to five and says why. \`--no-model\` returns the first stage
+alone and calls no model at all - use it when the model is rate-limited, and read the \`stage\` field to
+see which answer you got.
+
+## When a hard rule parks the run
+
+A hard rule matching sets the band to \`pelna\` and parks the check as \`must_read\`. Answer it:
+
+\`\`\`sh
+eyes-on axi respond --action read
+eyes-on axi respond --action waive --reason "why this is safe to merge unread"
+\`\`\`
+
+A waiver without a reason is refused. **The park holds nothing up outside eyes-on** - no exit code
+changes, no push waits, no pull request goes red. What it does is record that somebody was told and what
+they decided, so the channel label is evidence rather than a declaration.
+
 ## Output contract
 
 - Machine-readable payload on **stdout**, TOON by default. Pass \`--format json\` for JSON or \`--format md\` for Markdown.
@@ -77,7 +104,10 @@ ${plannedTable()}
 ## Working with no-mistakes
 
 Both tools read the same working clone and nothing else is shared. eyes-on never writes to
-\`~/.no-mistakes\`, never creates a ref in your clone, and never touches a pull request body.
+\`~/.no-mistakes\`, never creates a ref in your clone, and never touches a pull request body: the body is
+no-mistakes' and is regenerated on every update, so eyes-on publishes a single comment carrying a marker
+and updates that same comment however many times it is recomputed. It never merges and never files a
+GitHub review.
 
 Called from inside a no-mistakes pipeline step - \`NO_MISTAKES_GATE=1\`, or a working directory under the
 no-mistakes worktree root - eyes-on refuses to record anything and says so. That is deliberate: the work

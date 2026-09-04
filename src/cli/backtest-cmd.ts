@@ -1,5 +1,5 @@
 import type { Context } from './context.js';
-import { flagString } from './args.js';
+import { flagCount, flagString } from './args.js';
 import { emitDoc, EXIT_OK, progress, UserFacingError } from './output.js';
 import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
@@ -71,6 +71,15 @@ function notMeasured(results: readonly SplitResult[]): Unmeasured[] {
 }
 
 export async function backtestCommand(context: Context): Promise<number> {
+  // Read before anything can fail for another reason: a mistyped horizon is the
+  // caller's mistake and they should hear about that one, not about the split
+  // date they were going to supply next.
+  const horizonDays = flagCount(context.args, 'horizon', {
+    what: 'a positive number of days',
+    help: ['Leave --horizon out to measure the outcome up to the branch head'],
+    min: 1,
+  }) ?? undefined;
+
   const raw = flagString(context.args, 'split');
   if (!raw) {
     throw new UserFacingError('eyes-on backtest needs a split date', [
@@ -99,14 +108,6 @@ export async function backtestCommand(context: Context): Promise<number> {
   if (!anchorSHA) {
     throw new UserFacingError(`cannot resolve a commit to replay history from in ${risk.clonePath}`, [
       'Run this from a clone with at least one commit',
-    ]);
-  }
-
-  const horizonRaw = flagString(context.args, 'horizon');
-  const horizonDays = horizonRaw === null ? undefined : Number.parseInt(horizonRaw, 10);
-  if (horizonRaw !== null && (!Number.isFinite(horizonDays) || (horizonDays as number) <= 0)) {
-    throw new UserFacingError(`--horizon ${horizonRaw} is not a positive number of days`, [
-      'Leave --horizon out to measure the outcome up to the branch head',
     ]);
   }
 

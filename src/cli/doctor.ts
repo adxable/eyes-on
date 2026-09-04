@@ -6,6 +6,7 @@ import type { Context } from './context.js';
 import { emitDoc } from './output.js';
 import type { ToonObject, ToonValue } from './toon.js';
 import { gitVersion, toplevel } from '../git/git.js';
+import { ghAuthenticated } from '../gh/gh.js';
 import { canonicalPath, repoID } from '../core/repoid.js';
 import { inspectMirror, mirrorSizeBytes } from '../git/mirror.js';
 import { daemonState, daemonStatus, describeDaemon } from '../daemon/lifecycle.js';
@@ -44,12 +45,6 @@ function which(binary: string): string | null {
   const result = spawnSync('command', ['-v', binary], { encoding: 'utf8', shell: '/bin/sh' });
   const path = (result.stdout ?? '').trim();
   return result.status === 0 && path.length > 0 ? path : null;
-}
-
-function ghAuthenticated(): boolean {
-  const gh = which('gh');
-  if (!gh) return false;
-  return spawnSync('gh', ['auth', 'status'], { encoding: 'utf8', timeout: 10_000 }).status === 0;
 }
 
 export async function doctorCommand(context: Context): Promise<number> {

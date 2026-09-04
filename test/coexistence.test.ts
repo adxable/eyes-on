@@ -17,6 +17,7 @@ import {
 } from '../src/git/git.js';
 import { ensureMirror } from '../src/git/mirror.js';
 import { stateRoot, tempDir, tempRepo, run } from './helpers.js';
+import { argvFor, assertAllowed, refusalFor, type GhOperation } from '../src/gh/gh.js';
 
 /**
  * The stage 0 acceptance conditions from report section 4 and section 8, as
@@ -359,4 +360,98 @@ test('acceptance: the mirror fetch reads the clone and writes only into the mirr
   assert.equal(run(repo.path, ['for-each-ref']), refsBefore, 'a ref moved in the clone');
   assert.equal(run(repo.path, ['config', '--local', '--list']), configBefore, 'local config changed');
   assert.equal(run(repo.path, ['remote', '-v']), remotesBefore, 'a remote was added to the clone');
+});
+
+/**
+ * The third hard prohibition, enforced the same way K2 is.
+ *
+ * eyes-on never edits a pull request body, never merges and never files a
+ * GitHub review. The body belongs to no-mistakes and is regenerated on every
+ * update, so a second writer would either lose eyes-on's paragraph or overwrite
+ * what no-mistakes has to say.
+ *
+ * The enforcement point is no longer a parser that reads an argument vector and
+ * decides whether it writes. It is that **no caller can write an argument
+ * vector at all**: a caller names one of six operations and `argvFor` holds the
+ * six vectors. Review rounds found a parser diverging from gh - the attached
+ * shorthand `-XPATCH` read as a GET, and `gh api`'s implicit method, where
+ * `--input` with no `--method` is sent as a POST - and both are asserted below
+ * as vectors that cannot be produced and are refused if offered.
+ */
+test('acceptance: no gh invocation can edit a pull request, merge one, or review one', () => {
+  // The vectors eyes-on can actually produce. There is no seventh, and this is
+  // the door: everything else in this test is shown to be outside it.
+  const emitted = ([
+    { op: 'repo-slug' },
+    { op: 'auth-status' },
+    { op: 'pull-head', slug: 'acme/widgets', number: 7 },
+    { op: 'list-comments', slug: 'acme/widgets', number: 7 },
+    { op: 'create-comment', slug: 'acme/widgets', number: 7 },
+    { op: 'update-comment', slug: 'acme/widgets', id: 9 },
+  ] as GhOperation[]).map((operation) => argvFor(operation));
+
+  for (const argv of emitted) {
+    assert.doesNotThrow(() => assertAllowed(argv), `gh ${argv.join(' ')} is an invocation the product makes`);
+  }
+
+  // Not one of the six writes to anything but a comment.
+  const writes = emitted.filter((argv) => argv.includes('--method'));
+  assert.equal(writes.length, 2, 'exactly two of the six write');
+  for (const argv of writes) {
+    const endpoint = argv[3] as string;
+    assert.match(endpoint, /^repos\/acme\/widgets\/issues\/(?:7\/comments|comments\/9)$/, `${endpoint} is a comment endpoint`);
+  }
+
+  const forbidden: string[][] = [
+    ['pr', 'edit', '7', '--body', 'rewritten'],
+    ['pr', 'edit', '7', '--body-file', '-'],
+    ['pr', 'merge', '7', '--squash'],
+    ['pr', 'review', '7', '--approve'],
+    ['pr', 'close', '7'],
+    ['pr', 'ready', '7'],
+    ['pr', 'comment', '7', '--body', 'x'],
+    ['issue', 'edit', '7', '--body', 'x'],
+    ['api', '--method', 'PATCH', 'repos/acme/widgets/issues/7'],
+    ['api', '--method', 'PATCH', 'repos/acme/widgets/pulls/7'],
+    ['api', '--method', 'PUT', 'repos/acme/widgets/pulls/7/merge'],
+    ['api', '--method', 'POST', 'repos/acme/widgets/pulls/7/reviews'],
+    ['api', '--method', 'DELETE', 'repos/acme/widgets/issues/comments/9'],
+    // The two ways a parser diverged from gh, kept because each was a real
+    // bypass. The first is pflag's attached shorthand, once read as a GET of a
+    // read path. The second is `gh api`'s implicit method: a vector carrying
+    // `--input` and no `--method` is sent as a POST, and was validated against
+    // the read table.
+    ['api', '-XPATCH', 'repos/acme/widgets/pulls/7'],
+    ['api', '-XPATCH', 'repos/acme/widgets/issues/7'],
+    ['api', '--method=PATCH', 'repos/acme/widgets/pulls/7'],
+    ['api', 'repos/acme/widgets/pulls/7', '--input', '-'],
+    ['api', 'repos/acme/widgets/issues/7/comments', '--input', '-'],
+    // And a vector that is nearly one of the six: an extra token, a missing
+    // one, a token out of place.
+    ['api', '--paginate', 'repos/acme/widgets/issues/7/comments', '--jq', '.[]'],
+    ['api', '--method', 'POST', 'repos/acme/widgets/issues/7/comments'],
+    ['api', '--method', 'PATCH', 'repos/acme/widgets/issues/7/comments', '--input', '-'],
+  ];
+  for (const argv of forbidden) {
+    assert.throws(() => assertAllowed(argv), /refusing to run/, `gh ${argv.join(' ')} reached a process`);
+    assert.match(refusalFor(argv) ?? '', /never edits a pull request body/);
+  }
+
+  // The remaining influence a caller has is the slug and the number that go
+  // into a path, so they are checked before they are placed: neither can shape
+  // an endpoint outside the six.
+  for (const operation of [
+    { op: 'list-comments', slug: 'acme/widgets --method PATCH', number: 7 },
+    { op: 'create-comment', slug: '../../pulls/7/merge', number: 7 },
+    { op: 'pull-head', slug: 'acme/widgets/extra', number: 7 },
+  ] as GhOperation[]) {
+    assert.throws(() => argvFor(operation), /refusing to build/, `${JSON.stringify(operation)} produced a vector`);
+  }
+  for (const operation of [
+    { op: 'list-comments', slug: 'acme/widgets', number: 0 },
+    { op: 'create-comment', slug: 'acme/widgets', number: -7 },
+    { op: 'update-comment', slug: 'acme/widgets', id: 1.5 },
+  ] as GhOperation[]) {
+    assert.throws(() => argvFor(operation), /refusing to build/, `${JSON.stringify(operation)} produced a vector`);
+  }
 });

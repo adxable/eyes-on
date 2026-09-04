@@ -81,3 +81,28 @@ test('the packed binary runs from a checkout that was never built', () => {
   assert.equal(help.status, 0, `the packed binary could not print help: ${help.stderr}`);
   assert.match(help.stdout, /eyes-on init/);
 });
+
+test('git reads every tracked source file as text, so a diff of it can still be shown', () => {
+  // A single literal NUL byte makes a file binary to git: `git diff --stat`
+  // reports `Bin 0 -> 8287 bytes` and no diff of it is ever rendered again -
+  // not by git, not by GitHub, not by a review tool, and not by eyes-on's own
+  // hunk parser, which yields no fragment for a binary file. In a product whose
+  // whole job is deciding what a human must read, a source file nobody can read
+  // a change to is a defect, so git's own classification is the check.
+  //
+  // The working-tree column is what is asserted, because that is the file on
+  // disk; the index column would describe the last commit instead.
+  const listed = spawnSync('git', ['ls-files', '--eol', '--', 'src', 'test'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  assert.equal(listed.status, 0, `git ls-files failed: ${listed.stderr}`);
+
+  const rows = listed.stdout.split('\n').filter((line) => line.length > 0);
+  assert.ok(rows.length > 50, 'the listing covers the sources rather than being empty');
+
+  const binary = rows
+    .filter((row) => /\bw\/-text\b/.test(row))
+    .map((row) => row.slice(row.indexOf('\t') + 1));
+  assert.deepEqual(binary, [], 'git reads these tracked source files as binary rather than as text');
+});

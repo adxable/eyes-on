@@ -220,6 +220,51 @@ export class RepoReader {
     return parseBlamePorcelain(result.stdout);
   }
 
+  /**
+   * The unified diff between two commits, with context.
+   *
+   * The context is what makes this different from `commitPatch`, which asks for
+   * `-U0` because SZZ needs hunk ranges that name only the lines a fix touched.
+   * The fragment ranking asks the opposite question - what would a human read -
+   * and three lines either side is what makes a hunk legible as a fragment
+   * rather than as a coordinate.
+   */
+  rangePatch(baseSHA: string, headSHA: string, context = 3): string {
+    return this.readOrThrow([
+      'diff',
+      `-U${Math.max(0, Math.floor(context))}`,
+      '--no-renames',
+      '--no-color',
+      `${baseSHA}..${headSHA}`,
+    ]);
+  }
+
+  /**
+   * Blame of several line ranges of one file at one commit, as line-to-commit
+   * pairs.
+   *
+   * One invocation per file rather than per range: `git blame` accepts repeated
+   * `-L` options, and the cost of a blame is dominated by walking the file's
+   * history, which is paid once however many ranges are asked for. A ranking
+   * that blamed once per hunk would pay it again for every hunk in the file.
+   *
+   * `-w` matches `blame()` above and for the same reason: a re-indentation is
+   * not the introduction of a defect.
+   */
+  blameRanges(sha: string, path: string, ranges: readonly { start: number; end: number }[]): BlamedLine[] {
+    if (ranges.length === 0) return [];
+    const args = ['blame', '--porcelain', '-w'];
+    for (const range of ranges) {
+      args.push('-L', `${Math.max(1, range.start)},${Math.max(Math.max(1, range.start), range.end)}`);
+    }
+    args.push(sha, '--', path);
+    const result = this.read(args);
+    // A path absent at that commit, or a range past its end, is an ordinary
+    // outcome of reading a diff whose other side is a creation.
+    if (result.status !== 0) return [];
+    return parseBlamedLines(result.stdout);
+  }
+
   /** Every path in the tree at a commit. The denominator of a backtest. */
   filesAt(sha: string): string[] {
     const out = this.read(['ls-tree', '-r', '--name-only', sha]);
@@ -344,6 +389,32 @@ export function parseLog(text: string): CommitRecord[] {
     });
   }
   return records;
+}
+
+/** One line of a file and the commit that introduced it. */
+export interface BlamedLine {
+  sha: string;
+  /** Line number in the blamed revision, which is the coordinate a diff's old
+   *  side speaks in. */
+  line: number;
+}
+
+/**
+ * Line-to-commit pairs from a `--porcelain` blame.
+ *
+ * The header line of each blamed line is `<sha> <line in the original>
+ * <line in the final file> [<lines in this group>]`, and it is the *final*
+ * number - the second one - that names the line in the revision being blamed.
+ * Taking the first would silently shift every attribution by however far the
+ * line has moved since the commit that introduced it.
+ */
+export function parseBlamedLines(text: string): BlamedLine[] {
+  const lines: BlamedLine[] = [];
+  for (const line of text.split('\n')) {
+    const match = /^([0-9a-f]{40}) \d+ (\d+)(?: \d+)?$/.exec(line);
+    if (match?.[1] && match[2]) lines.push({ sha: match[1], line: Number.parseInt(match[2], 10) });
+  }
+  return lines;
 }
 
 /** Introducing commit of every line in a `--porcelain` blame, in order. Header

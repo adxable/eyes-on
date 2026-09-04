@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Database } from './db.js';
+import { decisionCovering, recordDrift, supersedeDrift, type GateHit } from './gate.js';
 import type { Assessment } from '../risk/assess.js';
+import type { CarryDecision } from '../risk/signals.js';
+import type { DriftResult } from '../spot/drift.js';
 import type { Paths } from '../core/paths.js';
 
 /**
@@ -30,10 +33,17 @@ export interface CheckRow {
   base_sha: string;
   head_sha: string;
   score: number | null;
+  /** The maximum `score` could have reached under the weights it was computed
+   *  with. Null on a row written before eyes-on recorded it. */
+  score_max: number | null;
   band: string | null;
   drift: number | null;
   intent: string | null;
   intent_source: string | null;
+  /** The intent the recorded `drift` grade was measured against, which is not
+   *  always the intent in `intent`: a later run can state a new one. Null on a
+   *  row written before eyes-on recorded it, and on a row with no grade. */
+  drift_intent: string | null;
   status: string;
   trusted_config_sha: string | null;
   created_at: number;
@@ -45,31 +55,58 @@ export interface RecordOptions {
   branch: string;
   intent: string | null;
   assessment: Assessment;
+  /** Where `intent` came from: the flag on this run, or the row it was carried
+   *  from. Defaults to the flag, because that is the ordinary case. */
+  intentSource?: string | null;
+  /**
+   * The drift grade folded into this score, or null when no grade belongs to
+   * it. Recorded on the row so the pull-request comment and the stage 3 ledger
+   * read one number rather than recomputing it.
+   *
+   * Whatever is passed is what the row will hold, so a caller that measured
+   * nothing must decide what belongs there rather than leaving it out. Not
+   * measuring is not changing: `check`, `drift` and `spotlight` all read the
+   * row first and pass back a grade they did not take, when it answers the
+   * same intent. A grade measured against a different intent is not carried -
+   * it answers a different question - and the callers pass null.
+   */
+  drift?: number | null;
+  /** The intent that grade was measured against, recorded beside it so a later
+   *  run can tell whether it answers the question being asked now. */
+  driftIntent?: string | null;
 }
 
 /**
  * Writes the check, its signals and its rule hits.
  *
- * `status` distinguishes the three outcomes a caller has to tell apart:
- * `done` for a complete assessment, `unverified` when the trusted config could
- * not be read (so the hard rules were never evaluated), and - from stage 2 -
- * `must_read` for a parked run. Stage 1 never writes `must_read`: a hard-rule
- * hit sets the band, and the gate that parks on it is stage 2's.
+ * `status` distinguishes the outcomes a caller has to tell apart: `done` for a
+ * complete assessment, `unverified` when the trusted config could not be read
+ * (so the hard rules were never evaluated), and `must_read` for a run parked by
+ * the gate.
+ *
+ * The park is computed here rather than passed in, so every writer of a check
+ * agrees on what parks one: a hard rule fired and no decision has been recorded
+ * for this check yet. A check that was already answered stays `done` when it is
+ * recomputed on the same head - re-running `check` must not silently reopen a
+ * gate somebody has already closed.
  */
 export function recordCheck(db: Database, options: RecordOptions): string {
   const { assessment } = options;
   const id = checkID(options.repoId, assessment.base_sha, assessment.head_sha);
   const now = Math.floor(Date.now() / 1000);
-  const status = assessment.config_state === 'unverified' ? 'unverified' : 'done';
+  const status = statusFor(db, id, assessment);
 
   db.run(
-    `INSERT INTO checks (id, repo_id, branch, base_sha, head_sha, score, band, drift, intent, intent_source,
-                         status, trusted_config_sha, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO checks (id, repo_id, branch, base_sha, head_sha, score, score_max, band, drift, drift_intent,
+                         intent, intent_source, status, trusted_config_sha, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
        branch = excluded.branch,
        score = excluded.score,
+       score_max = excluded.score_max,
        band = excluded.band,
+       drift = excluded.drift,
+       drift_intent = excluded.drift_intent,
        intent = excluded.intent,
        intent_source = excluded.intent_source,
        status = excluded.status,
@@ -81,9 +118,12 @@ export function recordCheck(db: Database, options: RecordOptions): string {
     assessment.base_sha,
     assessment.head_sha,
     assessment.score,
+    assessment.score_max,
     assessment.band,
+    options.drift ?? null,
+    options.driftIntent ?? null,
     options.intent,
-    options.intent === null ? null : 'flag',
+    options.intentSource ?? (options.intent === null ? null : 'flag'),
     status,
     assessment.config_sha,
     now,
@@ -109,6 +149,87 @@ export function recordCheck(db: Database, options: RecordOptions): string {
   }
 
   return id;
+}
+
+export interface RecordAssessmentOptions {
+  repoId: string;
+  branch: string;
+  /** The intent this run stated, or null when it stated none. */
+  intent: string | null;
+  assessment: Assessment;
+  /** What `carryDrift` decided about the recorded grade: which grade the score
+   *  contains, which intent it answers, what belongs in the row's own `intent`
+   *  column, and whether the recorded facts are superseded. */
+  carry: CarryDecision;
+  /** What this run measured, or null when it measured nothing. Only `check` and
+   *  `drift` ever pass one. */
+  measured?: DriftResult | null;
+  intentSource?: string | null;
+}
+
+/**
+ * The one way an assessment and its drift facts are written together.
+ *
+ * `check`, `drift` and `spotlight` all record the same four facts about one
+ * change, and each used to spell the sequence out for itself. A tool that
+ * answers differently depending on the order it was called in is not evidence,
+ * it is a draw: `check --intent "B"` superseded a grade measured against "A"
+ * and dropped eighteen points, while `spotlight --intent "B"` on the same
+ * change kept it, and whichever ran last was what the pull request published.
+ * One function means the three cannot disagree about that again.
+ */
+export function recordAssessment(db: Database, options: RecordAssessmentOptions): string {
+  const { carry } = options;
+  const checkId = recordCheck(db, {
+    repoId: options.repoId,
+    branch: options.branch,
+    intent: carry.rowIntent,
+    intentSource:
+      options.intentSource ?? (options.intent === null && carry.rowIntent !== null ? 'carried' : undefined),
+    assessment: options.assessment,
+    drift: carry.grade,
+    driftIntent: carry.intent,
+  });
+  // Only a run that measured a grade rewrites the two lists, and only a run
+  // whose intent asks a different question drops them.
+  const measured = options.measured ?? null;
+  if (measured && measured.grade !== null) recordDrift(db, checkId, measured, options.intent);
+  else if (carry.supersede) supersedeDrift(db, checkId, options.intent);
+  return checkId;
+}
+
+/**
+ * Whether this check is parked.
+ *
+ * `unverified` wins over the gate: eyes-on could not read the trusted config,
+ * so it does not know which paths a human was supposed to be sent to, and
+ * parking on rules it never evaluated would claim a certainty it does not have.
+ *
+ * A decision releases the park only for the hits it was given against. A run
+ * that was never parked can still be answered, and an unreadable configuration
+ * evaluates no rules at all - so asking merely whether *some* decision exists
+ * would let either of those pre-answer a rule that fires later, and publish a
+ * waiver against a rule nobody was shown.
+ */
+export function statusFor(db: Database, id: string, assessment: Assessment): string {
+  if (assessment.config_state === 'unverified') return 'unverified';
+  if (assessment.hard_rules.length === 0) return 'done';
+  return decisionCovering(db, id, hitsOf(assessment)) ? 'done' : 'must_read';
+}
+
+/** The hard-rule hits of an assessment, in the shape the gate records and
+ *  compares them - one row per matched file, exactly as `hits` holds them. */
+export function hitsOf(assessment: Assessment): GateHit[] {
+  return assessment.hard_rules.flatMap((hit) => hit.matched_files.map((file) => ({ glob: hit.glob, file })));
+}
+
+/** The check recorded for a change, by the two commits it spans. */
+export function findCheck(db: Database, repoId: string, baseSHA: string, headSHA: string): CheckRow | undefined {
+  return checkByID(db, checkID(repoId, baseSHA, headSHA));
+}
+
+export function checkByID(db: Database, id: string): CheckRow | undefined {
+  return db.get<CheckRow>('SELECT * FROM checks WHERE id = ?', id);
 }
 
 /** The most recent assessment of a branch, for `eyes-on` with no subcommand. */
