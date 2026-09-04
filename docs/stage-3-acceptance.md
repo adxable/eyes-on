@@ -181,8 +181,13 @@ Four things about how it is placed:
   names how many rows it holds and why none of them counts, which is what every
   new register looks like for the first fortnight.
 
-`calibrate` carries the same sentence, from the same function, so the sweep
-cannot claim more than the table it is computed from.
+`calibrate` takes its header from the same function, so the sweep cannot claim
+more than the table it is computed from. It asks a different question of one
+register - a pair of thresholds can move merges into a band that is empty today
+- so its sentence names the channels those thresholds would produce where
+`leaks` names the ones the denominator has merges in. Two headers over one
+register, each saying which population it counted, rather than one sentence that
+is true of only one of them.
 
 ## 4. The register, built over real history
 

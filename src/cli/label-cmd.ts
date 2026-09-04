@@ -160,7 +160,7 @@ interface Observation {
 }
 
 /**
- * Reads the pull request, or says which of the two silences this is.
+ * Reads the pull request, or says which of the three unread states this is.
  *
  * gh being absent, gh naming no repository and GitHub answering with an error
  * are three different states of the machine - only the first is fixed by

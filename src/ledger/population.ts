@@ -37,9 +37,11 @@ import type { LedgerRecord } from './ledger.js';
  * gone by. Widening `--since`, fetching into a clone or re-labelling a pull
  * request are different states of the machine, not of the clock, so none of
  * them makes a reason non-permanent - and every one of them is a real remedy,
- * which is why `outlook` exists rather than a bare "nothing to be done". Two of
- * the five permanent reasons are cleared by an ordinary user action, and one of
- * those - labelling a merge before pulling it - is the commonest flow there is.
+ * which is why `outlook` exists rather than a bare "nothing to be done". Four
+ * of the five permanent reasons are cleared by a user action - labelling the
+ * pull request again, fetching the default branch, widening `--since` - and one
+ * of those, labelling a merge before pulling it, is the commonest flow there
+ * is. Only a true merge commit is cleared by nothing at all.
  *
  * ## The order of the tests decides nothing
  *

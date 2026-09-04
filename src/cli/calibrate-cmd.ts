@@ -26,7 +26,10 @@ import { DEFAULT_SINCE_SECONDS, DEFAULT_WINDOW_SECONDS } from '../ledger/populat
  * four things that decide whether it means anything.
  *
  * **It proposes nothing the register can support.** The row this history points
- * at is presented with the same sample sentence `leaks` carries, and when the
+ * at is presented under the caveat `leaks` prints, from the same
+ * `src/ledger/sample.ts` - worded about the channels these thresholds would
+ * produce rather than the ones the denominator has merges in, because a pair
+ * can move merges into a band that is empty today - and when the
  * register holds no leak at all there is no row to point at and the command
  * says so rather than ranking a tie. Nothing here writes a configuration file:
  * the candidate is an argument to be made to a human, and `.eyes-on.yml` is

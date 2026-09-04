@@ -305,9 +305,10 @@ consulted.
   binding applicable reason rather than the first tested - the order of the
   tests decides nothing, and a reason with a remedy is never reported until it
   is known that no more binding one applies, which is what the one git read per
-  row is paid for. `permanent` means the clock alone, so two of the five
-  permanent reasons carry a real remedy (fetch the branch, widen `--since`) that
-  a surface must not turn into "nothing can be done". `sampleVerdict`
+  row is paid for. `permanent` means the clock alone, so four of the five
+  permanent reasons carry a real remedy - label the pull request again, fetch
+  the branch, widen `--since` - that a surface must not turn into "nothing can
+  be done"; only the true merge commit is cleared by nothing. `sampleVerdict`
   takes the population beside the channels for the same reason: a full register
   none of whose rows has had its window yet is the ordinary first state of the
   product, and it must not read as an empty one.
