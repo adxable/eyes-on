@@ -132,22 +132,53 @@ export type UncheckedReason =
   | 'no-repository';
 
 /**
- * Whether the assessment describes the commit the pull request now points at,
- * or null when nothing read the pull request to find out.
+ * Whether the assessment describes the commit the pull request now points at.
+ *
+ * Four states, not three, and the two that are not an answer are different
+ * things: nobody read the pull request, and somebody read it and GitHub named
+ * no head for it. The second needs no failure of gh at all - `--pr <n>` given
+ * an issue number lists comments happily and then 404s on the pulls endpoint -
+ * so a single "could not read this pull request" would tell a reader the run
+ * never looked, beside a payload saying it did.
  *
  * The single place that decides it. A short sha from the API and a full one
  * from the database describe the same commit, so comparing them for equality
  * would report every pull request as stale.
  */
-export function staleness(view: PullRequestView, headSHA: string): boolean | null {
-  if (!view.checked || view.head === null) return null;
-  return !headSHA.startsWith(view.head) && !view.head.startsWith(headSHA);
+export type Staleness =
+  /** Read, and it points at the commit this assessment describes. */
+  | { state: 'fresh'; head: string }
+  /** Read, and it points somewhere else. */
+  | { state: 'stale'; head: string }
+  /** Nobody read the pull request. */
+  | { state: 'not-observed'; head: null }
+  /** Read, and GitHub named no head commit for it. */
+  | { state: 'head-unreadable'; head: null };
+
+export function staleness(view: PullRequestView, headSHA: string): Staleness {
+  if (!view.checked) return { state: 'not-observed', head: null };
+  if (view.head === null) return { state: 'head-unreadable', head: null };
+  const moved = !headSHA.startsWith(view.head) && !view.head.startsWith(headSHA);
+  return moved ? { state: 'stale', head: view.head } : { state: 'fresh', head: view.head };
+}
+
+/** The sentence each state owes a reader of the published comment. */
+function stalenessSentence(staleness: Staleness, headSHA: string): string {
+  switch (staleness.state) {
+    case 'fresh':
+      return '';
+    case 'stale':
+      return ` **This assessment is of ${headSHA.slice(0, 12)}, and the pull request now points at ${staleness.head.slice(0, 12)}.**`;
+    case 'not-observed':
+      return ' **eyes-on could not read this pull request, so whether it still points at this commit is unchecked.**';
+    case 'head-unreadable':
+      return ' **eyes-on read this pull request but GitHub named no head commit for it, so whether it still points at this commit is unchecked; the number may belong to an issue rather than a pull request.**';
+  }
 }
 
 export function renderComment(input: CommentInput): string {
   const { check } = input;
   const stale = staleness(input.pullRequest, check.head_sha);
-  const prHead = input.pullRequest.checked ? input.pullRequest.head : null;
   const band = (check.band ?? 'auto') as Band;
   const unverified = check.status === 'unverified';
   const outOf = check.score_max === null ? '' : ` of at most ${check.score_max}`;
@@ -224,16 +255,10 @@ export function renderComment(input: CommentInput): string {
 
   lines.push(
     '',
-    // Three states, not two: stale, fresh, and nobody looked. The third says so
-    // rather than reading as the second, because omitting the sentence is the
-    // claim that the assessment describes the head the pull request has now.
-    `<sub>${check.base_sha.slice(0, 12)}..${check.head_sha.slice(0, 12)}. eyes-on directs attention; nothing here reddens this pull request or holds up a merge, and it does not edit this pull request's body or file a review.${
-      stale === null
-        ? ' **eyes-on could not read this pull request, so whether it still points at this commit is unchecked.**'
-        : stale
-          ? ` **This assessment is of ${check.head_sha.slice(0, 12)}, and the pull request now points at ${(prHead ?? '').slice(0, 12)}.**`
-          : ''
-    }</sub>`,
+    // Four states, one sentence each. Only `fresh` is silent, because omitting
+    // the sentence is itself the claim that the assessment describes the head
+    // the pull request has now.
+    `<sub>${check.base_sha.slice(0, 12)}..${check.head_sha.slice(0, 12)}. eyes-on directs attention; nothing here reddens this pull request or holds up a merge, and it does not edit this pull request's body or file a review.${stalenessSentence(stale, check.head_sha)}</sub>`,
   );
   return lines.join('\n');
 }

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { captureCli, pathWithGitOnly, sandboxEnv, stubAgent, stubGh, tempDir, tempRepo, type StubAgent, type TempRepo } from './helpers.js';
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE } from '../src/cli/output.js';
 import { findMarked, marker, MARKER_PREFIX, renderComment, type PullRequestView } from '../src/gh/comment.js';
-import { parseComments, refusalFor } from '../src/gh/gh.js';
+import { argvFor, parseComments, refusalFor, type GhOperation } from '../src/gh/gh.js';
 
 /**
  * The sticky pull-request comment.
@@ -37,13 +37,22 @@ const SLUG = 'acme/widgets';
 const PR = 42;
 
 test('the allow-list refuses everything that could touch a pull request', () => {
-  // Permitted: the two comment endpoints and the two reads.
-  assert.equal(refusalFor(['repo', 'view', '--json', 'nameWithOwner']), null);
-  assert.equal(refusalFor(['api', `repos/${SLUG}/issues/${PR}/comments`]), null);
-  assert.equal(refusalFor(['api', '--paginate', `repos/${SLUG}/issues/${PR}/comments`]), null);
-  assert.equal(refusalFor(['api', `repos/${SLUG}/pulls/${PR}`, '--jq', '.head.sha']), null);
-  assert.equal(refusalFor(['api', '--method', 'POST', `repos/${SLUG}/issues/${PR}/comments`, '--input', '-']), null);
-  assert.equal(refusalFor(['api', '--method', 'PATCH', `repos/${SLUG}/issues/comments/9`, '--input', '-']), null);
+  // Permitted: exactly the six vectors eyes-on emits, whole and in order.
+  for (const operation of [
+    { op: 'repo-slug' },
+    { op: 'auth-status' },
+    { op: 'pull-head', slug: SLUG, number: PR },
+    { op: 'list-comments', slug: SLUG, number: PR },
+    { op: 'create-comment', slug: SLUG, number: PR },
+    { op: 'update-comment', slug: SLUG, id: 9 },
+  ] as GhOperation[]) {
+    assert.equal(refusalFor(argvFor(operation)), null, `${operation.op} is an operation the product performs`);
+  }
+
+  // A vector that is *nearly* one of them is not one of them: the listing
+  // without --paginate reads only the first page, and eyes-on never emits it.
+  assert.ok(refusalFor(['api', `repos/${SLUG}/issues/${PR}/comments`]) !== null);
+  assert.ok(refusalFor(['repo', 'view', '--json', 'nameWithOwner']) !== null);
 
   // The pull request body, which is one path segment away from the permitted
   // comment update and belongs to no-mistakes.
@@ -757,4 +766,38 @@ test('a gh something kills is reported as a killed process, not as an eyes-on bu
     'a subprocess something else killed is not a defect in eyes-on',
   );
   assert.ok(doc.help.some((line) => line.includes('run the command again')));
+});
+
+test('a number GitHub gives comments but no head is said to be that, not "eyes-on could not read it"', async (t) => {
+  const agent = stubAgent('comment-nohead', [SPOTLIGHT_ANSWER]);
+  const repo = repoWith(agent);
+  // An issue number: the comments listing answers, and the pulls endpoint 404s.
+  // No failure of gh, and every other field of the observation is real.
+  const gh = stubGh('comment-nohead', { slug: SLUG, number: PR, headSHA: null, body: BODY });
+  const env: Record<string, string> = { ...sandboxEnv('comment-nohead'), PATH: `${agent.dir}${delimiter}${gh.path}` };
+  await initRepo(t, repo, env);
+  await captureCli(['check', '--format', 'json'], { cwd: repo.path, env });
+
+  const result = await captureCli(['comment', '--pr', String(PR), '--format', 'json'], { cwd: repo.path, env });
+  const doc = JSON.parse(result.out) as CommentDoc & {
+    pull_request_checked: boolean;
+    stale: boolean | null;
+    stale_reason: string | null;
+    pr_head: string | null;
+    comments_on_pr: number | null;
+  };
+
+  assert.equal(result.code, EXIT_OK);
+  // The payload does not contradict itself: the pull request WAS read, and the
+  // head is the one thing that was not.
+  assert.equal(doc.pull_request_checked, true);
+  assert.equal(doc.comments_on_pr, 0, 'the listing succeeded, so its count is real');
+  assert.equal(doc.stale, null, 'staleness cannot be answered without a head');
+  assert.equal(doc.stale_reason, 'head-unreadable', 'and this is why, which is not "nobody looked"');
+  assert.equal(doc.pr_head, null);
+
+  // The published body says the state it is in rather than the one next to it.
+  assert.match(doc.body, /named no head commit for it/);
+  assert.doesNotMatch(doc.body, /could not read this pull request/);
+  assert.ok(doc.help.some((line) => line.includes('an issue rather than a pull request')));
 });

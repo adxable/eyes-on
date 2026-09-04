@@ -15,45 +15,101 @@ import {
  * no-mistakes, which regenerates it on every update; a second writer would
  * either lose eyes-on's paragraph on the next push or overwrite no-mistakes'.
  *
- * The enforcement is structural rather than careful. `gh()` is module-private,
- * so no caller outside this file chooses an argument vector, and every
- * invocation is checked by `assertAllowed` before a process is spawned. The
- * allow-list is written as **shapes of whole command lines**, not as a list of
- * forbidden verbs: a deny-list would have to keep up with every endpoint GitHub
- * adds, and the first one it missed would be a silent breach of the prohibition
- * that the product exists to be trusted about.
- *
- * Exactly three things may be written, all of them issue comments:
+ * The enforcement is structural rather than careful, and the structure is that
+ * **no caller anywhere writes an argument vector**. A caller names one of six
+ * operations (`GhOperation`); this module holds the six vectors literally, and
+ * `gh()` - which is module-private - is the only thing that builds one. Four of
+ * them read and two write, both issue comments:
  *
  *   - `POST   repos/<owner>/<repo>/issues/<n>/comments`
  *   - `PATCH  repos/<owner>/<repo>/issues/comments/<id>`
  *   - nothing else, ever.
  *
- * Note what is *not* in that list and looks as if it might be: `PATCH
+ * Note what is absent and looks as if it might belong: `PATCH
  * repos/<owner>/<repo>/issues/<n>` is the endpoint that edits a pull request's
- * body, and it differs from the permitted update by one path segment. That is
- * why the paths are matched whole.
+ * body, and it differs from the permitted comment update by one path segment.
+ * There is no operation for it, so no vector for it can be built.
  *
- * The three reads are `gh repo view`, `gh auth status` and two `gh api`
- * endpoints. `doctor`'s credential probe is here rather than in `doctor` so
- * that "every gh invocation eyes-on makes passes `assertAllowed`" has no
- * exception: a rule with one is enforced by memory rather than by shape.
+ * This shape replaced a parser, and the reason is worth keeping. The parser had
+ * to decide read from write by reproducing `gh api`'s own argument semantics,
+ * and three review rounds found three ways that reproduction diverged from gh:
+ * the attached shorthand `-XPATCH` read as a GET, and then the implicit method,
+ * where a vector carrying `--input` and no `--method` is sent as a POST. Each
+ * fix was correct and the next round found another. A defence that must model
+ * another program's parser is only as good as the model; a defence that emits
+ * six fixed vectors has nothing to model.
+ *
+ * `doctor`'s credential probe is here rather than in `doctor` so that "every gh
+ * invocation eyes-on makes comes from this table" has no exception: a rule with
+ * one is enforced by memory rather than by shape.
  */
 
 const OWNER = String.raw`[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?`;
 const REPO = String.raw`[A-Za-z0-9._-]+`;
 
-/** Reads. Each is anchored, so no query string or extra segment slips past. */
-const READ_PATHS: readonly RegExp[] = [
-  new RegExp(`^repos/${OWNER}/${REPO}/issues/\\d+/comments(?:\\?[^\\s]*)?$`),
-  new RegExp(`^repos/${OWNER}/${REPO}/pulls/\\d+$`),
-];
+const SLUG_PATTERN = new RegExp(`^${OWNER}/${REPO}$`);
+const PULL_PATH = new RegExp(`^repos/${OWNER}/${REPO}/pulls/\\d+$`);
+const COMMENTS_PATH = new RegExp(`^repos/${OWNER}/${REPO}/issues/\\d+/comments$`);
+const COMMENT_PATH = new RegExp(`^repos/${OWNER}/${REPO}/issues/comments/\\d+$`);
 
-/** The only two writes. */
-const WRITE_PATHS: Readonly<Record<string, readonly RegExp[]>> = {
-  POST: [new RegExp(`^repos/${OWNER}/${REPO}/issues/\\d+/comments$`)],
-  PATCH: [new RegExp(`^repos/${OWNER}/${REPO}/issues/comments/\\d+$`)],
-};
+/**
+ * Everything eyes-on can ask gh to do. There is no seventh.
+ *
+ * A caller names an operation; this module owns the argument vector. That is
+ * the same move `model.agent` makes for the coding agent, and it is here for
+ * the same reason it was needed there: narrowing one dimension at a time did
+ * not hold. Three review rounds found three ways an argument vector could be
+ * read as something other than what gh would do with it - the attached
+ * shorthand `-XPATCH` parsed as a GET, then `gh api`'s implicit method, which
+ * turns a vector carrying `--input` into a POST with no `--method` in sight.
+ *
+ * A defence that has to reproduce another program's argument semantics is only
+ * ever as good as that reproduction. So the semantics are removed instead: the
+ * writing vectors are the two comment endpoints because those are the only
+ * vectors that exist, and there is nothing left to infer.
+ */
+export type GhOperation =
+  /** `<owner>/<repo>` for the clone this runs in. */
+  | { op: 'repo-slug' }
+  /** Whether gh holds a usable credential. */
+  | { op: 'auth-status' }
+  /** The head commit of a pull request. */
+  | { op: 'pull-head'; slug: string; number: number }
+  /** Every comment on an issue or pull request. */
+  | { op: 'list-comments'; slug: string; number: number }
+  /** Post eyes-on's comment. One of the two writes. */
+  | { op: 'create-comment'; slug: string; number: number }
+  /** Edit the comment eyes-on itself wrote. The other write. */
+  | { op: 'update-comment'; slug: string; id: number };
+
+/**
+ * A slot in an emitted vector: either the exact token, or the pattern the one
+ * interpolated token has to match.
+ */
+type Slot = string | RegExp;
+
+/**
+ * Every argument vector eyes-on can emit, token by token and length included.
+ *
+ * This is the whole allow-list. Matching is positional and exact - a literal
+ * token compares as a string, an interpolated one against an anchored pattern -
+ * so no question of "is this token a flag, and what does gh do with it" arises.
+ * A vector with an extra token, a missing one, or a token in the wrong place is
+ * not one of these and is refused.
+ *
+ * Note what is absent and looks as if it might be here: `PATCH
+ * repos/<owner>/<repo>/issues/<n>` is the endpoint that edits a pull request's
+ * body, and it differs from the permitted comment update by one path segment.
+ * It has no entry, so it cannot be built.
+ */
+const EMITTED_VECTORS: readonly (readonly Slot[])[] = [
+  ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'],
+  ['auth', 'status'],
+  ['api', PULL_PATH, '--jq', '.head.sha'],
+  ['api', '--paginate', COMMENTS_PATH],
+  ['api', '--method', 'POST', COMMENTS_PATH, '--input', '-'],
+  ['api', '--method', 'PATCH', COMMENT_PATH, '--input', '-'],
+];
 
 /**
  * The three states a failed `gh` invocation can be in, which are three
@@ -181,11 +237,12 @@ export interface GhResult {
 }
 
 /**
- * Refuses any invocation outside the allow-list, before a process exists.
+ * Refuses any invocation that is not one of the vectors `argvFor` emits.
  *
  * Exported so `test/coexistence.test.ts` can assert the prohibition directly
  * against the same function the code runs, rather than against a description of
- * it in a comment.
+ * it in a comment. Every vector this module builds passes through here too, so
+ * the check is not only a test surface.
  */
 export function assertAllowed(args: readonly string[]): void {
   const refusal = refusalFor(args);
@@ -196,151 +253,87 @@ export function assertAllowed(args: readonly string[]): void {
   }
 }
 
-/**
- * The options eyes-on itself passes to `gh api`, and whether each takes a
- * value. Everything else is refused.
- *
- * This is an allow-list of **spellings**, not only of endpoints, and it is
- * default-deny for the reason the endpoint list is: a parser that has to
- * understand its whole input is only as good as the forms it knows. `methodOf`
- * used to recognise `--method X`, `-X X` and `--method=X` and not pflag's
- * attached shorthand `-XPATCH`, which gh accepts - so `gh api -XPATCH
- * repos/o/r/pulls/7` fell through to GET, matched a read path, and was allowed.
- * That is the one endpoint this product promises it structurally cannot reach.
- *
- * Refusing what cannot be interpreted with certainty is what makes the next
- * spelling nobody anticipated fail closed instead of being read as a GET.
- */
-interface FlagSpec {
-  /** What the option means, so a shorthand and its long form are one fact. */
-  name: string;
-  takesValue: boolean;
-}
-
-const API_FLAGS: Readonly<Record<string, FlagSpec>> = {
-  '--method': { name: 'method', takesValue: true },
-  '-X': { name: 'method', takesValue: true },
-  '--input': { name: 'input', takesValue: true },
-  '--jq': { name: 'jq', takesValue: true },
-  '-q': { name: 'jq', takesValue: true },
-  '--paginate': { name: 'paginate', takesValue: false },
-};
-
-/** The same, for `gh repo view`. It has no writing form, but a vector eyes-on
- *  cannot read is refused there too rather than passed through unexamined. */
-const REPO_VIEW_FLAGS: Readonly<Record<string, FlagSpec>> = {
-  '--json': { name: 'json', takesValue: true },
-  '--jq': { name: 'jq', takesValue: true },
-  '-q': { name: 'jq', takesValue: true },
-};
-
-interface ParsedArgv {
-  /** Option name to the last value given for it. */
-  values: Map<string, string>;
-  /** Everything that is not an option or an option's value. */
-  operands: string[];
-}
-
-/**
- * Reads an argument vector, or says why it cannot.
- *
- * Handles every form gh accepts for the options above - `--long value`,
- * `--long=value`, `-s value` and the attached `-svalue` - and refuses anything
- * outside the table, an option given no value, and a value attached to an
- * option that takes none.
- */
-function parseArgv(args: readonly string[], table: Readonly<Record<string, FlagSpec>>): ParsedArgv | { refusal: string } {
-  const values = new Map<string, string>();
-  const operands: string[] = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index] as string;
-    if (arg === '-' || !arg.startsWith('-')) {
-      operands.push(arg);
-      continue;
-    }
-    let token = arg;
-    let attached: string | null = null;
-    const equals = arg.indexOf('=');
-    if (arg.startsWith('--') && equals > 0) {
-      token = arg.slice(0, equals);
-      attached = arg.slice(equals + 1);
-    } else if (!arg.startsWith('--') && arg.length > 2) {
-      // pflag's attached shorthand: `-XPATCH` is `-X PATCH`. This is the form
-      // that was missed, and it is why the table is consulted rather than a
-      // list of literal tokens.
-      token = arg.slice(0, 2);
-      attached = arg.slice(2);
-    }
-    const spec = Object.hasOwn(table, token) ? table[token] : undefined;
-    if (!spec) {
-      return {
-        refusal: `${token} is not an option eyes-on passes to gh, and a vector eyes-on cannot interpret with certainty is refused rather than read as a GET`,
-      };
-    }
-    if (!spec.takesValue) {
-      if (attached !== null) return { refusal: `${token} takes no value, so "${arg}" is not a vector eyes-on can interpret` };
-      continue;
-    }
-    const value = attached ?? args[index + 1];
-    if (value === undefined) return { refusal: `${token} was given no value` };
-    if (attached === null) index += 1;
-    values.set(spec.name, value);
-  }
-  return { values, operands };
-}
-
-/** The reason an invocation is refused, or null when it is allowed. */
+/** The reason an invocation is refused, or null when it is one eyes-on emits. */
 export function refusalFor(args: readonly string[]): string | null {
-  const verb = args[0];
-  if (verb === undefined) return 'no gh command was given';
-
-  // `gh repo view` reads; it has no writing form.
-  if (verb === 'repo' && args[1] === 'view') {
-    const parsed = parseArgv(args.slice(2), REPO_VIEW_FLAGS);
-    if ('refusal' in parsed) return parsed.refusal;
-    return parsed.operands.length === 0
-      ? null
-      : `gh repo view names ${parsed.operands[0]}; eyes-on reads only the clone it is run in`;
+  for (const vector of EMITTED_VECTORS) {
+    if (matches(args, vector)) return null;
   }
-  // `gh auth status` reads a credential and names no repository. It is here so
-  // that `doctor`'s readiness probe goes through this door like everything
-  // else, rather than being the one invocation the guarantee excepts.
-  if (verb === 'auth' && args[1] === 'status') {
-    return args.length === 2 ? null : 'gh auth status is run with no options here';
-  }
-  if (verb !== 'api') {
-    return `only \`gh api\`, \`gh repo view\` and \`gh auth status\` are permitted; ${verb} is not`;
-  }
-
-  const parsed = parseArgv(args.slice(1), API_FLAGS);
-  if ('refusal' in parsed) return parsed.refusal;
-  if (parsed.operands.length === 0) return 'no endpoint path was given';
-  if (parsed.operands.length > 1) {
-    return `gh api takes one endpoint and ${parsed.operands.length} were given, so which one this would call cannot be determined`;
-  }
-  const path = parsed.operands[0] as string;
-  const method = (parsed.values.get('method') ?? 'GET').toUpperCase();
-
-  if (method === 'GET') {
-    return READ_PATHS.some((pattern) => pattern.test(path))
-      ? null
-      : `${path} is not one of the endpoints eyes-on reads`;
-  }
-  const allowed = Object.hasOwn(WRITE_PATHS, method) ? WRITE_PATHS[method] : undefined;
-  if (!allowed) {
-    return `${method} is not a method eyes-on uses; the only writes are POST and PATCH on an issue comment`;
-  }
-  if (!allowed.some((pattern) => pattern.test(path))) {
-    // The message names the one mistake that would actually matter, because a
-    // path that is nearly right is the way this prohibition would be broken.
-    return `${method} ${path} is not a comment endpoint; eyes-on never edits a pull request body, merges, or files a review`;
-  }
-  return null;
+  return (
+    `"gh ${args.join(' ')}" is not one of the ${EMITTED_VECTORS.length} invocations eyes-on can make; ` +
+    'eyes-on never edits a pull request body, merges, or files a review'
+  );
 }
 
-function gh(args: readonly string[], options: { cwd?: string; input?: string; timeoutMs?: number } = {}): GhResult {
+function matches(args: readonly string[], vector: readonly Slot[]): boolean {
+  if (args.length !== vector.length) return false;
+  return vector.every((slot, index) => {
+    const token = args[index] as string;
+    return typeof slot === 'string' ? token === slot : slot.test(token);
+  });
+}
+
+/**
+ * The argument vector for an operation, written literally here.
+ *
+ * The interpolated parts are checked before they are placed: a slug that is not
+ * `<owner>/<repo>` and a number that is not a positive integer are refused
+ * rather than pasted into a path. They are the only tokens a caller influences,
+ * and `assertAllowed` checks the finished vector again - so a parameter that
+ * somehow shaped a different endpoint would still not reach a process.
+ */
+export function argvFor(operation: GhOperation): string[] {
+  switch (operation.op) {
+    case 'repo-slug':
+      return ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'];
+    case 'auth-status':
+      return ['auth', 'status'];
+    case 'pull-head':
+      return ['api', `repos/${slug(operation.slug)}/pulls/${count(operation.number, 'pull request number')}`, '--jq', '.head.sha'];
+    case 'list-comments':
+      return ['api', '--paginate', `repos/${slug(operation.slug)}/issues/${count(operation.number, 'pull request number')}/comments`];
+    case 'create-comment':
+      return [
+        'api',
+        '--method',
+        'POST',
+        `repos/${slug(operation.slug)}/issues/${count(operation.number, 'pull request number')}/comments`,
+        '--input',
+        '-',
+      ];
+    case 'update-comment':
+      return [
+        'api',
+        '--method',
+        'PATCH',
+        `repos/${slug(operation.slug)}/issues/comments/${count(operation.id, 'comment id')}`,
+        '--input',
+        '-',
+      ];
+  }
+}
+
+function slug(value: string): string {
+  if (!SLUG_PATTERN.test(value)) {
+    throw GhError.refused(`refusing to build a gh invocation for "${value}": that is not an <owner>/<repo> eyes-on can address`);
+  }
+  return value;
+}
+
+function count(value: number, what: string): string {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw GhError.refused(`refusing to build a gh invocation for ${what} ${value}: it is not a positive whole number`);
+  }
+  return String(value);
+}
+
+/**
+ * The single door. A caller names an operation and never an argument vector, so
+ * this is also the only place a vector exists.
+ */
+function gh(operation: GhOperation, options: { cwd?: string; input?: string; timeoutMs?: number } = {}): GhResult {
+  const args = argvFor(operation);
   assertAllowed(args);
-  const result = spawnSync('gh', [...args], {
+  const result = spawnSync('gh', args, {
     cwd: options.cwd,
     input: options.input,
     encoding: 'utf8',
@@ -380,7 +373,7 @@ function gh(args: readonly string[], options: { cwd?: string; input?: string; ti
  */
 export function ghAuthenticated(): boolean {
   try {
-    return gh(['auth', 'status'], { timeoutMs: 10_000 }).status === 0;
+    return gh({ op: 'auth-status' }, { timeoutMs: 10_000 }).status === 0;
   } catch (error) {
     if (error instanceof GhError) return false;
     throw error;
@@ -397,23 +390,26 @@ export interface IssueComment {
 
 /** `<owner>/<repo>` for the clone, as GitHub knows it. */
 export function repoSlug(clonePath: string): string | null {
-  const result = gh(['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'], { cwd: clonePath });
+  const result = gh({ op: 'repo-slug' }, { cwd: clonePath });
   if (result.status !== 0) return null;
-  const slug = result.stdout.trim();
-  return /^[^/\s]+\/[^/\s]+$/.test(slug) ? slug : null;
+  const named = result.stdout.trim();
+  // The same shape `argvFor` will accept, checked here so a slug gh reports but
+  // eyes-on could not address is "gh named no repository" rather than a refusal
+  // thrown from inside the next call.
+  return SLUG_PATTERN.test(named) ? named : null;
 }
 
 /** Head commit of a pull request, so the comment can name the commit it
  *  describes and a stale comment is recognisable as stale. */
 export function pullHeadSHA(clonePath: string, slug: string, number: number): string | null {
-  const result = gh(['api', `repos/${slug}/pulls/${number}`, '--jq', '.head.sha'], { cwd: clonePath });
+  const result = gh({ op: 'pull-head', slug, number }, { cwd: clonePath });
   if (result.status !== 0) return null;
   const sha = result.stdout.trim();
   return /^[0-9a-f]{7,40}$/.test(sha) ? sha : null;
 }
 
 export function listComments(clonePath: string, slug: string, number: number): IssueComment[] {
-  const result = gh(['api', '--paginate', `repos/${slug}/issues/${number}/comments`], { cwd: clonePath });
+  const result = gh({ op: 'list-comments', slug, number }, { cwd: clonePath });
   if (result.status !== 0) {
     throw GhError.remote(`gh could not read the comments of ${slug}#${number}`, result.status, result.stderr);
   }
@@ -486,10 +482,7 @@ function splitJsonArrays(text: string): string[] {
 }
 
 export function createComment(clonePath: string, slug: string, number: number, body: string): IssueComment | null {
-  const result = gh(['api', '--method', 'POST', `repos/${slug}/issues/${number}/comments`, '--input', '-'], {
-    cwd: clonePath,
-    input: JSON.stringify({ body }),
-  });
+  const result = gh({ op: 'create-comment', slug, number }, { cwd: clonePath, input: JSON.stringify({ body }) });
   if (result.status !== 0) {
     throw GhError.remote(`gh could not comment on ${slug}#${number}`, result.status, result.stderr);
   }
@@ -497,10 +490,7 @@ export function createComment(clonePath: string, slug: string, number: number, b
 }
 
 export function updateComment(clonePath: string, slug: string, id: number, body: string): IssueComment | null {
-  const result = gh(['api', '--method', 'PATCH', `repos/${slug}/issues/comments/${id}`, '--input', '-'], {
-    cwd: clonePath,
-    input: JSON.stringify({ body }),
-  });
+  const result = gh({ op: 'update-comment', slug, id }, { cwd: clonePath, input: JSON.stringify({ body }) });
   if (result.status !== 0) {
     throw GhError.remote(`gh could not update comment ${id} on ${slug}`, result.status, result.stderr);
   }

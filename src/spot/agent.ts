@@ -214,7 +214,7 @@ export function askModel(prompt: string, options: ModelOptions): ModelOutcome {
   });
   const elapsed = Math.round(Number(process.hrtime.bigint() - started) / 1e6);
 
-  const failure = result.signal === 'SIGTERM' && result.error ? 'timeout' : spawnFailureOf(result);
+  const failure = spawnFailureOf(result);
   if (failure !== null) {
     return {
       state: 'failed',

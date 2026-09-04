@@ -12,6 +12,7 @@ import {
   staleness,
   MARKER_PREFIX,
   type PullRequestView,
+  type Staleness,
   type UncheckedReason,
 } from '../gh/comment.js';
 import { createComment, listComments, pullHeadSHA, repoSlug, updateComment, GhError } from '../gh/gh.js';
@@ -133,8 +134,13 @@ export async function commentCommand(context: Context): Promise<number> {
     comments_on_pr: view.checked ? view.comments : null,
     check_id: check.id,
     head: check.head_sha.slice(0, 12),
-    pr_head: view.checked && view.head !== null ? view.head.slice(0, 12) : null,
-    stale,
+    pr_head: stale.head === null ? null : stale.head.slice(0, 12),
+    // Null is "eyes-on cannot say", and the reason beside it says which of the
+    // two silences this is: nobody read the pull request, or somebody read it
+    // and GitHub named no head for it. `false` would be the positive claim that
+    // the assessment describes the head the pull request has now.
+    stale: stale.state === 'stale' ? true : stale.state === 'fresh' ? false : null,
+    stale_reason: stale.state === 'stale' || stale.state === 'fresh' ? null : stale.state,
     score: check.score,
     score_max: check.score_max,
     band: check.band,
@@ -162,7 +168,7 @@ export async function commentCommand(context: Context): Promise<number> {
 
 function helpLines(
   dryRun: boolean,
-  stale: boolean | null,
+  stale: Staleness,
   fragments: number,
   check: CheckRow,
   view: PullRequestView,
@@ -183,9 +189,17 @@ function helpLines(
     );
   }
   if (fragments === 0) lines.push('The comment has no fragments to read: run `eyes-on spotlight` and publish again');
-  if (stale === true) {
+  if (stale.state === 'stale') {
     lines.push(
       'The pull request head is not the commit this assessment describes; the comment says so. Run `eyes-on check --head <pr head>` and publish again',
+    );
+  }
+  if (stale.state === 'head-unreadable') {
+    lines.push(
+      'eyes-on read this pull request but GitHub named no head commit for it, so whether the assessment describes what is there now is unknown; the comment says so',
+    );
+    lines.push(
+      'A number that takes comments but has no head is an issue rather than a pull request: check `--pr`, or run `eyes-on comment --pr <the pull request>` instead',
     );
   }
   if (check.status === 'must_read') {

@@ -283,25 +283,35 @@ pull-request body in a fake `gh`, publishes the comment three times over three
 recomputations, and compares.
 
 **No code path could have touched it.** This is the stronger statement and the
-one that will still hold after somebody adds a command. `gh()` in `src/gh/gh.ts`
-is module-private and every invocation passes `assertAllowed` first; the
-allow-list is four whole command shapes, of which two are writes and both are
-issue-comment endpoints:
+one that will still hold after somebody adds a command. No caller anywhere
+writes a gh argument vector: a caller names one of six operations and
+`src/gh/gh.ts` holds the six vectors literally. Four read and two write, and
+both writes are issue-comment endpoints:
 
 ```
-GET    repos/<owner>/<repo>/issues/<n>/comments
+gh repo view --json nameWithOwner --jq .nameWithOwner
+gh auth status
 GET    repos/<owner>/<repo>/pulls/<n>
+GET    repos/<owner>/<repo>/issues/<n>/comments   (--paginate)
 POST   repos/<owner>/<repo>/issues/<n>/comments
 PATCH  repos/<owner>/<repo>/issues/comments/<id>
 ```
 
 `PATCH repos/<owner>/<repo>/issues/<n>` - the endpoint that edits a pull request
-body - differs from the permitted comment update by one path segment. That is
-why the paths are matched whole rather than a list of verbs being forbidden:
-a deny-list would have to keep up with every endpoint GitHub adds, and the first
-one it missed would be a silent breach of the prohibition the product exists to
-be trusted about. `test/coexistence.test.ts` asserts thirteen refusals and four
-permissions against the same function the code calls.
+body - differs from the permitted comment update by one path segment, and has no
+operation, so no vector for it can be built.
+
+This replaced an allow-list that parsed the vector, and the reason is the shape
+rather than the two bugs it had. To decide read from write, that parser had to
+reproduce `gh api`'s own argument semantics, and three review rounds found three
+divergences: pflag's attached shorthand `-XPATCH` read as a GET of a read path,
+and then the implicit method, where a vector carrying `--input` and no
+`--method` is sent by gh as a POST and was validated against the read table.
+Each fix was correct and the next round found another; a defence that must model
+another program's parser is only as good as the model. `test/coexistence.test.ts`
+asserts every one of those vectors is refused, that the six are accepted, and
+that a hostile slug or number is refused before it reaches a path - all against
+the same functions the code calls.
 
 **Exactly one comment.** The marker `<!-- eyes-on:v1 {...} -->` is written first,
 on its own line, with a single-line JSON payload. Every publish searches for the

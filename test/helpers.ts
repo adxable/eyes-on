@@ -310,7 +310,9 @@ export function stubGh(
   options: {
     slug: string;
     number: number;
-    headSHA: string;
+    /** Null makes the pulls endpoint answer 404, which is what GitHub does for
+     *  an issue number: the comments listing still succeeds. */
+    headSHA: string | null;
     body: string;
     /** Comments already on the pull request, from whoever put them there. */
     comments?: readonly { id: number; body: string; user?: { login: string } }[];
@@ -356,6 +358,7 @@ if (args[0] === 'repo' && args[1] === 'view') {
 }
 if (args[0] !== 'api' || !endpoint) { process.stderr.write('unsupported: ' + args.join(' ') + '\\n'); process.exit(1); }
 if (method === 'GET' && endpoint === 'repos/' + state.slug + '/pulls/' + state.number) {
+  if (state.headSHA === null) { process.stderr.write('gh: Not Found (HTTP 404)\\n'); process.exit(1); }
   writeAll(state.headSHA + '\\n');
   process.exit(0);
 }

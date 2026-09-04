@@ -31,17 +31,20 @@ correctness bug even when everything still passes:
   agent is the environment it hands it: a working directory under its own state
   root, a prompt on stdin, and nothing pointing at the clone. Do not restate
   this as "nothing eyes-on runs writes into a clone";
-- never edit a pull request body, open, merge or review a pull request. `gh()`
-  in `src/gh/gh.ts` is module-private, so every invocation eyes-on makes -
-  including `doctor`'s credential probe, which is why `ghAuthenticated` lives
-  there - passes `assertAllowed` first: three reads and exactly two writes, both
-  issue-comment endpoints, matched as whole paths. `PATCH repos/o/r/issues/<n>` -
-  the pull-request body - differs from the permitted comment update by one path
-  segment, which is why the allow-list is not a list of forbidden verbs. The
-  argument vector is parsed **default-deny**: an option outside the table
-  eyes-on itself uses, a value it cannot pair with an option, or a second
-  operand is refused rather than read as a GET, because `-XPATCH` - pflag's
-  attached shorthand - once fell through a parser that only knew `-X PATCH`;
+- never edit a pull request body, open, merge or review a pull request. **No
+  caller anywhere writes a gh argument vector.** A caller names one of six
+  `GhOperation`s and `src/gh/gh.ts` holds the six vectors literally; four read
+  and two write, both issue-comment endpoints. `doctor`'s credential probe is
+  one of the six - `ghAuthenticated` lives there - so the rule has no exception
+  to remember. `PATCH repos/o/r/issues/<n>` - the pull-request body - differs
+  from the permitted comment update by one path segment and simply has no
+  operation, so no vector for it exists. This replaced an allow-list that
+  parsed the vector, and the reason is the shape rather than the two bugs: the
+  parser had to reproduce `gh api`'s own argument semantics, and three rounds
+  found three divergences - `-XPATCH` read as a GET, then the implicit method,
+  where `--input` with no `--method` is sent as a POST. `argvFor` validates the
+  only tokens a caller influences, the slug and the number, before placing
+  them, and `assertAllowed` checks the finished vector against the same table;
 - no eyes-on process may have a working directory under a foreign worktree - the
   daemon's cwd is always its own state root.
 

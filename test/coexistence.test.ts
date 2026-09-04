@@ -17,7 +17,7 @@ import {
 } from '../src/git/git.js';
 import { ensureMirror } from '../src/git/mirror.js';
 import { stateRoot, tempDir, tempRepo, run } from './helpers.js';
-import { assertAllowed } from '../src/gh/gh.js';
+import { argvFor, assertAllowed, refusalFor, type GhOperation } from '../src/gh/gh.js';
 
 /**
  * The stage 0 acceptance conditions from report section 4 and section 8, as
@@ -368,15 +368,40 @@ test('acceptance: the mirror fetch reads the clone and writes only into the mirr
  * eyes-on never edits a pull request body, never merges and never files a
  * GitHub review. The body belongs to no-mistakes and is regenerated on every
  * update, so a second writer would either lose eyes-on's paragraph or overwrite
- * what no-mistakes has to say. `gh()` is module-private and every invocation
- * passes `assertAllowed` before a process exists, so this is a property of the
- * code rather than of anyone's care.
+ * what no-mistakes has to say.
  *
- * The endpoint that edits a pull request body differs from the comment update
- * eyes-on is allowed to make by one path segment, which is why the allow-list
- * matches whole paths rather than forbidding verbs.
+ * The enforcement point is no longer a parser that reads an argument vector and
+ * decides whether it writes. It is that **no caller can write an argument
+ * vector at all**: a caller names one of six operations and `argvFor` holds the
+ * six vectors. Two rounds found two ways a parser diverged from gh - the
+ * attached shorthand `-XPATCH` read as a GET, and `gh api`'s implicit method,
+ * where `--input` with no `--method` is sent as a POST - and both are asserted
+ * below as vectors that cannot be produced and are refused if offered.
  */
 test('acceptance: no gh invocation can edit a pull request, merge one, or review one', () => {
+  // The vectors eyes-on can actually produce. There is no seventh, and this is
+  // the door: everything else in this test is shown to be outside it.
+  const emitted = ([
+    { op: 'repo-slug' },
+    { op: 'auth-status' },
+    { op: 'pull-head', slug: 'acme/widgets', number: 7 },
+    { op: 'list-comments', slug: 'acme/widgets', number: 7 },
+    { op: 'create-comment', slug: 'acme/widgets', number: 7 },
+    { op: 'update-comment', slug: 'acme/widgets', id: 9 },
+  ] as GhOperation[]).map((operation) => argvFor(operation));
+
+  for (const argv of emitted) {
+    assert.doesNotThrow(() => assertAllowed(argv), `gh ${argv.join(' ')} is an invocation the product makes`);
+  }
+
+  // Not one of the six writes to anything but a comment.
+  const writes = emitted.filter((argv) => argv.includes('--method'));
+  assert.equal(writes.length, 2, 'exactly two of the six write');
+  for (const argv of writes) {
+    const endpoint = argv[3] as string;
+    assert.match(endpoint, /^repos\/acme\/widgets\/issues\/(?:7\/comments|comments\/9)$/, `${endpoint} is a comment endpoint`);
+  }
+
   const forbidden: string[][] = [
     ['pr', 'edit', '7', '--body', 'rewritten'],
     ['pr', 'edit', '7', '--body-file', '-'],
@@ -391,57 +416,42 @@ test('acceptance: no gh invocation can edit a pull request, merge one, or review
     ['api', '--method', 'PUT', 'repos/acme/widgets/pulls/7/merge'],
     ['api', '--method', 'POST', 'repos/acme/widgets/pulls/7/reviews'],
     ['api', '--method', 'DELETE', 'repos/acme/widgets/issues/comments/9'],
-    // Every spelling gh accepts for the method, not only the one eyes-on
-    // writes. The attached shorthand is pflag's, and a parser that knew only
-    // the separated form read this as a GET of a pull request - a read path -
-    // and let the endpoint that edits a pull request body through.
+    // The two ways a parser diverged from gh, kept because each was a real
+    // bypass. The first is pflag's attached shorthand, once read as a GET of a
+    // read path. The second is `gh api`'s implicit method: a vector carrying
+    // `--input` and no `--method` is sent as a POST, and was validated against
+    // the read table.
     ['api', '-XPATCH', 'repos/acme/widgets/pulls/7'],
     ['api', '-XPATCH', 'repos/acme/widgets/issues/7'],
     ['api', '--method=PATCH', 'repos/acme/widgets/pulls/7'],
-    ['api', '-X', 'PATCH', 'repos/acme/widgets/pulls/7'],
-    ['api', '-XPUT', 'repos/acme/widgets/pulls/7/merge'],
-    ['api', '-XPOST', 'repos/acme/widgets/pulls/7/reviews'],
+    ['api', 'repos/acme/widgets/pulls/7', '--input', '-'],
+    ['api', 'repos/acme/widgets/issues/7/comments', '--input', '-'],
+    // And a vector that is nearly one of the six: an extra token, a missing
+    // one, a token out of place.
+    ['api', '--paginate', 'repos/acme/widgets/issues/7/comments', '--jq', '.[]'],
+    ['api', '--method', 'POST', 'repos/acme/widgets/issues/7/comments'],
+    ['api', '--method', 'PATCH', 'repos/acme/widgets/issues/7/comments', '--input', '-'],
   ];
   for (const argv of forbidden) {
     assert.throws(() => assertAllowed(argv), /refusing to run/, `gh ${argv.join(' ')} reached a process`);
+    assert.match(refusalFor(argv) ?? '', /never edits a pull request body/);
   }
 
-  // The general property, which is what makes the next spelling nobody has
-  // thought of fail closed: a vector this parser cannot interpret with
-  // certainty is refused rather than read as a GET.
-  for (const argv of [
-    // An option outside the set eyes-on itself passes.
-    ['api', '--slurp', 'repos/acme/widgets/issues/7/comments'],
-    ['api', '--hostname', 'ghe.internal', 'repos/acme/widgets/issues/7/comments'],
-    ['api', '-i', 'repos/acme/widgets/issues/7/comments'],
-    // An option given no value, so what it would have been cannot be known.
-    ['api', 'repos/acme/widgets/issues/7/comments', '--method'],
-    // A value attached to an option that takes none.
-    ['api', '--paginate=repos/x/y/pulls/1', 'repos/acme/widgets/issues/7/comments'],
-    // Two operands: which endpoint this calls cannot be determined.
-    ['api', 'repos/acme/widgets/issues/7/comments', 'repos/acme/widgets/pulls/7'],
-    // And the reading commands are parsed too, rather than passed through.
-    ['repo', 'view', '--web'],
-    ['repo', 'view', 'someone/else'],
-    ['auth', 'login'],
-    ['auth', 'status', '--hostname', 'ghe.internal'],
-  ]) {
-    assert.throws(() => assertAllowed(argv), /refusing to run/, `gh ${argv.join(' ')} was interpreted rather than refused`);
+  // The remaining influence a caller has is the slug and the number that go
+  // into a path, so they are checked before they are placed: neither can shape
+  // an endpoint outside the six.
+  for (const operation of [
+    { op: 'list-comments', slug: 'acme/widgets --method PATCH', number: 7 },
+    { op: 'create-comment', slug: '../../pulls/7/merge', number: 7 },
+    { op: 'pull-head', slug: 'acme/widgets/extra', number: 7 },
+  ] as GhOperation[]) {
+    assert.throws(() => argvFor(operation), /refusing to build/, `${JSON.stringify(operation)} produced a vector`);
   }
-
-  // And every invocation the product actually needs, so the allow-list is shown
-  // to be a door rather than a wall. `auth status` is here because `doctor`'s
-  // credential probe goes through the same door as the rest - the guarantee
-  // above has no exception to remember.
-  for (const argv of [
-    ['repo', 'view', '--json', 'nameWithOwner'],
-    ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'],
-    ['auth', 'status'],
-    ['api', 'repos/acme/widgets/pulls/7', '--jq', '.head.sha'],
-    ['api', '--paginate', 'repos/acme/widgets/issues/7/comments'],
-    ['api', '--method', 'POST', 'repos/acme/widgets/issues/7/comments', '--input', '-'],
-    ['api', '--method', 'PATCH', 'repos/acme/widgets/issues/comments/9', '--input', '-'],
-  ]) {
-    assert.doesNotThrow(() => assertAllowed(argv), `gh ${argv.join(' ')} is an invocation the product makes`);
+  for (const operation of [
+    { op: 'list-comments', slug: 'acme/widgets', number: 0 },
+    { op: 'create-comment', slug: 'acme/widgets', number: -7 },
+    { op: 'update-comment', slug: 'acme/widgets', id: 1.5 },
+  ] as GhOperation[]) {
+    assert.throws(() => argvFor(operation), /refusing to build/, `${JSON.stringify(operation)} produced a vector`);
   }
 });
