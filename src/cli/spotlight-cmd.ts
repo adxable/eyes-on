@@ -1,7 +1,7 @@
 import type { Context } from './context.js';
 import { assertMayMutate } from './context.js';
 import { flagBool, flagCount, flagString } from './args.js';
-import { emitDoc, progress, EXIT_OK, EXIT_USAGE, UserFacingError } from './output.js';
+import { emitDoc, progress, EXIT_OK } from './output.js';
 import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
 import { modelOptionsFor } from './model-context.js';
@@ -53,17 +53,14 @@ import { detailOf } from '../spot/drift.js';
 export async function spotlightCommand(context: Context): Promise<number> {
   assertMayMutate(context, 'spotlight');
 
-  const risk = riskContext(context);
-  // One rule for the flag: the whole token has to be a number, and a number
-  // outside the report's three-to-five range is clamped rather than refused,
-  // because `--n` is a preference. `--n abc` and `--n 42abc` are the same
-  // mistake and now get the same answer.
-  const requested = flagString(context.args, 'n');
-  const asked = flagCount(context.args, 'n');
-  if (requested !== null && asked === null) {
-    throw new UserFacingError(`--n ${requested} is not a number`, ['Pass --n 3, 4 or 5'], EXIT_USAGE);
-  }
+  // A preference, so the range is not part of the reading: a number outside
+  // the report's three to five is clamped rather than refused, and the payload
+  // reports both what was asked for and what the ranking was given. Read before
+  // any repository work, so a mistyped flag is answered as itself.
+  const asked = flagCount(context.args, 'n', { what: 'a number', help: ['Pass --n 3, 4 or 5'] });
   const n = clampN(asked ?? 5);
+
+  const risk = riskContext(context);
   const noModel = flagBool(context.args, 'no-model');
 
   if (risk.baseSHA === risk.headSHA) {
@@ -165,6 +162,7 @@ export async function spotlightCommand(context: Context): Promise<number> {
     hunks: hunks.length,
     hunksInChange: allHunks.length,
     n,
+    askedFor: asked,
     checkId,
     gate: gateOf(risk, assessment, checkId),
     intent: carry.rowIntent,
@@ -197,6 +195,10 @@ interface DocOptions {
    *  two reasons it is. */
   hunksInChange: number;
   n: number;
+  /** What the caller asked for, or null when they did not ask. Kept beside `n`
+   *  because `n` may have been clamped, and a field named for the request must
+   *  not report the clamp. */
+  askedFor: number | null;
   checkId: string | null;
   gate: 'must_read' | 'none';
   /** The intent this run worked with: the one it was given, or the one already
@@ -238,7 +240,12 @@ export function renderDoc(score: number, scoreMax: number, band: string, options
     drift_sentence: driftProvenanceSentence(options.carry),
     gate: options.gate,
     stage: result.stage,
-    asked_for: options.n,
+    // What the caller asked for, and what the ranking was actually given. They
+    // differ when `--n` fell outside the report's three-to-five range, which is
+    // clamped rather than refused - so one field cannot carry both without
+    // reporting a number nobody asked for.
+    asked_for: options.askedFor,
+    fragments_max: options.n,
     // Hunks after the code filter, and before it. The difference is what the
     // noise filter removed, which a reader should be able to see rather than
     // wonder about.

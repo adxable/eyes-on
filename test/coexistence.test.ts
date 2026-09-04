@@ -373,10 +373,10 @@ test('acceptance: the mirror fetch reads the clone and writes only into the mirr
  * The enforcement point is no longer a parser that reads an argument vector and
  * decides whether it writes. It is that **no caller can write an argument
  * vector at all**: a caller names one of six operations and `argvFor` holds the
- * six vectors. Two rounds found two ways a parser diverged from gh - the
- * attached shorthand `-XPATCH` read as a GET, and `gh api`'s implicit method,
- * where `--input` with no `--method` is sent as a POST - and both are asserted
- * below as vectors that cannot be produced and are refused if offered.
+ * six vectors. Review rounds found a parser diverging from gh - the attached
+ * shorthand `-XPATCH` read as a GET, and `gh api`'s implicit method, where
+ * `--input` with no `--method` is sent as a POST - and both are asserted below
+ * as vectors that cannot be produced and are refused if offered.
  */
 test('acceptance: no gh invocation can edit a pull request, merge one, or review one', () => {
   // The vectors eyes-on can actually produce. There is no seventh, and this is

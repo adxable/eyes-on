@@ -41,7 +41,7 @@ correctness bug even when everything still passes:
   operation, so no vector for it exists. This replaced an allow-list that
   parsed the vector, and the reason is the shape rather than the two bugs: the
   parser had to reproduce `gh api`'s own argument semantics, and two rounds
-  found two divergences - `-XPATCH` read as a GET, then the implicit method,
+  found divergences from it - `-XPATCH` read as a GET, then the implicit method,
   where `--input` with no `--method` is sent as a POST. `argvFor` validates the
   only tokens a caller influences, the slug and the number, before placing
   them, and `assertAllowed` checks the finished vector against the same table;
@@ -180,7 +180,7 @@ consulted.
 - **A repository picks an agent by name; eyes-on owns the argv.** `.eyes-on.yml`
   comes from the default branch like every other trusted field, which is the
   right trust level for deciding which paths need a reviewer and not a reason to
-  let it choose what runs. Narrowing that one dimension at a time failed three times -
+  let it choose what runs. Narrowing that one dimension at a time did not hold -
   the program's path, then its name, then its flags - so the choice is closed
   rather than filtered: `model.agent` names one entry of `AGENT_ARGV`
   (`src/spot/agent.ts`) and eyes-on holds the whole vector. `AGENT_ARGV` carries
@@ -192,7 +192,7 @@ consulted.
   so the check and the spawn cannot look at two different files.
   `test/spotlight.test.ts` asserts the argv the stub was actually invoked with.
 - **The agent starts in `Paths.agentDir`, never in the clone.** The working
-  directory is the same vector as the argv in a fourth disguise: a coding agent
+  directory is the same vector as the argv in another disguise: a coding agent
   reads the settings and instruction files of the directory it starts in, so a
   branch adding `.claude/settings.json` and a `CLAUDE.md` would be configuring
   the process eyes-on spawns over that same branch's diff. `modelOptionsFor`

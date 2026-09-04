@@ -38,9 +38,9 @@ import { Database } from '../src/db/db.js';
  * asserting that the first never contained the intent and the second never
  * contained the diff.
  *
- * And one invariant, because three rounds of review found three holes in it:
- * **the score, the maximum it was computed against, the band and the grade are
- * four facts about one assessment.** A command that moves one recomputes the
+ * And one invariant, because review rounds kept finding holes in it:
+ * **the score, the maximum it was computed against, the band and the grade
+ * belong to one assessment and are read together.** A command that moves one recomputes the
  * rest, and every surface reads all four from the recorded row.
  */
 

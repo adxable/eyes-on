@@ -1,5 +1,5 @@
 import type { Context } from './context.js';
-import { flagString } from './args.js';
+import { flagCount, flagString } from './args.js';
 import { emitDoc, EXIT_OK, progress, UserFacingError } from './output.js';
 import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
@@ -44,6 +44,16 @@ import {
 type Candidate = PathInstruction & { source: 'hard_rule' | 'history' };
 
 export async function exportPathInstructionsCommand(context: Context): Promise<number> {
+  // Read before the history walk and the blame, because a mistyped threshold is
+  // the caller's mistake and they should hear it now rather than after minutes
+  // of work whose answer is thrown away.
+  const minRisk = flagCount(context.args, 'min-risk', {
+    what: 'a risk score between 0 and 100',
+    help: ['For example: eyes-on export-path-instructions --min-risk 50'],
+    min: 0,
+    max: 100,
+  });
+
   const risk = riskContext(context, { dbMode: 'optional', needRange: false });
   const config = risk.trusted.config;
   const filter = fileFilter(config);
@@ -69,14 +79,6 @@ export async function exportPathInstructionsCommand(context: Context): Promise<n
   const fixCounts = fixCountsByFile(szz.attributions);
   const ranked = rankFiles(window, fixCounts, filter, config, nowSeconds);
 
-  const minRiskRaw = flagString(context.args, 'min-risk');
-  const minRisk = minRiskRaw === null ? null : Number.parseInt(minRiskRaw, 10);
-  if (minRisk !== null && (!Number.isFinite(minRisk) || minRisk < 0 || minRisk > 100)) {
-    throw new UserFacingError(`--min-risk ${minRiskRaw} is not a risk score between 0 and 100`, [
-      'For example: eyes-on export-path-instructions --min-risk 50',
-      `Leave --min-risk out to use this repository's own threshold, ${config.thresholds.read_fragments}`,
-    ]);
-  }
   const threshold = minRisk ?? config.thresholds.read_fragments;
 
   const candidates: Candidate[] = [

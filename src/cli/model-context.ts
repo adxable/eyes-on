@@ -20,7 +20,7 @@ import type { ModelOptions } from '../spot/agent.js';
  * being assessed configure - through a `.claude/settings.json` and a
  * `CLAUDE.md` it added in the same change - the process eyes-on spawns with
  * that branch's diff as its prompt. That is the same vector as `model.command`
- * wearing a third disguise, and it is closed the same way: eyes-on hands the
+ * wearing another disguise, and it is closed the same way: eyes-on hands the
  * agent an environment eyes-on owns. The prompt is delivered on stdin and
  * carries the whole input, so the fragments and the drift grade are computed
  * from the text eyes-on supplies and from nothing the repository can add.

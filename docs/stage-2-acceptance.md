@@ -303,7 +303,7 @@ operation, so no vector for it can be built.
 
 This replaced an allow-list that parsed the vector, and the reason is the shape
 rather than the two bugs it had. To decide read from write, that parser had to
-reproduce `gh api`'s own argument semantics, and two review rounds found two
+reproduce `gh api`'s own argument semantics, and review rounds found these
 divergences: pflag's attached shorthand `-XPATCH` read as a GET of a read path,
 and then the implicit method, where a vector carrying `--input` and no
 `--method` is sent by gh as a POST and was validated against the read table.
@@ -412,9 +412,9 @@ configuration or instruction files - a `.claude/settings.json` and a `CLAUDE.md`
 added by the branch under review are simply not on its path any more. What that
 means for the result is that the prompt is self-contained by construction, so
 the fragments and the drift grade are computed from the text eyes-on supplies
-on stdin and from nothing the repository can add. The working directory was the
-third disguise of one vector - the program's path, then its argv, then the
-directory it starts in - so it is closed the same way the other two were:
+on stdin and from nothing the repository can add. The working directory was one
+more disguise of one vector - the program's path, then its argv, then the
+directory it starts in - so it is closed the same way the others were:
 `modelOptionsFor` is the only place a cwd is chosen. `test/spotlight.test.ts`
 asserts the directory the agent was actually run in.
 

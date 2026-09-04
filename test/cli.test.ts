@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { run as runCli } from '../src/cli/run.js';
 import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, type Writers } from '../src/cli/output.js';
 import { COMMANDS } from '../src/cli/commands.js';
+import { flagString, parseArgs, NUMERIC_FLAGS } from '../src/cli/args.js';
 import { shortDir, stateRoot, tempDir, tempRepo } from './helpers.js';
 import { MAX_SOCKET_PATH_BYTES } from '../src/core/paths.js';
 
@@ -112,47 +113,89 @@ test('an unimplemented command names the stage that owns it and exits 1', async 
 });
 
 /**
- * One rule for a numeric flag, applied to every one of them.
+ * One rule for every numeric flag, checked against the list rather than against
+ * the flags somebody remembered.
  *
- * `--n abc` was a usage error while `--n 42abc` was read as 42 and clamped,
- * so two spellings of the same mistake got two different answers and the
- * payload reported a number nobody asked for. Out of range is a separate
- * question and the two kinds answer it differently on purpose: `--pr` is a
- * contract and refuses, `--n` and `--lines` are preferences and clamp.
+ * Four review rounds found the same defect in four commands, each one over from
+ * the one just fixed: `--n abc` was a usage error while `--n 42abc` was read by
+ * `Number.parseInt` as 42, `--top 1e9` as 1, `--lines 1e9` as 1. The structural
+ * answer is that `flagString` refuses a name in `NUMERIC_FLAGS`, so `flagCount`
+ * is the only way to read one - and this walks that set, so a flag added
+ * without a case here fails rather than being missed a fifth time.
+ *
+ * Out of range is a separate question and the two kinds answer it differently
+ * on purpose: a contract refuses, a preference clamps.
  */
-test('a numeric flag is read whole, and out of range is clamped only where the flag is a preference', async () => {
+const NUMERIC_FLAG_COMMANDS: Readonly<Record<string, string[]>> = {
+  pr: ['comment'],
+  n: ['spotlight'],
+  lines: ['axi', 'logs'],
+  top: ['why'],
+  'min-risk': ['export-path-instructions'],
+  horizon: ['backtest'],
+};
+
+test('every numeric flag is read whole, and no command reads one any other way', async () => {
+  assert.deepEqual(
+    Object.keys(NUMERIC_FLAG_COMMANDS).sort(),
+    [...NUMERIC_FLAGS].sort(),
+    'a numeric flag was declared without a case here, which is how the last four rounds missed one',
+  );
+
   const repo = tempRepo('cli-flags');
   const env = sandbox();
   await cli(['init'], { cwd: repo.path, env });
   try {
-    for (const argv of [
-      ['spotlight', '--n', 'abc'],
-      ['spotlight', '--n', '42abc'],
-      ['spotlight', '--n', '1e9'],
-    ]) {
-      const result = await cli([...argv, '--format', 'json'], { cwd: repo.path, env });
-      assert.equal(result.code, EXIT_USAGE, `${argv.join(' ')} is the same mistake as the others`);
-      assert.match(result.out, /is not a number/);
-    }
-    for (const argv of [
-      ['axi', 'logs', '--lines', 'abc'],
-      ['axi', 'logs', '--lines', '1e9'],
-    ]) {
-      const result = await cli(argv, { cwd: repo.path, env });
-      assert.equal(result.code, EXIT_USAGE, `${argv.join(' ')} was read as a number it does not spell`);
-      assert.match(result.out, /--lines .* is not a number/);
+    for (const [flag, argv] of Object.entries(NUMERIC_FLAG_COMMANDS)) {
+      // Three spellings of one mistake. `abc` is not a number at all; the other
+      // two are the ones `Number.parseInt` reads as 42 and as 1.
+      for (const value of ['abc', '42abc', '1e9']) {
+        const result = await cli([...argv, `--${flag}`, value, '--format', 'json'], { cwd: repo.path, env });
+        assert.equal(result.code, EXIT_USAGE, `--${flag} ${value} was not refused by ${argv.join(' ')}`);
+        assert.match(result.out, new RegExp(`--${flag} ${value} is not `), `--${flag} ${value} was refused for the wrong reason`);
+      }
     }
 
-    // And a number outside the range is still clamped, because how many
-    // fragments to name and how much tail to print are preferences.
+    // And the reader is the only route: asking for a numeric flag as text is a
+    // programming error rather than a value somebody can then parse.
+    for (const flag of NUMERIC_FLAGS) {
+      assert.throws(() => flagString(parseArgs([`--${flag}`, '7']), flag), /read it with flagCount/);
+    }
+  } finally {
+    await cli(['daemon', 'stop'], { cwd: repo.path, env });
+  }
+});
+
+test('a preference clamps out of range and says what was asked for; a contract refuses', async () => {
+  const repo = tempRepo('cli-range');
+  const env = sandbox();
+  await cli(['init'], { cwd: repo.path, env });
+  try {
+    // `--n` is a preference: 99 is brought into the report's three-to-five
+    // range, and the payload reports both numbers rather than the clamp under
+    // the name of the request.
     const many = JSON.parse(
       (await cli(['spotlight', '--n', '99', '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
-    ) as { asked_for: number };
-    assert.equal(many.asked_for, 5, "the report's range is three to five, and --n is brought into it");
+    ) as { asked_for: number | null; fragments_max: number };
+    assert.equal(many.asked_for, 99, 'the field named for the request must carry the request');
+    assert.equal(many.fragments_max, 5, 'and the clamp is reported beside it, not instead of it');
+
+    const unasked = JSON.parse(
+      (await cli(['spotlight', '--no-model', '--format', 'json'], { cwd: repo.path, env })).out,
+    ) as { asked_for: number | null; fragments_max: number };
+    assert.equal(unasked.asked_for, null, 'nobody asked, so no number is reported as having been asked for');
+    assert.equal(unasked.fragments_max, 5);
+
     const tail = JSON.parse((await cli(['axi', 'logs', '--lines', '5000', '--format', 'json'], { cwd: repo.path, env })).out) as {
       lines: number;
     };
     assert.equal(tail.lines, 1000);
+
+    // `--top` is a contract: a count outside the range is refused rather than
+    // quietly turned into a different question.
+    const zero = await cli(['why', '--top', '0', '--format', 'json'], { cwd: repo.path, env });
+    assert.equal(zero.code, EXIT_USAGE);
+    assert.match(zero.out, /--top 0 is not a positive count/);
   } finally {
     await cli(['daemon', 'stop'], { cwd: repo.path, env });
   }

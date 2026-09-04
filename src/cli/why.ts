@@ -1,5 +1,5 @@
 import type { Context } from './context.js';
-import { flagString } from './args.js';
+import { flagCount, flagString } from './args.js';
 import { emitDoc, EXIT_OK, progress, UserFacingError } from './output.js';
 import type { ToonObject, ToonValue } from './toon.js';
 import { riskContext } from './risk-context.js';
@@ -26,17 +26,20 @@ import { resolveDefaultBranch } from '../rules/trusted.js';
  */
 export async function whyCommand(context: Context): Promise<number> {
   const target = context.args.positional[1];
-  const topRaw = flagString(context.args, 'top');
-  if (!target && topRaw === null) {
+  // A contract rather than a preference: a caller asking for the top billion
+  // files is told so, instead of silently getting one.
+  const asked = flagCount(context.args, 'top', {
+    what: 'a positive count',
+    help: ['For example: eyes-on why --top 10'],
+    min: 1,
+  });
+  if (!target && asked === null) {
     throw new UserFacingError('eyes-on why needs a file', [
       'Usage: eyes-on why <file>',
       'Without a file, `eyes-on why --top <n>` lists where risk lives in this repository',
     ]);
   }
-  const top = topRaw === null ? 0 : Number.parseInt(topRaw, 10);
-  if (topRaw !== null && (!Number.isFinite(top) || top <= 0)) {
-    throw new UserFacingError(`--top ${topRaw} is not a positive count`, ['For example: eyes-on why --top 10']);
-  }
+  const top = asked ?? 0;
 
   // `why` describes the repository as the default branch left it, so the range
   // that `check` needs is irrelevant here.
