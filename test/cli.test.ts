@@ -4,11 +4,12 @@ import { join } from 'node:path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { run as runCli } from '../src/cli/run.js';
-import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, type Writers } from '../src/cli/output.js';
-import { COMMANDS } from '../src/cli/commands.js';
+import { EXIT_ERROR, EXIT_OK, EXIT_USAGE, UserFacingError, type Writers } from '../src/cli/output.js';
+import { COMMANDS, type Stage } from '../src/cli/commands.js';
+import { stubCommand } from '../src/cli/stubs.js';
 import { flagString, parseArgs, NUMERIC_FLAGS } from '../src/cli/args.js';
 import { shortDir, stateRoot, tempDir, tempRepo } from './helpers.js';
-import { MAX_SOCKET_PATH_BYTES } from '../src/core/paths.js';
+import { MAX_SOCKET_PATH_BYTES, Paths } from '../src/core/paths.js';
 
 interface Captured {
   code: number;
@@ -110,6 +111,83 @@ test('an unimplemented command names the stage that owns it and exits 1', async 
     assert.equal(result.code, EXIT_ERROR, `${command.name} should exit 1`);
     assert.match(result.out, new RegExp(`not implemented yet: it is delivered in stage ${command.stage}`));
   }
+});
+
+/**
+ * The same invariant, against the mechanism rather than against the list.
+ *
+ * With every command in the registry built, the loop above walks an empty set
+ * and would pass whatever `stubCommand` did. The rule it protects is not about
+ * today's list - it is that a command named on the surface and not built must
+ * say so and exit non-zero, because a stub returning a plausible empty result
+ * would have an agent report "no risk found" for a change nobody assessed. So
+ * the mechanism is exercised with a spec of its own, and stays under test while
+ * nothing in the product reaches it.
+ */
+test('the not-implemented shape holds for a command the registry has not grown yet', () => {
+  const context = {
+    args: parseArgs([]),
+    paths: Paths.withRoot(stateRoot('cli-stub-shape')),
+    format: 'toon' as const,
+    writers: { out: () => {}, err: () => {} },
+    cwd: process.cwd(),
+    env: {},
+    guard: { insideGate: false, detail: '' },
+  };
+  const spec = {
+    name: 'coverage',
+    usage: 'eyes-on coverage [--base <ref>]',
+    summary: 'Patch coverage as a reading trigger.',
+    stage: 4 as unknown as Stage,
+    mutating: false,
+    implemented: false,
+  };
+  assert.throws(
+    () => stubCommand(context as unknown as Parameters<typeof stubCommand>[0], spec),
+    (error: unknown) => {
+      assert.ok(error instanceof UserFacingError);
+      assert.equal(error.code, EXIT_ERROR, 'a missing command exits 1, never 0 with an empty answer');
+      assert.match(error.message, /eyes-on coverage is not implemented yet: it is delivered in stage 4/);
+      // The delivered list is derived from the registry rather than written
+      // out, so it cannot go on naming an earlier stage's surface.
+      assert.ok(error.help.some((line) => line.includes('label')), 'the help names what has been delivered');
+      return true;
+    },
+  );
+});
+
+/**
+ * The recursion refusal outranks the not-implemented message for a mutating
+ * command, and it must not depend on the command being finished: the behaviour
+ * under test is the refusal.
+ */
+test('a mutating command that is not built still refuses from inside a no-mistakes run', () => {
+  const context = {
+    args: parseArgs([]),
+    paths: Paths.withRoot(stateRoot('cli-stub-gate')),
+    format: 'toon' as const,
+    writers: { out: () => {}, err: () => {} },
+    cwd: process.cwd(),
+    env: {},
+    guard: { insideGate: true, detail: 'NO_MISTAKES_GATE=1' },
+  };
+  const spec = {
+    name: 'coverage',
+    usage: 'eyes-on coverage',
+    summary: 'Patch coverage as a reading trigger.',
+    stage: 4 as unknown as Stage,
+    mutating: true,
+    implemented: false,
+  };
+  assert.throws(
+    () => stubCommand(context as unknown as Parameters<typeof stubCommand>[0], spec),
+    (error: unknown) => {
+      assert.ok(error instanceof UserFacingError);
+      assert.equal(error.code, EXIT_USAGE);
+      assert.match(error.message, /refusing to run "coverage" from inside a no-mistakes run/);
+      return true;
+    },
+  );
 });
 
 /**

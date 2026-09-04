@@ -32,11 +32,15 @@ correctness bug even when everything still passes:
   root, a prompt on stdin, and nothing pointing at the clone. Do not restate
   this as "nothing eyes-on runs writes into a clone";
 - never edit a pull request body, open, merge or review a pull request. **No
-  caller anywhere writes a gh argument vector.** A caller names one of six
-  `GhOperation`s and `src/gh/gh.ts` holds the six vectors literally; four read
+  caller anywhere writes a gh argument vector.** A caller names one of seven
+  `GhOperation`s and `src/gh/gh.ts` holds the seven vectors literally; five read
   and two write, both issue-comment endpoints. `doctor`'s credential probe is
-  one of the six - `ghAuthenticated` lives there - so the rule has no exception
-  to remember. `PATCH repos/o/r/issues/<n>` - the pull-request body - differs
+  one of the seven - `ghAuthenticated` lives there - so the rule has no
+  exception to remember. The seventh is stage 3's `pull-record`, a bare GET of
+  the pull request with no `--jq` at all: its fields are picked out and checked
+  in TypeScript, so a name GitHub did not send is reported as missing rather
+  than arriving as a silent null out of a jq expression nobody can see failing.
+  `PATCH repos/o/r/issues/<n>` - the pull-request body - differs
   from the permitted comment update by one path segment and simply has no
   operation, so no vector for it exists. This replaced an allow-list that
   parsed the vector, and the reason is the shape rather than the two bugs: the
@@ -63,12 +67,20 @@ a design violation, not a flaky test.
   `~/Projects/firstmate/projects/no-mistakes`. **Read-only.** Its line numbers in
   comments are from commit `a68298e`; grep for the symbol name rather than
   trusting the line.
-- **Measured results**: `docs/stage-2-acceptance.md`, `docs/stage-1-acceptance.md`
-  and `docs/stage-0-acceptance.md`. All are anchored by description rather than
-  by commit id, because a pull-request SHA does not survive the squash-merge
-  that lands it. `docs/stage-2-locality.mjs` re-derives the stage 2 locality
-  number; it reads the no-mistakes database through `?mode=ro` and writes
-  nothing anywhere.
+- **Measured results**: `docs/stage-3-acceptance.md`,
+  `docs/stage-2-acceptance.md`, `docs/stage-1-acceptance.md` and
+  `docs/stage-0-acceptance.md`. All are anchored by description rather than by
+  commit id, because a pull-request SHA does not survive the squash-merge that
+  lands it. Three scripts re-derive the numbers, and none of them writes into a
+  repository it reads: `docs/stage-2-locality.mjs` (it reads the no-mistakes
+  database through `?mode=ro`), `docs/stage-3-selfsufficiency.mjs`, which drives
+  `eyes-on label --dry-run` rather than reimplementing the link, with `NM_HOME`
+  pointed at an empty directory so the no-mistakes database is unreachable
+  rather than merely unused, and `docs/stage-3-register.mjs`, which is behind
+  section 4's register, leaks and calibrate tables. The last two **do** write,
+  each into a temporary state root of its own which it deletes afterwards: the
+  second runs `eyes-on init`, and the third adds `check` and a real, non-dry-run
+  `label`. The reference repository is only ever read.
 
 ## Commands
 
@@ -77,8 +89,8 @@ first) · `npm run genskill`.
 
 ## Every recorded fact carries what it was recorded against
 
-This governs stage 3 and everything after it, and it is here because the same
-shape broke five review rounds in a row, once per fact:
+This governed stage 3 and governs everything after it, and it is here because
+the same shape broke five review rounds in a row, once per fact:
 
 - a **drift grade** measures the pair (diff, intent), so `drift_intent` is
   recorded beside it and `carryDrift` decides whether it still answers the
@@ -87,9 +99,16 @@ shape broke five review rounds in a row, once per fact:
   `score_max` is recorded beside it and no renderer recomputes a denominator;
 - a **gate decision** answers a set of hard-rule hits, so `hits_fingerprint` and
   `config_sha` are recorded beside it and `decisionCovering` (`src/db/gate.ts`)
-  is what every surface asks - never "is there a decision".
+  is what every surface asks - never "is there a decision";
 - a **published comment** carries an assessment, so `prs.check_id` records which
-  one; a head alone does not name a check keyed on (repository, base, head).
+  one; a head alone does not name a check keyed on (repository, base, head);
+- a **register line** describes a merged change, so `src/ledger/ledger.ts`
+  carries every one of the above at once, plus three of its own: `band_from`,
+  because a band a hard rule forced does not move when a threshold moves and
+  `calibrate` holds those rows at `pelna`; `check_source`, which of the four
+  ways `label` found the assessment, which the row cannot be asked afterwards;
+  and the whole `link` - both sources' shas and whether they agreed, never one
+  merged answer.
 
 When a later run's context differs, the recorded fact **does not apply**: the
 grade is superseded, the run parks again. Adding a column for symmetry is not
@@ -245,6 +264,91 @@ consulted.
   measured reason as S1/S2: without the code filter a reviewer gets sent to
   `AGENTS.md`. The hard-rule union is the deliberate exception, because a rule
   must reach a `deploy/values.yaml` no code filter would keep.
+- **The file-level leak variant is refused by name, never merely absent.**
+  `leaks` recognises `--file-level`, `--files`, `--file` and `--variant` and
+  exits 2 saying the variant does not exist and why: its base rate is 45-73%,
+  so every channel scores nearly the same and no threshold can be argued from
+  it. Ignoring the flag would satisfy the acceptance condition's letter and
+  fail its point - a caller who passed it would believe they got what they
+  asked for. The reasoning is written out at the top of `src/ledger/leaks.ts`
+  because the variant is a two-line simplification of the code beneath it and
+  looks like an optimisation to anybody who has not seen the base rate.
+- **A merge time is a committer date, never an author date, and so is a fix
+  time.** For a squash merge the author date is when the branch's first commit
+  was written, days earlier; the committer date is when it landed. `merged_at`
+  takes GitHub's own answer when gh was read and falls back to
+  `CommitRecord.committed`, and the leak window starts there. Both ends of that
+  window read the same clock: `FixAttribution.committed` is what `leaks`
+  measures the fix side by, because a branch written before the change it fixes,
+  rebased onto it and landed afterwards has an author date *earlier* than the
+  merge it blames into, and a negative elapsed drops a real leak.
+- **Who is in the leak denominator is decided in one place, and the answer
+  carries whether time undoes it.** `classifyMerge` (`src/ledger/population.ts`)
+  is that place; `measureLeaks` builds the denominator from it, `calibrate`
+  sweeps the population that measurement produced rather than re-deriving
+  eligibility, and `label` asks it about the row it just wrote so the command a
+  person runs per merge says what `leaks` will do with it. A denominator holding
+  changes that structurally cannot leak - or that were never given the time to -
+  understates every rate in the table at once, so two rules exclude rather than
+  count clean. *Blame can never name a true merge commit*: it introduces no
+  line. The parent count behind that is one rule asked of whichever source can
+  answer it - the register row, and otherwise the object store - because a row
+  written from GitHub's `merge_commit_sha` alone carries none, which on a
+  `--no-ff` repository is every row. *A merge whose `--window` has not elapsed*
+  has had part of the period the rest of the denominator was given, and it is
+  the only reason that returns. `EXCLUSION_KINDS` declares three things beside
+  each reason - whether it is permanent, why blame cannot be attributed, and the
+  outlook: the remedy that really clears it or the explicit fact that nothing
+  does - and every surface *renders* that text rather than writing its own
+  sentence about it. A merge can satisfy several reasons at
+  once, so each one also declares `binding` and `classifyMerge` returns the most
+  binding applicable reason rather than the first tested - the order of the
+  tests decides nothing, and a reason with a remedy is never reported until it
+  is known that no more binding one applies, which is what the one git read per
+  row is paid for. `permanent` means the clock alone, so four of the five
+  permanent reasons carry a real remedy - label the pull request again, fetch
+  the branch, widen `--since` - that a surface must not turn into "nothing can
+  be done"; only the true merge commit is cleared by nothing. `sampleVerdict`
+  (`src/ledger/sample.ts`) takes the population beside the channels for the same
+  reason: a full register none of whose rows has had its window yet is the
+  ordinary first state of the product, and it must not read as an empty one. It
+  takes the *question* beside them because two commands ask different things of
+  one register: `leaks` measures what happened, so its channels are the ones the
+  denominator has merges in, while `calibrate` moves thresholds and can move
+  merges into a band that is empty today, so all three bands are a real
+  destination whose size matters. Two headers over one register are two answers,
+  each naming its own population in words, not a contradiction to unify - a
+  review round was lost to each module documenting the opposite rule with a
+  correct-sounding justification. Do not make the numbers agree; make each
+  sentence say which population it counted.
+- **The register is append-only and every reader takes the newest.**
+  `appendRecord` writes one line; nothing rewrites one. Re-labelling is
+  ordinary - a gate answered after the merge, a check re-run - and both lines
+  survive. `latestPerPull` is the single place that chooses, so two surfaces
+  cannot pick different rows for one pull request. A line this build cannot
+  read is counted in `skipped` and reported, never fatal: a register a later
+  version wrote into must still be readable by this one.
+- **`calibrate` sweeps one score scale.** A threshold compared with a score
+  computed under different weights compares two different numbers wearing one
+  name, which is what `score_max` beside every score exists to make visible.
+  Rows on another maximum are set aside and counted in `other_scales`, and rows
+  a hard rule forced to `pelna` are held there at every pair on the grid.
+- **A threshold pair that ties with the one in force is not a candidate.** The
+  sweep ranks on two numbers - what the `auto` channel leaks and how much
+  reading is paid - and neither can tell `wskazane` from `pelna`, so every pair
+  that only moves the boundary between the two reading channels scores exactly
+  what the current pair scores. Ranking those by anything else named 35/120
+  beside a current 35/65 on the reference register: arithmetically identical,
+  and an instruction to abolish the full-review channel for no measured gain.
+  `chooseCandidate` (`src/ledger/calibrate.ts`) requires a strictly lower read
+  share, and the refusal says how many pairs tied.
+- **A duration flag is read with `flagDuration` and never with `flagString`.**
+  `DURATION_FLAGS` (`src/cli/args.ts`) is the declaration that makes that
+  structural, exactly as `NUMERIC_FLAGS` is: `Number.parseInt('14d')` is 14 and
+  discards the unit without a sign of having done so, so `--window` read as a
+  string would silently mean days whatever was written. A bare number is
+  refused rather than assumed, because `--window` and `--since` default to
+  different spans.
 - **A history walk stops at the base, not the head.** Counting a branch's own
   commits as history lets it raise its own churn signal by committing more often.
 - **Every git read goes through `RepoReader`** (`src/git/reader.ts`): refs are

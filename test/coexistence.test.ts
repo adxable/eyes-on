@@ -372,19 +372,20 @@ test('acceptance: the mirror fetch reads the clone and writes only into the mirr
  *
  * The enforcement point is no longer a parser that reads an argument vector and
  * decides whether it writes. It is that **no caller can write an argument
- * vector at all**: a caller names one of six operations and `argvFor` holds the
- * six vectors. Review rounds found a parser diverging from gh - the attached
+ * vector at all**: a caller names one of seven operations and `argvFor` holds
+ * the seven vectors. Review rounds found a parser diverging from gh - the attached
  * shorthand `-XPATCH` read as a GET, and `gh api`'s implicit method, where
  * `--input` with no `--method` is sent as a POST - and both are asserted below
  * as vectors that cannot be produced and are refused if offered.
  */
 test('acceptance: no gh invocation can edit a pull request, merge one, or review one', () => {
-  // The vectors eyes-on can actually produce. There is no seventh, and this is
+  // The vectors eyes-on can actually produce. There is no eighth, and this is
   // the door: everything else in this test is shown to be outside it.
   const emitted = ([
     { op: 'repo-slug' },
     { op: 'auth-status' },
     { op: 'pull-head', slug: 'acme/widgets', number: 7 },
+    { op: 'pull-record', slug: 'acme/widgets', number: 7 },
     { op: 'list-comments', slug: 'acme/widgets', number: 7 },
     { op: 'create-comment', slug: 'acme/widgets', number: 7 },
     { op: 'update-comment', slug: 'acme/widgets', id: 9 },
@@ -394,9 +395,9 @@ test('acceptance: no gh invocation can edit a pull request, merge one, or review
     assert.doesNotThrow(() => assertAllowed(argv), `gh ${argv.join(' ')} is an invocation the product makes`);
   }
 
-  // Not one of the six writes to anything but a comment.
+  // Not one of the seven writes to anything but a comment.
   const writes = emitted.filter((argv) => argv.includes('--method'));
-  assert.equal(writes.length, 2, 'exactly two of the six write');
+  assert.equal(writes.length, 2, 'exactly two of the seven write');
   for (const argv of writes) {
     const endpoint = argv[3] as string;
     assert.match(endpoint, /^repos\/acme\/widgets\/issues\/(?:7\/comments|comments\/9)$/, `${endpoint} is a comment endpoint`);
@@ -426,11 +427,14 @@ test('acceptance: no gh invocation can edit a pull request, merge one, or review
     ['api', '--method=PATCH', 'repos/acme/widgets/pulls/7'],
     ['api', 'repos/acme/widgets/pulls/7', '--input', '-'],
     ['api', 'repos/acme/widgets/issues/7/comments', '--input', '-'],
-    // And a vector that is nearly one of the six: an extra token, a missing
-    // one, a token out of place.
+    // And a vector that is nearly one of the seven: an extra token, a missing
+    // one, a token out of place. The last pair is the register's bare GET of a
+    // pull request with a method or an input added to it.
     ['api', '--paginate', 'repos/acme/widgets/issues/7/comments', '--jq', '.[]'],
     ['api', '--method', 'POST', 'repos/acme/widgets/issues/7/comments'],
     ['api', '--method', 'PATCH', 'repos/acme/widgets/issues/7/comments', '--input', '-'],
+    ['api', '--method', 'POST', 'repos/acme/widgets/pulls/7'],
+    ['api', 'repos/acme/widgets/pulls/7', '--jq', '.body'],
   ];
   for (const argv of forbidden) {
     assert.throws(() => assertAllowed(argv), /refusing to run/, `gh ${argv.join(' ')} reached a process`);
@@ -439,11 +443,12 @@ test('acceptance: no gh invocation can edit a pull request, merge one, or review
 
   // The remaining influence a caller has is the slug and the number that go
   // into a path, so they are checked before they are placed: neither can shape
-  // an endpoint outside the six.
+  // an endpoint outside the seven.
   for (const operation of [
     { op: 'list-comments', slug: 'acme/widgets --method PATCH', number: 7 },
     { op: 'create-comment', slug: '../../pulls/7/merge', number: 7 },
     { op: 'pull-head', slug: 'acme/widgets/extra', number: 7 },
+    { op: 'pull-record', slug: '../../pulls/7/merge', number: 7 },
   ] as GhOperation[]) {
     assert.throws(() => argvFor(operation), /refusing to build/, `${JSON.stringify(operation)} produced a vector`);
   }
@@ -451,6 +456,7 @@ test('acceptance: no gh invocation can edit a pull request, merge one, or review
     { op: 'list-comments', slug: 'acme/widgets', number: 0 },
     { op: 'create-comment', slug: 'acme/widgets', number: -7 },
     { op: 'update-comment', slug: 'acme/widgets', id: 1.5 },
+    { op: 'pull-record', slug: 'acme/widgets', number: 0 },
   ] as GhOperation[]) {
     assert.throws(() => argvFor(operation), /refusing to build/, `${JSON.stringify(operation)} produced a vector`);
   }

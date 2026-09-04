@@ -21,7 +21,8 @@ below, are the standing evidence for them:
 **The fifth - locality - has no automated counterpart**, because it is a
 statement about one particular repository's history compared with what one
 particular reviewer said about it. It was measured in the session described
-below, and `docs/stage-2-locality.mjs` re-derives it.
+below and re-measured in the stage 3 session against the shipped agent
+configuration; `docs/stage-2-locality.mjs` re-derives it.
 
 ## The measured session
 
@@ -48,7 +49,7 @@ does not survive the squash-merge that lands it.
 | Test | Criterion | Result |
 |---|---|---|
 | Locality, stage 1 alone | the fragments land in a file the reviewer commented on, in ≥ 40% of the last 20 merged pull requests | **pass** - 16 of 20, **80%** |
-| Locality, stage 2 (model) | the same, with the model choosing | **pass** - 18 of 20, **90%**, measured before the agent's working directory moved under the state root and scheduled to be re-measured; see section 1 |
+| Locality, stage 2 (model) | the same, with the model choosing | **pass** - 17 of 20, **85%**, over two runs; re-measured against the shipped configuration in the stage 3 session, see section 1 |
 | Disjointness in the pull request | the body is byte-for-byte identical, and there is exactly one eyes-on comment however many recomputations | **pass** |
 | The gate | a hard-rule hit parks the run; `respond --action waive --reason` records the decision and the reason; no answer blocks anything but the eyes-on run | **pass** |
 | Emergency mode | `--no-model` returns stage 1 and calls no model once | **pass** |
@@ -99,7 +100,8 @@ the material supports.
 | 160 | 5 | 2 | 12 | 2 | 2 | yes |
 
 Median time per pull request: **1.13 s** against a warm blame cache, 37 s for the
-whole sweep.
+whole sweep; re-run in the stage 3 session it gave 1.20 s and 40 s, and the same
+sixteen hits and four misses.
 
 The four misses are #169, #165, #164 and #155. The reviewer anchored findings in
 one file on #165 and in two on #169: with five fragments drawn from twelve
@@ -108,52 +110,96 @@ what the arithmetic should be expected to do rather than a defect. #164 and #155
 are the harder pair - four reviewer files each, and stage one still went
 elsewhere.
 
-### Stage 2, with the model choosing: 18 of 20, 90%
+### Stage 2, with the model choosing: 17 of 20, 85%
 
 The same twenty pull requests, with the second stage running against `claude -p`
-for real - one call each, twenty calls in total. The sweep was run twice and
-both runs gave 18 of 20 with the same two misses, which is worth recording
-because a model call is not deterministic and one run would not have shown
-whether the number was.
+for real - one call each, twenty calls per sweep. The sweep is run twice and
+both figures are reported, because a model call is not deterministic and one run
+would not show whether the number was.
 
-**This figure was measured before the agent's working directory moved under the
-eyes-on state root** (section 6, and the reason is recorded there). Both sweeps
-ran a `claude -p` started inside the adx-worker clone, so it read that
-repository's own `CLAUDE.md` and `.claude/settings.json`; the shipped code no
-longer gives it either. That is a different measurement instrument, so 90% is
-evidence about the previous configuration and not about what this branch ships.
-Which way the number would move is **not known** - the instructions the agent
-was reading were adx-worker's own conventions, which could have helped it pick
-the file a reviewer went to or could have pulled it towards whatever those files
-emphasise. The sweep is scheduled to be re-run against the shipped configuration
-after this branch is released, reported to the captain, and the refreshed figure
-travels with stage 3; until then this number stands with the caveat rather than
-as the last word. Twenty real model calls inside a fix round would wedge the
-pipeline on the first rate limit, which is why it was not re-run here.
+When stage 2 shipped, both runs gave 18 of 20 with the same two misses. The
+figure that stands is the one below, re-measured against what the code actually
+ships.
 
-The stage 1 figure below takes **no** caveat: it is deterministic arithmetic
-with no model in it at all, so the working directory an agent would have been
-started in cannot touch it.
+### Re-measured against the shipped configuration, 4 September 2026
+
+This figure carried a caveat when stage 2 shipped, and the caveat is now
+settled. The original 18 of 20 was measured **before the agent's working
+directory moved under the eyes-on state root** (section 6): both sweeps ran a
+`claude -p` started inside the adx-worker clone, so it read that repository's
+own `CLAUDE.md` and `.claude/settings.json`, which the shipped code no longer
+gives it. That was a different measurement instrument, and which way the number
+would move was not known.
+
+Both sweeps were re-run in the stage 3 session against the shipped
+configuration - an agent started in `Paths.agentDir` with the prompt on stdin
+and nothing pointing at the clone - on the same twenty pull requests. **17 of
+20, 85%, in both runs.** The criterion is 40%.
 
 | | hits | rate | median wall clock |
 |---|---|---|---|
-| stage 1 alone (`--no-model`) | 16 / 20 | **80%** | 1.13 s |
-| stage 2 (model chooses) | 18 / 20 | **90%** | 11.7 s |
+| stage 1 alone (`--no-model`) | 16 / 20 | **80%** | 1.20 s |
+| stage 2 (model chooses), run 1 | 17 / 20 | **85%** | 11.5 s |
+| stage 2 (model chooses), run 2 | 17 / 20 | **85%** | 11.7 s |
+| stage 2, before the working directory moved | 18 / 20 | 90% | 11.7 s |
 
-The model recovered two of stage one's four misses - #164 and #165 - and lost
-none: its two misses, #169 and #155, are both in stage one's four. That is worth
-saying plainly rather than as an improvement: the second stage chooses better
-within the candidate set, and it cannot rescue a candidate set that never
-contained the reviewer's file.
+**What moved, and what it is worth.** The rate fell by one pull request in
+twenty, from 90% to 85%. Over a sample of twenty that difference is one case;
+it is reported because it is the measurement, not because the two are
+distinguishable. What did change in a way worth naming is the **stability of
+which** pull requests are missed. The earlier pair of sweeps missed #169 and
+#155 in both runs. These two miss #169 and #155 in both runs and then disagree
+on the third: run 1 also missed #164, run 2 also missed #178. A model call is
+not deterministic and one run would not have shown that, which is why the sweep
+is run twice.
+
+| PR | stage 1 | model run 1 | model run 2 | files the reviewer touched |
+|---|---|---|---|---|
+| 179 | yes | yes | yes | 5 |
+| 178 | yes | yes | **no** | 5 |
+| 177 | yes | yes | yes | 2 |
+| 176 | yes | yes | yes | 3 |
+| 175 | yes | yes | yes | 3 |
+| 174 | yes | yes | yes | 3 |
+| 173 | yes | yes | yes | 3 |
+| 172 | yes | yes | yes | 2 |
+| 171 | yes | yes | yes | 4 |
+| 170 | yes | yes | yes | 4 |
+| 169 | **no** | **no** | **no** | 2 |
+| 168 | yes | yes | yes | 3 |
+| 166 | yes | yes | yes | 1 |
+| 165 | **no** | yes | yes | 1 |
+| 164 | **no** | **no** | yes | 4 |
+| 163 | yes | yes | yes | 6 |
+| 162 | yes | yes | yes | 3 |
+| 161 | yes | yes | yes | 4 |
+| 155 | **no** | **no** | **no** | 4 |
+| 160 | yes | yes | yes | 2 |
+
+The stage 1 figure is **unchanged at 16 of 20**, with the same four misses, and
+it takes no caveat in either session: it is deterministic arithmetic with no
+model in it at all, so the working directory an agent would have been started in
+cannot touch it. That it did not move while the reviewer material grew from 182
+anchored findings to 203 is itself a small piece of evidence that the twenty
+pull requests are not sitting on a knife edge.
+
+Against stage 1, the model still recovers #165 - a one-file target stage one's
+twelve candidates went past - and in run 2 recovers #164 as well. Neither run
+rescues #169 or #155, and neither can: the second stage chooses within the
+candidate set the arithmetic produced, and it cannot reach a file that set never
+contained.
 
 It also narrowed the answer, from a median of 3.5 distinct files among the five
-fragments to 3.0, and returned four fragments rather than five on one pull
-request - it is asked for three to five and is not obliged to fill the range.
+fragments to 3.0 in both runs, and returned four fragments rather than five on
+#177 in both - it is asked for three to five and is not obliged to fill the
+range. Its categories over the two runs were 156 `correctness`, 27 `security`
+and 15 `maintainability`, and no `style` at all, which is what the prompt
+forbids.
 
-Ten seconds per pull request against one is the cost of the second stage: 255 s
-for the sweep against 37 s. That ratio is why `--no-model` is a first-class
-answer rather than a fallback, and why the second stage is one call rather than
-one per fragment.
+Ten seconds per pull request against one is the cost of the second stage: 248 s
+and 256 s for the two sweeps against 40 s. That ratio is why `--no-model` is a
+first-class answer rather than a fallback, and why the second stage is one call
+rather than one per fragment.
 
 Here is what stage two actually returns, on pull request #178 (`eyes-on spotlight
 --format md`, five fragments out of twelve candidates from the 37 rankable hunks
@@ -561,7 +607,9 @@ that database go through `?mode=ro`.
 
 - **Whether the fragments were the right ones.** Locality measures agreement
   with one reviewer's anchors, not correctness. Whether a reader who followed the
-  spotlight caught what mattered is a question for stage 3's `leaks`.
+  spotlight caught what mattered is a question for `leaks` over a register filled
+  as changes merge - which stage 3 delivers the machinery for and which needs
+  the calendar time `docs/stage-3-acceptance.md` section 5 names.
 - **The second stage's cost in tokens.** The measurement records wall-clock time
   per pull request, not the model's own accounting.
 - **Model agents other than `claude`.** `codex`, `copilot`, `cursor-agent`,

@@ -292,6 +292,10 @@ export interface StubGh {
   calls(): string[][];
   /** The comments the fake pull request holds. */
   comments(): { id: number; body: string; user?: { login: string } }[];
+  /** PATH with the fake `gh` in front of it, and git behind it and nothing
+   *  else. For a test that must prove eyes-on reached GitHub and no other
+   *  program. */
+  dir: string;
   /** The pull request body, so a test can prove it did not move. */
   body(): string;
 }
@@ -316,6 +320,21 @@ export function stubGh(
     body: string;
     /** Comments already on the pull request, from whoever put them there. */
     comments?: readonly { id: number; body: string; user?: { login: string } }[];
+    /**
+     * What the pull request itself answers, for the ledger's read of it.
+     *
+     * Absent means an open pull request that merged nothing, which is the
+     * honest default: a stub that merged by default would let a test about a
+     * merged change pass without ever saying so.
+     */
+    pull?: {
+      state?: string;
+      merged?: boolean;
+      merged_at?: string | null;
+      merge_commit_sha?: string | null;
+      title?: string;
+      base_ref?: string;
+    };
   },
 ): StubGh {
   const dir = tempDir(`${prefix}-gh`);
@@ -359,7 +378,21 @@ if (args[0] === 'repo' && args[1] === 'view') {
 if (args[0] !== 'api' || !endpoint) { process.stderr.write('unsupported: ' + args.join(' ') + '\\n'); process.exit(1); }
 if (method === 'GET' && endpoint === 'repos/' + state.slug + '/pulls/' + state.number) {
   if (state.headSHA === null) { process.stderr.write('gh: Not Found (HTTP 404)\\n'); process.exit(1); }
-  writeAll(state.headSHA + '\\n');
+  // Two vectors read this path: one asks for the head sha through --jq, the
+  // other for the whole pull request and picks its fields out in TypeScript.
+  if (args.includes('--jq')) { writeAll(state.headSHA + '\\n'); process.exit(0); }
+  const pull = state.pull || {};
+  out({
+    number: state.number,
+    state: pull.state || 'open',
+    merged: pull.merged === true,
+    merged_at: pull.merged_at === undefined ? null : pull.merged_at,
+    merge_commit_sha: pull.merge_commit_sha === undefined ? null : pull.merge_commit_sha,
+    head: { sha: state.headSHA, ref: 'feature' },
+    base: { ref: pull.base_ref || 'main' },
+    title: pull.title === undefined ? 'a pull request' : pull.title,
+    html_url: 'https://example.invalid/pr/' + state.number,
+  });
   process.exit(0);
 }
 if (method === 'GET' && endpoint === 'repos/' + state.slug + '/issues/' + state.number + '/comments') {
@@ -391,6 +424,7 @@ process.exit(1);
   );
   return {
     path: `${dir}:${process.env.PATH ?? ''}`,
+    dir,
     calls(): string[][] {
       try {
         return readFileSync(join(dir, 'calls.jsonl'), 'utf8')

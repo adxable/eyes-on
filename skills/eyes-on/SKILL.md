@@ -35,16 +35,9 @@ this skill tells you what a reviewer must look at.
 | `eyes-on spotlight [--base <ref>] [--head <ref>] [--default-branch <ref>] [--n 5] [--intent "..."] [--no-model]` | Rank the three to five fragments a human should actually read. Two stages: arithmetic over git narrows the diff to twelve candidates, then one model call picks a few and says why. --no-model returns stage one and calls nothing. |
 | `eyes-on drift [--base <ref>] [--head <ref>] [--default-branch <ref>] [--intent "..."] [--no-model]` | Compare the stated intent with what the diff actually does, in two passes: one model describes the diff without seeing the intent, a second compares that description with it. The grade is folded into the recorded check as signal S7, so the score, its maximum and the band move with it. This command itself is never a gate. |
 | `eyes-on comment --pr <n> [--check-id <id>] [--base <ref>] [--head <ref>] [--default-branch <ref>] [--dry-run]` | Publish the single sticky eyes-on comment on a pull request, found by its marker and updated in place. Never touches the body, never merges, never files a review. |
-
-## Commands that are planned but not built yet
-
-Calling one of these prints `error:` with the stage that owns it and exits 1. It never returns a made-up answer.
-
-| Command | Stage | What it will do |
-|---|---|---|
-| `eyes-on label --pr <n>` | stage 3 | Record the channel, the decision and the merge commit in the ledger after a merge. |
-| `eyes-on leaks [--window 14d] [--since 90d]` | stage 3 | Report post-merge fixes per channel - the line-level variant only. |
-| `eyes-on calibrate` | stage 3 | Propose thresholds from the ledger by sweeping them over recorded history. |
+| `eyes-on label --pr <n> [--check-id <id>] [--default-branch <ref>] [--dry-run]` | Append one register line for a merged change: the channel it merged under, the gate decision and the hits it answered, the drift grade and the intent it was measured against, and the commit that landed it. The chain from the change to that commit is reconstructed from the `(#N)` subject on the default branch and from GitHub, and the record says whether the two agree. Append-only; --dry-run reconstructs everything and writes nothing. |
+| `eyes-on leaks [--window 14d] [--since 90d] [--default-branch <ref>]` | Report, per channel, how often a registered merge was followed by a fix whose blame names it - the line-level variant only, because the file-level one has a base rate of 45-73% and can argue for no threshold. Below a hundred merges in a channel the header says the numbers are directional. Exits 0 whatever they are. |
+| `eyes-on calibrate [--window 14d] [--since 90d] [--default-branch <ref>]` | Sweep a grid of thresholds over the register: what each pair would have sent to a human, and how much of what it let through leaked. Writes nothing - the thresholds live on the default branch, which eyes-on reads and never writes. |
 
 ## The order these commands go in
 
@@ -72,6 +65,27 @@ eyes-on axi respond --action waive --reason "why this is safe to merge unread"
 A waiver without a reason is refused. **The park holds nothing up outside eyes-on** - no exit code
 changes, no push waits, no pull request goes red. What it does is record that somebody was told and what
 they decided, so the channel label is evidence rather than a declaration.
+
+## After the merge: the register
+
+A merged change leaves one append-only line in the register, and that line is what makes the thresholds
+arguable later rather than merely set:
+
+```sh
+eyes-on label --pr 42          # after the merge; --dry-run reconstructs and writes nothing
+eyes-on leaks --window 14d     # per channel: how often a merge was followed by a fix that blames it
+eyes-on calibrate              # what each pair of thresholds would have caught, and let through
+```
+
+`label` reconstructs the chain from the change to the commit that landed it using the `(#N)` subject a
+squash merge leaves and GitHub's own answer, and records whether the two agree. It refuses to write a
+line for a change eyes-on never assessed, because a register row inventing a channel would put that
+change into the very comparison the register exists to make.
+
+`leaks` reports the **line-level** variant only - a later fix whose blame names the merge commit. There
+is no flag for the file-level one and asking for it is refused: its base rate is 45-73%, so every channel
+scores nearly the same and no threshold can be argued from it. Below a hundred merges in a channel both
+commands say in their header that the numbers are directional. Neither blocks anything.
 
 ## Output contract
 

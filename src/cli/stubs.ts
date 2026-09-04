@@ -6,10 +6,12 @@ import { implementedCommands, type CommandSpec } from './commands.js';
 /**
  * Commands that are named but not built yet.
  *
- * With stage 1 delivered, what is left here belongs to stages 2 and 3: the
- * fragment ranking, the drift signal, the pull-request surface and the ledger
- * commands. They exist here so the surface is stable and the skill can describe
- * the whole product - and they fail loudly, naming the stage that owns them.
+ * With stage 3 delivered there are none: every entry in the registry has a
+ * handler, and `plannedCommands()` is empty. This stays because the registry is
+ * how the surface grows - a stage 4 signal is added there first - and because
+ * the shape it enforces is the point rather than the list it currently holds.
+ * `test/cli.test.ts` exercises it against a synthetic spec for that reason, so
+ * the invariant is under test even while nothing in the product reaches it.
  *
  * A stub that returned a plausible-looking empty result would be worse than no
  * command at all: the agent calling it would report "no risk found" for a

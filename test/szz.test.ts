@@ -16,7 +16,7 @@ function readerFor(clonePath: string): RepoReader {
 }
 
 test('a fix commit is recognised by subject, and a revert by its own shape', () => {
-  const commit = (subject: string) => ({ sha: 'a'.repeat(40), timestamp: 0, subject, parents: [], files: [] });
+  const commit = (subject: string) => ({ sha: 'a'.repeat(40), timestamp: 0, committed: 0, subject, parents: [], files: [] });
   assert.equal(isFixCommit(commit('fix: the thing'), FIX_PATTERN), true);
   assert.equal(isFixCommit(commit('hotfix(api): the thing'), FIX_PATTERN), true);
   assert.equal(isFixCommit(commit('Revert "feat: the thing"'), FIX_PATTERN), true);

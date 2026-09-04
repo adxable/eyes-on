@@ -182,11 +182,7 @@ function helpLines(
     lines.push(
       `${uncheckedSentence(view.reason)}, so eyes-on never looked at the pull request: whether an eyes-on comment is already there, and whether this pull request still points at the assessed commit, are unknown rather than no and not stale`,
     );
-    lines.push(
-      view.reason === 'gh-missing'
-        ? 'Install the GitHub CLI and run `gh auth login` to publish; the comment above is rendered from what was recorded and needs no gh'
-        : 'Run `gh auth status`, and `gh repo view` in this clone to see what gh reports; publishing needs a repository gh can name',
-    );
+    lines.push(uncheckedRemedy(view.reason));
   }
   if (fragments === 0) lines.push('The comment has no fragments to read: run `eyes-on spotlight` and publish again');
   if (stale.state === 'stale') {
@@ -258,11 +254,28 @@ function parsePr(args: ParsedArgs): number {
   return number;
 }
 
+/** What clears each unchecked state, in the words that are true of it. */
+function uncheckedRemedy(reason: UncheckedReason): string {
+  switch (reason) {
+    case 'gh-missing':
+      return 'Install the GitHub CLI and run `gh auth login` to publish; the comment above is rendered from what was recorded and needs no gh';
+    case 'no-repository':
+      return 'Run `gh auth status`, and `gh repo view` in this clone to see what gh reports; publishing needs a repository gh can name';
+    case 'gh-error':
+      return 'GitHub answered gh with an error; the call may succeed later, and the comment above is rendered from what was recorded and needs no gh';
+  }
+}
+
 /** What each unchecked state is, in the words that are true of it. */
 function uncheckedSentence(reason: UncheckedReason): string {
-  return reason === 'gh-missing'
-    ? 'The GitHub CLI is not installed'
-    : 'gh ran but could not name a GitHub repository for this clone';
+  switch (reason) {
+    case 'gh-missing':
+      return 'The GitHub CLI is not installed';
+    case 'no-repository':
+      return 'gh ran but could not name a GitHub repository for this clone';
+    case 'gh-error':
+      return 'gh ran and GitHub answered with an error';
+  }
 }
 
 /**

@@ -28,6 +28,9 @@ import { exportPathInstructionsCommand } from './export-cmd.js';
 import { spotlightCommand } from './spotlight-cmd.js';
 import { driftCommand } from './drift-cmd.js';
 import { commentCommand } from './comment-cmd.js';
+import { labelCommand } from './label-cmd.js';
+import { leaksCommand } from './leaks-cmd.js';
+import { calibrateCommand } from './calibrate-cmd.js';
 import { stubCommand } from './stubs.js';
 import { version, PRODUCT_NAME } from '../core/version.js';
 
@@ -69,6 +72,9 @@ const HANDLERS = new Map<string, Handler>([
   ['spotlight', spotlightCommand],
   ['drift', driftCommand],
   ['comment', commentCommand],
+  ['label', labelCommand],
+  ['leaks', leaksCommand],
+  ['calibrate', calibrateCommand],
 ]);
 
 /** Commands whose machine payload is the primary output, so TOON is the default. */
@@ -189,9 +195,15 @@ function helpText(): string {
   for (const command of implementedCommands()) {
     lines.push(`  ${command.usage}`);
   }
-  lines.push('', 'Planned (these report the stage that owns them and exit 1):');
-  for (const command of plannedCommands()) {
-    lines.push(`  ${command.usage}  [stage ${command.stage}]`);
+  // The planned section appears only when there is something in it. An empty
+  // list under a heading promising one tells a reader there are surfaces being
+  // withheld, which with every command built is not true.
+  const planned = plannedCommands();
+  if (planned.length > 0) {
+    lines.push('', 'Planned (these report the stage that owns them and exit 1):');
+    for (const command of planned) {
+      lines.push(`  ${command.usage}  [stage ${command.stage}]`);
+    }
   }
   lines.push(
     '',
