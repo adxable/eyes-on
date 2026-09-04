@@ -59,6 +59,10 @@ export interface SampleVerdict {
  * for a fortnight. Telling the second reader to run the command they have just
  * run twenty times is a sentence stronger than the code, at the first moment
  * they read one.
+ *
+ * Two commands print this sentence, so it names no command that one of them
+ * *is*: pointing a `leaks` reader at `eyes-on leaks` is the same defect wearing
+ * the other branch's clothes.
  */
 export function sampleVerdict(channels: readonly ChannelSize[], population: PopulationState): SampleVerdict {
   const short = channels
@@ -105,6 +109,6 @@ function emptySentence(population: PopulationState): string {
     'compare. ' +
     (waiting > 0
       ? `${waiting} of them ${waiting === 1 ? 'joins' : 'join'} the table once ${waiting === 1 ? 'its' : 'their'} window has passed; labelling more merges is still the way the count gets to ${MIN_MERGES_PER_CHANNEL}.`
-      : 'None of them returns by waiting - run `eyes-on leaks` for what each row is missing.')
+      : 'Waiting admits none of them: the reasons named are what would have to change.')
   );
 }

@@ -20,11 +20,13 @@
  * that distribution. Read it as what the register will look like, measured on
  * real merges, and not as what a team decided.
  *
- * **Everything it touches is read-only.** The reference clone is only ever read,
- * gh is only ever read - `label` makes one GET per pull request and the two
- * writing endpoints are not among them - and eyes-on runs against a temporary
- * state root that is deleted afterwards, with `NM_HOME` pointed at an empty
- * directory.
+ * **What it reads and what it writes.** The reference clone is only ever read,
+ * and gh is only ever read - `label` makes one GET per pull request and the two
+ * writing endpoints are not among them. This script itself **does** write: it
+ * runs `eyes-on init`, `check` and a real, non-dry-run `label`, all into a
+ * temporary state root of its own which it deletes afterwards, with `NM_HOME`
+ * pointed at an empty directory. Nothing it writes lands in a repository it
+ * reads.
  *
  * Usage:
  *   node docs/stage-3-register.mjs [--repo <path>] [--n <count>] [--json <file>]

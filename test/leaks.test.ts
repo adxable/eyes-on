@@ -299,6 +299,14 @@ test('a true merge commit is left out of the denominator rather than counted cle
     doc.help.some((line) => line.includes('blame never names a merge commit as introducing a line')),
     'the exclusion is explained where the numbers are read',
   );
+  // Every registered row is out for good, so the header says that - without
+  // telling a `leaks` reader to run `eyes-on leaks`.
+  assert.match(doc.sample_sentence, /Nothing here is measurable yet/);
+  assert.match(doc.sample_sentence, /Waiting admits none of them/);
+  assert.ok(
+    !doc.sample_sentence.includes('run `eyes-on leaks`'),
+    `the sentence is printed by leaks itself: ${doc.sample_sentence}`,
+  );
 });
 
 
@@ -374,8 +382,10 @@ test('a merge whose window has not elapsed leaves the denominator with the reaso
     'and it is in no channel row either, so no rate is computed over it',
   );
   assert.ok(
-    doc.help.some((line) => line.includes('not had the whole window')),
-    `the exclusion is explained where the numbers are read: ${JSON.stringify(doc.help)}`,
+    doc.help.some(
+      (line) => line.includes('not passed yet') && line.includes('the denominator takes it back once 14d has passed'),
+    ),
+    `the one reason time undoes says so, with the window it waits for: ${JSON.stringify(doc.help)}`,
   );
 
   // The same register measured over a window it has had counts it again: the
@@ -514,11 +524,15 @@ test('a merge that is both inside its window and structurally excluded is report
     { pr: 10, merge: absent.slice(0, 12), reason: 'commit not in this repository', permanent: true },
   ]);
   assert.ok(
-    doc.help.every((line) => !line.includes('returns to the denominator') && !line.includes('they return to the denominator')),
+    doc.help.every((line) => !line.includes('takes them back') && !line.includes('takes it back')),
     `a permanent exclusion may not promise a return: ${JSON.stringify(doc.help)}`,
   );
+  // Each reason's own words, including the remedy that really clears it. The
+  // true merge commit has none and says so; the absent commit is a fetch away.
+  assert.ok(doc.help.some((line) => line.includes('Nothing clears this one')));
+  assert.ok(doc.help.some((line) => line.includes('Fetch the default branch into this clone')));
   assert.ok(
-    !doc.help.some((line) => line.includes('not had the whole window')),
+    !doc.help.some((line) => line.includes('not passed yet')),
     `neither row comes back once the window passes, so nothing may promise it: ${JSON.stringify(doc.help)}`,
   );
 });
@@ -548,6 +562,10 @@ test('a full register whose merges are all too young says so, and does not call 
   assert.match(doc.sample_sentence, /Nothing here is measurable yet/);
   assert.match(doc.sample_sentence, /holds 2 merges/);
   assert.match(doc.sample_sentence, /window has passed/, 'these rows come back, and the sentence may say so');
+  assert.ok(
+    !doc.sample_sentence.includes('run `eyes-on leaks`'),
+    `two commands print this sentence, so it may not name one of them: ${doc.sample_sentence}`,
+  );
   assert.ok(
     !doc.sample_sentence.includes('run `eyes-on label --pr <n>`'),
     `the reader has just run label twenty times: ${doc.sample_sentence}`,

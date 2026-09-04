@@ -21,20 +21,31 @@ import type { LedgerRecord } from './ledger.js';
  * about the row it has just written so the command a person actually runs per
  * merge can say what `leaks` will do with it.
  *
- * ## Permanence is declared, not positional
+ * ## A reason carries its own words
  *
- * Every reason carries `permanent` at its definition, and `classifyMerge` asks
- * for a permanent reason before it asks for a pending one. So the order of the
- * tests cannot decide whether an exclusion is described as temporary: a true
- * merge commit that landed this morning is both structurally unattributable and
- * inside its window, and only the first of those is true of it forever. A
- * surface may promise a row returns only when the reason says it does.
+ * `EXCLUSION_KINDS` holds, beside each reason: whether it is permanent, why
+ * blame cannot be attributed, and the outlook - what actually clears it, or the
+ * explicit fact that nothing does. Every surface *renders* that text and none
+ * of them writes a sentence of its own about a reason. Unifying the decision
+ * was not enough: each surface still authored its own words beside it and two
+ * of them went wrong in the round after. A reason added later now arrives with
+ * its wording attached, so a surface that has never been taught about it still
+ * describes it correctly.
  *
  * `permanent` is about the passage of time and nothing else: it is false when a
  * later run over the same range admits the row simply because more time has
- * gone by. Widening `--since`, repairing a clone or re-labelling a pull request
- * are different states of the machine, not of the clock, and none of them makes
- * a reason non-permanent.
+ * gone by. Widening `--since`, fetching into a clone or re-labelling a pull
+ * request are different states of the machine, not of the clock, so none of
+ * them makes a reason non-permanent - and every one of them is a real remedy,
+ * which is why `outlook` exists rather than a bare "nothing to be done". Two of
+ * the five permanent reasons are cleared by an ordinary user action, and one of
+ * those - labelling a merge before pulling it - is the commonest flow there is.
+ *
+ * `classifyMerge` asks for a permanent reason before it asks for a pending one,
+ * so the order of the tests cannot decide whether an exclusion is described as
+ * temporary: a true merge commit that landed this morning is both structurally
+ * unattributable and inside its window, and only the first of those is true of
+ * it forever.
  */
 
 /** The default leak window and history span (report Appendix C.1). They live
@@ -56,37 +67,81 @@ export interface ExclusionKind {
   /** False only when the mere passage of time admits the row on a later run
    *  over this same range. Exactly one reason is in that state. */
   permanent: boolean;
-  /** Why blame cannot be attributed, as a clause following a colon. */
+  /** Why blame cannot be attributed, as a clause following a colon. Written so
+   *  it reads the same about one row and about twenty. */
   because: string;
+  /**
+   * What happens next: the remedy that really clears this reason, or the
+   * explicit fact that nothing does, with whatever qualifier makes the claim
+   * true. This is the only place any surface takes those words from.
+   *
+   * `{them}`, `{they}` and `{window}` are the three substitutions a renderer
+   * makes - "them"/"it", "they"/"it" and the window as the flag would be
+   * written. Every sentence here reads correctly under both numbers.
+   */
+  outlook: string;
 }
 
 export const EXCLUSION_KINDS: Record<ExclusionReason, ExclusionKind> = {
   'no merge commit': {
     permanent: true,
-    because: 'nothing named a commit for it, so there is no commit to blame onto',
+    because: 'no source named a commit to blame onto',
+    outlook:
+      'Waiting does not change that. Find which commit landed the change - `eyes-on label` prints what each source said - and label the pull request again once both name it.',
   },
   'no merge time': {
     permanent: true,
-    because: 'nothing named a merge time, so its window has no start',
+    because: 'no source named when the change merged, so the window has no start',
+    outlook:
+      'Waiting does not change that. Label the pull request again with gh reachable, or once the commit that landed it is on the default branch, so a merge time is recorded.',
   },
   'outside --since': {
     permanent: true,
-    because: 'it merged before the period this report covers',
+    because: 'the merge is older than the period this report covers',
+    outlook:
+      'No run over this `--since` admits {them}, however long anyone waits - but a wider one does: pass a longer `--since` to count {them}.',
   },
   'merge commit introduces no line': {
     permanent: true,
     because:
-      'blame never names a merge commit as introducing a line, so no fix can be attributed to a true merge commit rather than a squash',
+      'blame never names a merge commit as introducing a line, so a true merge commit can carry no attributed fix',
+    outlook:
+      'Nothing clears this one: it is a property of the commit rather than of this run. A change landed as a squash merge produces a row this measurement can use.',
   },
   'commit not in this repository': {
     permanent: true,
     because: 'the object store this run read does not hold the commit',
+    outlook:
+      'Waiting does not fetch it. Fetch the default branch into this clone and label the pull request again - labelling a merge before pulling it is the ordinary way to reach this state.',
   },
   'window has not elapsed': {
     permanent: false,
-    because: 'it has not had the whole window every merge in the denominator was given to leak in',
+    because: 'the whole window every merge in the denominator was given to leak in has not passed yet',
+    outlook:
+      'This is the one reason time alone undoes: the denominator takes {them} back once {window} has passed since {they} landed.',
   },
 };
+
+/**
+ * The reason's own words about one row or about several.
+ *
+ * Every surface calls this rather than writing a sentence beside the flag. The
+ * count decides only the pronouns.
+ */
+export function exclusionOutlook(reason: ExclusionReason, options: { plural: boolean; windowLabel: string }): string {
+  return EXCLUSION_KINDS[reason].outlook
+    .replaceAll('{them}', options.plural ? 'them' : 'it')
+    .replaceAll('{they}', options.plural ? 'they' : 'it')
+    .replaceAll('{window}', options.windowLabel);
+}
+
+/** What `leaks` will do with one registered merge, in the reason's own words. */
+export function exclusionSentence(reason: ExclusionReason, windowLabel: string): string {
+  return (
+    `\`eyes-on leaks\` leaves this row out of the denominator as \`${reason}\`: ${EXCLUSION_KINDS[reason].because}. ` +
+    exclusionOutlook(reason, { plural: false, windowLabel })
+  );
+}
 
 /** A registered merge that is not in the denominator, and which state it is
  *  in. Reported rather than dropped: a population silently narrowed is a rate
@@ -136,14 +191,18 @@ function permanentExclusion(record: LedgerRecord, options: ClassifyOptions): Exc
   if (mergeSHA === null) return 'no merge commit';
   if (record.merged_at === null) return 'no merge time';
   if (record.merged_at < options.sinceSeconds) return 'outside --since';
-  if (!options.reader.has(mergeSHA)) return 'commit not in this repository';
+  // One read answers both remaining questions: git names no commit it does not
+  // hold, so a null here is the same fact `cat-file -e` would have reported, at
+  // one spawn per row rather than two.
+  const commit = options.reader.commit(mergeSHA);
+  if (commit === null) return 'commit not in this repository';
   // The parent count is one rule asked of whichever source can answer it. A row
   // written from GitHub's `merge_commit_sha` alone carries none - nothing on
   // the default branch named that commit - and on a repository that merges with
   // `--no-ff` that is every row, which is the repository this exclusion exists
-  // for. The guard above has just established the object store holds it.
-  const parents = record.merge_parents ?? options.reader.commit(mergeSHA)?.parents.length ?? null;
-  if (parents !== null && parents > 1) return 'merge commit introduces no line';
+  // for.
+  const parents = record.merge_parents ?? commit.parents.length;
+  if (parents > 1) return 'merge commit introduces no line';
   return null;
 }
 
@@ -191,19 +250,17 @@ export interface PopulationState {
 }
 
 /**
- * One help line per exclusion reason present, with the promise the reason
- * actually carries and no other.
+ * One help line per exclusion reason present, in the reason's own words.
  *
  * Generated rather than written per reason at each surface: a hand-written line
  * beside a flag is the construct that let a structural exclusion be described
- * as a temporary one for a whole review round.
+ * as a temporary one for a whole review round, and a recoverable one be
+ * reported as final in the round after.
  */
 export function exclusionHelpLines(excluded: readonly ExcludedMerge[], windowLabel: string): string[] {
   return countExclusions(excluded).map((entry) => {
     const many = entry.merges !== 1;
     const head = `${entry.merges} registered merge${many ? 's are' : ' is'} outside the denominator as \`${entry.reason}\`: ${EXCLUSION_KINDS[entry.reason].because}`;
-    return entry.permanent
-      ? `${head}, and no later run over this range admits ${many ? 'them' : 'it'} by waiting`
-      : `${head}, so ${many ? 'they return' : 'it returns'} to the denominator once ${windowLabel} has passed since ${many ? 'they' : 'it'} landed`;
+    return `${head}. ${exclusionOutlook(entry.reason, { plural: many, windowLabel })}`;
   });
 }

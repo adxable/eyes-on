@@ -13,7 +13,7 @@ import { linkPull, mergedPulls, type MergeCommit, type PullLink } from '../ledge
 import { appendRecord, readLedger, LEDGER_VERSION, type CheckSource, type LedgerRecord } from '../ledger/ledger.js';
 import {
   classifyMerge,
-  EXCLUSION_KINDS,
+  exclusionSentence,
   DEFAULT_SINCE_SECONDS,
   DEFAULT_WINDOW_SECONDS,
   type ExclusionReason,
@@ -477,17 +477,25 @@ function recordedDoc(record: LedgerRecord, options: DocOptions): ToonObject {
 }
 
 /**
- * The reason `leaks` will never count this row, or null.
+ * The reason `leaks` will not count this row at the range it runs over by
+ * default, or null.
  *
  * Read off the one classifier rather than re-tested here, and only where no
  * other line already says it: a row naming no merge commit is described by its
  * agreement above, and the case nothing else covers is a row that names one and
- * still cannot be measured.
+ * still cannot be measured. What that state means, and what clears it, is the
+ * reason's own text - this decides only whether to print it.
  */
 function permanentlyUnmeasurable(record: LedgerRecord, options: DocOptions): ExclusionReason | null {
   if (record.merge_sha === null) return null;
   const verdict = options.measurable;
   return !verdict.eligible && verdict.permanent ? verdict.reason : null;
+}
+
+/** The default window, written as the flag that produces it. `label` reports
+ *  what `leaks` does when nobody passes one. */
+function defaultWindowLabel(): string {
+  return `${DEFAULT_WINDOW_SECONDS / 86_400}d`;
 }
 
 function helpLines(record: LedgerRecord, options: DocOptions): string[] {
@@ -532,9 +540,7 @@ function helpLines(record: LedgerRecord, options: DocOptions): string[] {
   // measured, which nothing else on this surface says.
   const unmeasurable = permanentlyUnmeasurable(record, options);
   if (unmeasurable !== null) {
-    lines.push(
-      `\`eyes-on leaks\` will leave this row out of the denominator as \`${unmeasurable}\`: ${EXCLUSION_KINDS[unmeasurable].because}. The row is recorded as it is; nothing here is measurable by waiting`,
-    );
+    lines.push(exclusionSentence(unmeasurable, defaultWindowLabel()));
   }
   if (options.unread === 'gh-missing') {
     lines.push('Install the GitHub CLI and run `gh auth login` to confirm the merge commit from GitHub as well as from git');
@@ -572,6 +578,7 @@ function unrecordableDoc(
   found: Found,
   failure: UserFacingError,
 ): ToonObject {
+  const named = link.merge_sha === null ? null : link.git;
   return {
     pr: number,
     dry_run: true,
@@ -587,10 +594,12 @@ function unrecordableDoc(
     github_merge_sha: link.github?.merge_commit_sha ?? null,
     git_candidates: link.git_candidates,
     merge_sha: link.merge_sha,
-    merge_parent_sha: link.git?.parent ?? null,
-    merge_parents: mergeParents,
+    // Never a fact about a commit this link deliberately does not name, so a
+    // dry run and a recorded row describe one pull request the same way.
+    merge_parent_sha: named?.parent ?? null,
+    merge_parents: link.merge_sha === null ? null : mergeParents,
     head_sha: link.github?.head_sha ?? null,
-    merged_at: link.github?.merged_at ?? link.git?.committed ?? null,
+    merged_at: link.github?.merged_at ?? named?.committed ?? null,
     github_read: link.unread === null,
     github_unread_reason: link.unread,
     check_id: null,
@@ -634,6 +643,15 @@ function renderMarkdown(record: LedgerRecord, doc: ToonObject): string {
       ? `_Nothing was written. A real run would append one line to \`${String(doc.ledger)}\`._`
       : `_One line appended to \`${String(doc.ledger)}\`. The register is append-only._`,
   );
+  // Every help line, and in the format this command prints by default. A row
+  // `leaks` will not measure, a gate nobody answered and a link only one source
+  // confirmed are said here and nowhere else on this surface, so a reader of
+  // the default output would otherwise never meet them.
+  const help = doc.help as string[];
+  if (help.length > 0) {
+    lines.push('');
+    for (const line of help) lines.push(`- ${line}`);
+  }
   return lines.join('\n');
 }
 

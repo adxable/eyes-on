@@ -160,15 +160,12 @@ deciding from arrives after roughly three months at the reference repository's
 merge rate.
 
 `src/ledger/sample.ts` is the single place that sentence exists, and both
-commands take it from there:
+commands take it from there. No quote of it appears here: a blockquote presented
+as command output has to be the output of the session this document reports, and
+the numbers in that sentence are the channel sizes of the register measured in
+section 4.
 
-> **These numbers are directional, not decisive.** 2 of 3 channels carry fewer
-> than 100 merges (`pelna` 41, `wskazane` 47). At a base leak rate near 28%,
-> telling two channels apart takes on the order of 100 merges in each of them,
-> so read the table as a direction to keep measuring in and not as a result to
-> move a threshold on.
-
-Three things about how it is placed:
+Four things about how it is placed:
 
 - it is in the **header**, above the table, in the Markdown rendering, and in
   `sample_sentence` beside a `directional` boolean in the machine payload;
@@ -177,7 +174,12 @@ Three things about how it is placed:
 - a channel with **no** merges counts as short rather than clean. A rate over an
   empty denominator is not a small number, it is no number, and a header that
   stayed quiet about it would let a reader take an absent channel for a clean
-  one.
+  one;
+- a table with no channel at all has two causes and gets two different
+  sentences. "Nobody has labelled a merge" names the command that fills the
+  register; "the register is full and none of its rows has had its window yet"
+  names how many rows it holds and why none of them counts, which is what every
+  new register looks like for the first fortnight.
 
 `calibrate` carries the same sentence, from the same function, so the sweep
 cannot claim more than the table it is computed from.

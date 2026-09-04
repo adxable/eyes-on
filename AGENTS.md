@@ -296,10 +296,15 @@ consulted.
   written from GitHub's `merge_commit_sha` alone carries none, which on a
   `--no-ff` repository is every row. *A merge whose `--window` has not elapsed*
   has had part of the period the rest of the denominator was given, and it is
-  the only reason that returns: `EXCLUSION_KINDS` declares `permanent` beside
-  each reason and `classifyMerge` prefers a permanent reason over a pending one,
-  so no ordering of tests can dress a structural exclusion as a temporary one
-  and no surface may promise a return the reason does not carry. `sampleVerdict`
+  the only reason that returns. `EXCLUSION_KINDS` declares three things beside
+  each reason - whether it is permanent, why blame cannot be attributed, and the
+  outlook: the remedy that really clears it or the explicit fact that nothing
+  does - and every surface *renders* that text rather than writing its own
+  sentence about it. `classifyMerge` prefers a permanent reason over a pending
+  one, so no ordering of tests can dress a structural exclusion as a temporary
+  one; and `permanent` means the clock alone, so two of the five permanent
+  reasons carry a real remedy (fetch the branch, widen `--since`) that a surface
+  must not turn into "nothing can be done". `sampleVerdict`
   takes the population beside the channels for the same reason: a full register
   none of whose rows has had its window yet is the ordinary first state of the
   product, and it must not read as an empty one.

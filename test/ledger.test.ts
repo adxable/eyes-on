@@ -450,11 +450,96 @@ test('a row GitHub alone placed still carries the merge commit\'s parent count',
   assert.ok(
     doc.help.some(
       (line) =>
-        line.includes('will leave this row out of the denominator') &&
-        line.includes('merge commit introduces no line'),
+        line.includes('leaves this row out of the denominator') &&
+        line.includes('merge commit introduces no line') &&
+        line.includes('Nothing clears this one'),
     ),
-    `the row is unmeasurable and label must say so: ${JSON.stringify(doc.help)}`,
+    `the row is unmeasurable and label must say so, in the reason's own words: ${JSON.stringify(doc.help)}`,
   );
+
+  // Markdown is what this command prints when nobody passes --format, so a help
+  // line that lives only in the machine payload reaches nobody. Saying it on the
+  // command a person runs per merge is the whole point of saying it here.
+  const markdown = await captureCli(['label', '--pr', '7'], { cwd: repo.path, env: { ...env, PATH: gh.path } });
+  assert.equal(markdown.code, EXIT_OK);
+  assert.match(markdown.out, /leaves this row out of the denominator/);
+  assert.match(markdown.out, /merge commit introduces no line/);
+});
+
+/**
+ * The commonest flow there is: merge on GitHub, run `label` before pulling.
+ *
+ * The clone does not hold the merge commit yet, so `leaks` cannot measure the
+ * row - and a `git fetch` plus a re-label clears it entirely. Reporting that as
+ * final would be discouragement where an instruction belongs.
+ */
+test('a row whose commit this clone does not hold is told what fetches it, not that nothing can be done', async (t) => {
+  const repo = tempRepo('label-unfetched');
+  const base = repo.commitFiles('chore: set up', { 'src/a.ts': 'export const a = 1;\n' });
+  // No `(#7)` on the branch, so GitHub is the only source - which is also the
+  // only way a row can name a commit this clone has never seen.
+  const head = repo.commitFiles('feat(widget): add the widget', { 'src/widget.ts': 'export const w = 1;\n' });
+
+  const env = sandboxEnv('label-unfetched');
+  await initRepo(t, repo, env);
+  const check = await captureCli(['check', '--base', base, '--head', head, '--format', 'json'], {
+    cwd: repo.path,
+    env,
+  });
+  const checkId = (JSON.parse(check.out) as { check_id: string }).check_id;
+
+  const unfetched = 'a'.repeat(40);
+  const gh = mergedGh('label-unfetched', { mergeSHA: unfetched });
+  const result = await captureCli(['label', '--pr', '7', '--check-id', checkId, '--format', 'json'], {
+    cwd: repo.path,
+    env: { ...env, PATH: gh.path },
+  });
+  const doc = JSON.parse(result.out) as LabelDoc;
+
+  assert.equal(result.code, EXIT_OK);
+  assert.equal(doc.merge_sha, unfetched);
+  assert.equal(doc.excluded_from_leaks, 'commit not in this repository');
+  const line = doc.help.find((entry) => entry.includes('commit not in this repository'));
+  assert.ok(line, `label must say what leaks will do with the row: ${JSON.stringify(doc.help)}`);
+  assert.match(line, /Fetch the default branch into this clone and label the pull request again/);
+  assert.ok(
+    !/nothing here is measurable by waiting/i.test(line),
+    `a git fetch clears this one, so nothing may report it as final: ${line}`,
+  );
+});
+
+/**
+ * Backfilling a register: the row is older than the range `leaks` reads by
+ * default, and a longer `--since` counts it. That is a flag away rather than a
+ * dead end, and the sentence has to carry the qualifier that makes it true.
+ */
+test('a row older than the default history span is told a wider --since counts it', async (t) => {
+  const repo = tempRepo('label-old');
+  const when = new Date(Date.now() - 200 * 86_400_000).toISOString();
+  const base = repo.commitFiles('chore: set up', { 'src/a.ts': 'export const a = 1;\n' }, when);
+  const merge = repo.commitFiles(
+    'feat(widget): add the widget (#7)',
+    { 'src/widget.ts': 'export const w = 1;\n' },
+    when,
+  );
+
+  const env = sandboxEnv('label-old');
+  await initRepo(t, repo, env);
+  await captureCli(['check', '--base', base, '--head', merge, '--format', 'json'], { cwd: repo.path, env });
+
+  // No gh, so the merge time is the committer date of the commit on the branch:
+  // two hundred days ago, well outside the ninety `leaks` reads by default.
+  const result = await captureCli(['label', '--pr', '7', '--format', 'json'], {
+    cwd: repo.path,
+    env: { ...env, PATH: pathWithGitOnly('label-old-path') },
+  });
+  const doc = JSON.parse(result.out) as LabelDoc;
+
+  assert.equal(result.code, EXIT_OK);
+  assert.equal(doc.excluded_from_leaks, 'outside --since');
+  const line = doc.help.find((entry) => entry.includes('outside --since'));
+  assert.ok(line, `label must say what leaks will do with the row: ${JSON.stringify(doc.help)}`);
+  assert.match(line, /a wider one does: pass a longer `--since` to count it/);
 });
 
 /**
@@ -500,6 +585,24 @@ test('with two candidates and a disagreement, nothing claims the newest was take
   // recorded against something the row rejected.
   assert.equal(doc.merge_parent_sha, null);
   assert.equal(doc.merge_parents, null);
+
+  // And the payload for a pull request eyes-on never assessed answers the same
+  // way: one command may not describe one pull request two ways depending on
+  // which branch it took.
+  const other = sandboxEnv('label-candidates-split-dry');
+  await initRepo(t, repo, other);
+  const dry = JSON.parse(
+    (
+      await captureCli(['label', '--pr', '7', '--dry-run', '--format', 'json'], {
+        cwd: repo.path,
+        env: { ...other, PATH: gh.path },
+      })
+    ).out,
+  ) as LabelDoc;
+  assert.equal(dry.would_record, false, 'this state root holds no assessment for #7');
+  assert.equal(dry.merge_sha, null);
+  assert.equal(dry.merge_parent_sha, null);
+  assert.equal(dry.merge_parents, null);
   assert.ok(
     !doc.help.some((line) => line.includes('blames every later fix against that one')),
     `leaks excludes this row rather than blaming against it: ${JSON.stringify(doc.help)}`,
