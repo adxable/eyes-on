@@ -77,10 +77,10 @@ a design violation, not a flaky test.
   `eyes-on label --dry-run` rather than reimplementing the link, with `NM_HOME`
   pointed at an empty directory so the no-mistakes database is unreachable
   rather than merely unused, and `docs/stage-3-register.mjs`, which is behind
-  section 4's register, leaks and calibrate tables. The third one **does**
-  write: it runs `eyes-on init`, `check` and a real, non-dry-run `label` into a
-  temporary state root of its own and deletes it afterwards. The reference
-  repository is only ever read.
+  section 4's register, leaks and calibrate tables. The last two **do** write,
+  each into a temporary state root of its own which it deletes afterwards: the
+  second runs `eyes-on init`, and the third adds `check` and a real, non-dry-run
+  `label`. The reference repository is only ever read.
 
 ## Commands
 
@@ -300,11 +300,14 @@ consulted.
   each reason - whether it is permanent, why blame cannot be attributed, and the
   outlook: the remedy that really clears it or the explicit fact that nothing
   does - and every surface *renders* that text rather than writing its own
-  sentence about it. `classifyMerge` prefers a permanent reason over a pending
-  one, so no ordering of tests can dress a structural exclusion as a temporary
-  one; and `permanent` means the clock alone, so two of the five permanent
-  reasons carry a real remedy (fetch the branch, widen `--since`) that a surface
-  must not turn into "nothing can be done". `sampleVerdict`
+  sentence about it. A merge can satisfy several reasons at
+  once, so each one also declares `binding` and `classifyMerge` returns the most
+  binding applicable reason rather than the first tested - the order of the
+  tests decides nothing, and a reason with a remedy is never reported until it
+  is known that no more binding one applies, which is what the one git read per
+  row is paid for. `permanent` means the clock alone, so two of the five
+  permanent reasons carry a real remedy (fetch the branch, widen `--since`) that
+  a surface must not turn into "nothing can be done". `sampleVerdict`
   takes the population beside the channels for the same reason: a full register
   none of whose rows has had its window yet is the ordinary first state of the
   product, and it must not read as an empty one.

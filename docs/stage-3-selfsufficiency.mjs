@@ -19,9 +19,13 @@
  * points at an empty temporary directory for the whole sweep, so a fallback
  * onto it could not succeed even if one existed.
  *
- * **Everything it touches is read-only.** The reference clone is only ever read,
- * the two writing gh endpoints are never among the calls a `--dry-run` makes,
- * and eyes-on runs against a temporary state root that is deleted afterwards.
+ * **What it reads and what it writes.** The reference clone is only ever read,
+ * and the two writing gh endpoints are never among the calls a `--dry-run`
+ * makes. This script itself **does** write: `eyes-on init` creates a state
+ * root, builds a mirror, starts a daemon and installs a skill - all into a
+ * temporary root of its own, with `EYES_ON_SKILL_ROOT` pointed inside it, and
+ * all of it deleted afterwards. Nothing it writes lands in a repository it
+ * reads.
  *
  * Usage:
  *   node docs/stage-3-selfsufficiency.mjs [--repo <path>] [--n <count>] [--json <file>]

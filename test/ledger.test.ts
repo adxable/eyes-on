@@ -103,6 +103,18 @@ async function initRepo(t: TestContext, repo: TempRepo, env: Record<string, stri
   });
 }
 
+/**
+ * When the fake GitHub says the pull request merged, read once and relative to
+ * now.
+ *
+ * Thirty days back: inside the ninety days `leaks` reads by default and past
+ * the fourteen-day window, so a fixture's classification is decided by what the
+ * test is about rather than by the date the suite is run on. An absolute
+ * instant here made two tests start failing months later for a reason unrelated
+ * to the code they exercise.
+ */
+const MERGED_AT = new Date((Math.floor(Date.now() / 1000) - 30 * 86_400) * 1000).toISOString();
+
 /** A fake GitHub that says the pull request merged as `mergeSHA`. */
 function mergedGh(prefix: string, options: { headSHA?: string; mergeSHA: string | null }): StubGh {
   return stubGh(prefix, {
@@ -113,7 +125,7 @@ function mergedGh(prefix: string, options: { headSHA?: string; mergeSHA: string 
     pull: {
       state: 'closed',
       merged: true,
-      merged_at: '2026-08-26T16:41:46Z',
+      merged_at: MERGED_AT,
       merge_commit_sha: options.mergeSHA,
       title: 'add the widget',
     },
@@ -259,7 +271,7 @@ test('acceptance: the chain from change to pull request to merge commit is rebui
   assert.equal(doc.excluded_from_leaks, null, 'a squash merge is a row `leaks` can measure, and nothing warns about it');
   assert.ok(!doc.help.some((line) => line.includes('will leave this row out of the denominator')));
   assert.equal(doc.head_sha, PR_HEAD, 'the branch tip GitHub named, which is not the commit that landed');
-  assert.equal(doc.merged_at, Date.parse('2026-08-26T16:41:46Z') / 1000, 'GitHub answered, so its merge time is the one recorded');
+  assert.equal(doc.merged_at, Date.parse(MERGED_AT) / 1000, 'GitHub answered, so its merge time is the one recorded');
   assert.equal(doc.recorded, true);
 
   const records = ledgerLines(env);
@@ -369,6 +381,10 @@ test('two default-branch commits carrying one pull request number is recorded as
   assert.ok(
     doc.help.some((line) => line.includes('commits on the default branch carry')),
     `the reader is told a choice was made: ${JSON.stringify(doc.help)}`,
+  );
+  assert.ok(
+    doc.help.some((line) => line.includes('blames every later fix against that one')),
+    'this row is measurable, so the claim about what is blamed against is true',
   );
 
   // The ordinary case says nothing about candidates, so the sentence above is
@@ -509,6 +525,53 @@ test('a row whose commit this clone does not hold is told what fetches it, not t
 });
 
 /**
+ * The candidate count is a fact about the branch; what `leaks` does with the
+ * row is the classifier's to say.
+ *
+ * Two candidates on a register being backfilled: the row names a merge commit,
+ * and `leaks` still will not blame anything against it at the range it reads by
+ * default. Two help lines that contradict each other are worse than one.
+ */
+test('with two candidates on an unmeasurable row, nothing claims what leaks blames against', async (t) => {
+  const repo = tempRepo('label-candidates-old');
+  const when = new Date(Date.now() - 200 * 86_400_000).toISOString();
+  repo.commitFiles('chore: set up', { 'src/a.ts': 'export const a = 1;\n' }, when);
+  const merge = repo.commitFiles(
+    'feat(widget): add the widget (#7)',
+    { 'src/widget.ts': 'export const w = 1;\n' },
+    when,
+  );
+  const relanded = repo.commitFiles(
+    'fix(widget): re-land the widget (#7)',
+    { 'src/widget.ts': 'export const w = 2;\n' },
+    when,
+  );
+
+  const env = sandboxEnv('label-candidates-old');
+  await initRepo(t, repo, env);
+  await captureCli(['check', '--base', merge, '--head', relanded, '--format', 'json'], { cwd: repo.path, env });
+
+  const result = await captureCli(['label', '--pr', '7', '--format', 'json'], {
+    cwd: repo.path,
+    env: { ...env, PATH: pathWithGitOnly('label-candidates-old-path') },
+  });
+  const doc = JSON.parse(result.out) as LabelDoc;
+
+  assert.equal(result.code, EXIT_OK);
+  assert.equal(doc.merge_sha, relanded);
+  assert.equal(doc.git_candidates, 2);
+  assert.equal(doc.excluded_from_leaks, 'outside --since');
+  assert.ok(
+    doc.help.some((line) => line.includes('commits on the default branch carry')),
+    `the count is a fact about the branch and is said in every state: ${JSON.stringify(doc.help)}`,
+  );
+  assert.ok(
+    !doc.help.some((line) => line.includes('blames every later fix against that one')),
+    `leaks will not count this row at all, so nothing may say what it blames: ${JSON.stringify(doc.help)}`,
+  );
+});
+
+/**
  * Backfilling a register: the row is older than the range `leaks` reads by
  * default, and a longer `--since` counts it. That is a flag away rather than a
  * dead end, and the sentence has to carry the qualifier that makes it true.
@@ -540,6 +603,10 @@ test('a row older than the default history span is told a wider --since counts i
   const line = doc.help.find((entry) => entry.includes('outside --since'));
   assert.ok(line, `label must say what leaks will do with the row: ${JSON.stringify(doc.help)}`);
   assert.match(line, /a wider one does: pass a longer `--since` to count it/);
+  // And that advice is only offered because nothing more binding applies: this
+  // row is a squash merge in the store, so widening the range really does count
+  // it.
+  assert.ok(!doc.help.some((entry) => entry.includes('Nothing clears this one')));
 });
 
 /**
@@ -563,8 +630,22 @@ test('with two candidates and a disagreement, nothing claims the newest was take
   });
   const checkId = (JSON.parse(check.out) as { check_id: string }).check_id;
 
-  // GitHub names neither of the two default-branch candidates.
-  const gh = mergedGh('label-candidates-split', { mergeSHA: 'f'.repeat(40) });
+  // GitHub names neither of the two default-branch candidates, and sends no
+  // merge time eyes-on can read - `merged` and `merged_at` are independent
+  // fields and a pull request may carry the first without the second.
+  const gh = stubGh('label-candidates-split', {
+    slug: SLUG,
+    number: 7,
+    headSHA: PR_HEAD,
+    body: 'no-mistakes wrote this body.\n',
+    pull: {
+      state: 'closed',
+      merged: true,
+      merged_at: null,
+      merge_commit_sha: 'f'.repeat(40),
+      title: 'add the widget',
+    },
+  });
   const result = await captureCli(['label', '--pr', '7', '--check-id', checkId, '--format', 'json'], {
     cwd: repo.path,
     env: { ...env, PATH: gh.path },
@@ -580,6 +661,10 @@ test('with two candidates and a disagreement, nothing claims the newest was take
     `nothing was taken: ${doc.link_sentence}`,
   );
   assert.match(doc.link_sentence, /no merge commit was recorded here, so none of them was chosen/);
+  // GitHub said it merged and named no time eyes-on could read, and the two
+  // sources disagree, so no commit is named - and no time is taken from the
+  // candidate the row rejected either.
+  assert.equal(doc.merged_at, null, 'a merge time may only come from the commit the row names');
   // Nothing about a commit the row deliberately does not name: a subject, a
   // parent and a parent count beside a null merge commit would be three facts
   // recorded against something the row rejected.

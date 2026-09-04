@@ -21,16 +21,16 @@ import type { LedgerRecord } from './ledger.js';
  * about the row it has just written so the command a person actually runs per
  * merge can say what `leaks` will do with it.
  *
- * ## A reason carries its own words
+ * ## A reason carries its own words, and its own rank
  *
  * `EXCLUSION_KINDS` holds, beside each reason: whether it is permanent, why
- * blame cannot be attributed, and the outlook - what actually clears it, or the
- * explicit fact that nothing does. Every surface *renders* that text and none
- * of them writes a sentence of its own about a reason. Unifying the decision
- * was not enough: each surface still authored its own words beside it and two
- * of them went wrong in the round after. A reason added later now arrives with
- * its wording attached, so a surface that has never been taught about it still
- * describes it correctly.
+ * blame cannot be attributed, the outlook - what actually clears it, or the
+ * explicit fact that nothing does - and how binding it is. Every surface
+ * *renders* that text and none of them writes a sentence of its own about a
+ * reason. Unifying the decision was not enough: each surface still authored its
+ * own words beside it and two of them went wrong in the round after. A reason
+ * added later now arrives with its wording attached, so a surface that has
+ * never been taught about it still describes it correctly.
  *
  * `permanent` is about the passage of time and nothing else: it is false when a
  * later run over the same range admits the row simply because more time has
@@ -41,11 +41,21 @@ import type { LedgerRecord } from './ledger.js';
  * the five permanent reasons are cleared by an ordinary user action, and one of
  * those - labelling a merge before pulling it - is the commonest flow there is.
  *
- * `classifyMerge` asks for a permanent reason before it asks for a pending one,
- * so the order of the tests cannot decide whether an exclusion is described as
- * temporary: a true merge commit that landed this morning is both structurally
- * unattributable and inside its window, and only the first of those is true of
- * it forever.
+ * ## The order of the tests decides nothing
+ *
+ * A merge can satisfy several reasons at once, and reporting the first one
+ * tested is what let a structural exclusion be dressed as a temporary one, and
+ * then - once each reason carried a remedy - let a reason nothing clears be
+ * dressed as one a flag clears. `binding` is declared beside the reason and
+ * `classifyMerge` returns the most binding applicable one, never the first
+ * tested, so the shape of the code below cannot change what a reader is told.
+ *
+ * The cost rule follows from that rather than trading against it: a reason with
+ * a remedy may not be reported until it is known that no more binding reason
+ * applies, so the one git read is paid exactly for the rows eyes-on is about to
+ * make a promise to. A row that names no commit, and a row whose own parent
+ * count already settles the most binding reason of all, are answered without
+ * touching the object store.
  */
 
 /** The default leak window and history span (report Appendix C.1). They live
@@ -64,6 +74,16 @@ export type ExclusionReason =
   | 'window has not elapsed';
 
 export interface ExclusionKind {
+  /**
+   * How binding this reason is, smaller being more binding, and a total order
+   * over every reason that can hold of one merge at once.
+   *
+   * The scale is what would have to change for the row to be counted: nothing
+   * can (a property of the commit), this run's object store, this run's range,
+   * the register row itself, the clock. Declared here rather than implied by
+   * the order of the tests, so a reason added later arrives ranked.
+   */
+  binding: number;
   /** False only when the mere passage of time admits the row on a later run
    *  over this same range. Exactly one reason is in that state. */
   permanent: boolean;
@@ -84,24 +104,34 @@ export interface ExclusionKind {
 
 export const EXCLUSION_KINDS: Record<ExclusionReason, ExclusionKind> = {
   'no merge commit': {
+    // The row names no commit, so every other reason would be about something
+    // that does not exist.
+    binding: 0,
     permanent: true,
     because: 'no source named a commit to blame onto',
     outlook:
       'Waiting does not change that. Find which commit landed the change - `eyes-on label` prints what each source said - and label the pull request again once both name it.',
   },
   'no merge time': {
+    // A property of the register row; writing the row again changes it.
+    binding: 4,
     permanent: true,
     because: 'no source named when the change merged, so the window has no start',
     outlook:
       'Waiting does not change that. Label the pull request again with gh reachable, or once the commit that landed it is on the default branch, so a merge time is recorded.',
   },
   'outside --since': {
+    // A property of this run's range; a flag changes it.
+    binding: 3,
     permanent: true,
     because: 'the merge is older than the period this report covers',
     outlook:
       'No run over this `--since` admits {them}, however long anyone waits - but a wider one does: pass a longer `--since` to count {them}.',
   },
   'merge commit introduces no line': {
+    // A property of the commit. Nothing about this run, this clone or this
+    // register changes it, which is why nothing may outrank it.
+    binding: 1,
     permanent: true,
     because:
       'blame never names a merge commit as introducing a line, so a true merge commit can carry no attributed fix',
@@ -109,12 +139,16 @@ export const EXCLUSION_KINDS: Record<ExclusionReason, ExclusionKind> = {
       'Nothing clears this one: it is a property of the commit rather than of this run. A change landed as a squash merge produces a row this measurement can use.',
   },
   'commit not in this repository': {
+    // A property of this run's object store; a fetch changes it.
+    binding: 2,
     permanent: true,
     because: 'the object store this run read does not hold the commit',
     outlook:
       'Waiting does not fetch it. Fetch the default branch into this clone and label the pull request again - labelling a merge before pulling it is the ordinary way to reach this state.',
   },
   'window has not elapsed': {
+    // A property of the clock, and the only one waiting undoes.
+    binding: 5,
     permanent: false,
     because: 'the whole window every merge in the denominator was given to leak in has not passed yet',
     outlook:
@@ -170,48 +204,63 @@ export interface ClassifyOptions {
 /**
  * Whether a leak could be attributed to this registered merge at all.
  *
- * A permanent reason wins over a pending one wherever both hold, so no surface
- * can be handed "it comes back in a fortnight" about a row that never does.
+ * Every applicable reason is collected and the most binding one is returned, so
+ * no surface can be handed "it comes back in a fortnight" about a row that
+ * never does, nor "pass a longer `--since`" about a row a longer `--since`
+ * would report differently.
  */
 export function classifyMerge(record: LedgerRecord, options: ClassifyOptions): MergeClassification {
-  const permanent = permanentExclusion(record, options);
-  if (permanent !== null) return { eligible: false, reason: permanent, permanent: true, merge_sha: record.merge_sha };
-
-  const pending = pendingExclusion(record, options);
-  if (pending !== null) return { eligible: false, reason: pending, permanent: false, merge_sha: record.merge_sha };
-
-  // Both guards above have already established these.
-  return { eligible: true, merge_sha: record.merge_sha as string, merged_at: record.merged_at as number };
-}
-
-/** Every reason here is `permanent: true` in the table above; nothing in this
- *  function may return one that is not. */
-function permanentExclusion(record: LedgerRecord, options: ClassifyOptions): ExclusionReason | null {
-  const mergeSHA = record.merge_sha;
-  if (mergeSHA === null) return 'no merge commit';
-  if (record.merged_at === null) return 'no merge time';
-  if (record.merged_at < options.sinceSeconds) return 'outside --since';
-  // One read answers both remaining questions: git names no commit it does not
-  // hold, so a null here is the same fact `cat-file -e` would have reported, at
-  // one spawn per row rather than two.
-  const commit = options.reader.commit(mergeSHA);
-  if (commit === null) return 'commit not in this repository';
-  // The parent count is one rule asked of whichever source can answer it. A row
-  // written from GitHub's `merge_commit_sha` alone carries none - nothing on
-  // the default branch named that commit - and on a repository that merges with
-  // `--no-ff` that is every row, which is the repository this exclusion exists
-  // for.
-  const parents = record.merge_parents ?? commit.parents.length;
-  if (parents > 1) return 'merge commit introduces no line';
-  return null;
-}
-
-/** Reasons the clock alone undoes. Every one is `permanent: false`. */
-function pendingExclusion(record: LedgerRecord, options: ClassifyOptions): ExclusionReason | null {
-  if (record.merged_at !== null && record.merged_at + options.windowSeconds > options.nowSeconds) {
-    return 'window has not elapsed';
+  const applicable = applicableReasons(record, options);
+  if (applicable.length === 0) {
+    // Nothing applied, so both the sha and the time are there.
+    return { eligible: true, merge_sha: record.merge_sha as string, merged_at: record.merged_at as number };
   }
-  return null;
+  const reason = applicable.reduce((most, next) =>
+    EXCLUSION_KINDS[next].binding < EXCLUSION_KINDS[most].binding ? next : most,
+  );
+  return {
+    eligible: false,
+    reason,
+    permanent: EXCLUSION_KINDS[reason].permanent,
+    merge_sha: record.merge_sha,
+  };
+}
+
+/**
+ * Every reason that holds of this merge, in no particular order - the caller
+ * ranks them.
+ *
+ * The object store is read once and only where the answer can still change what
+ * is reported: a row naming no commit has nothing to ask about, and a row whose
+ * own parent count already establishes the most binding reason of all needs no
+ * confirmation of it.
+ */
+function applicableReasons(record: LedgerRecord, options: ClassifyOptions): ExclusionReason[] {
+  const mergeSHA = record.merge_sha;
+  if (mergeSHA === null) return ['no merge commit'];
+
+  const reasons: ExclusionReason[] = [];
+  if (record.merged_at === null) {
+    reasons.push('no merge time');
+  } else {
+    if (record.merged_at < options.sinceSeconds) reasons.push('outside --since');
+    if (record.merged_at + options.windowSeconds > options.nowSeconds) reasons.push('window has not elapsed');
+  }
+
+  if (record.merge_parents !== null && record.merge_parents > 1) {
+    reasons.push('merge commit introduces no line');
+    return reasons;
+  }
+
+  // A row written from GitHub's `merge_commit_sha` alone carries no parent
+  // count - nothing on the default branch named that commit - and on a
+  // repository that merges with `--no-ff` that is every row, which is the
+  // repository this exclusion exists for. One read answers both remaining
+  // questions: git names no commit it does not hold.
+  const commit = options.reader.commit(mergeSHA);
+  if (commit === null) reasons.push('commit not in this repository');
+  else if ((record.merge_parents ?? commit.parents.length) > 1) reasons.push('merge commit introduces no line');
+  return reasons;
 }
 
 /** How many rows each reason accounts for, permanent first and largest first

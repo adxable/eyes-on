@@ -629,6 +629,100 @@ test('a pull request landed twice is one pull request in the coverage ratio', as
   );
 });
 
+
+/**
+ * A merge can satisfy several exclusions at once, and the one reported decides
+ * what the reader is told to do about it.
+ *
+ * The ordinary backfill on the repository this exclusion exists for: a change
+ * merged two hundred days ago, landed as a true merge commit. It is both
+ * outside the range and structurally unattributable, and only the second is
+ * still true after the reader takes the advice the first one carries. Advice
+ * that is followed and then contradicted is worse than no advice.
+ */
+test('a merge excluded for several reasons at once is reported under the most binding one', async (t) => {
+  const repo = tempRepo('leaks-binding');
+  const clock = fixtureClock();
+  repo.commitFiles('chore: set up', { 'src/a.ts': 'export const a = 1;\n' }, clock.iso(300));
+  repo.git(['checkout', '-q', '-b', 'side']);
+  repo.commitFiles('feat: the widget', { 'src/widget.ts': 'export const w = 1;\n' }, clock.iso(250));
+  repo.git(['checkout', '-q', 'main']);
+  repo.git(['merge', '--no-ff', '-q', '-m', 'feat: land the widget (#9)', 'side']);
+  const merge = repo.git(['rev-parse', 'HEAD']).trim();
+
+  const env = sandboxEnv('leaks-binding');
+  await initRepo(t, repo, env);
+  // Two hundred days ago, so it is outside the default ninety-day range too -
+  // and the row carries no parent count, as a row GitHub alone placed does.
+  writeLedger(repo, env, (repoId) => [
+    record({ repo: repoId, pr: 9, merge_sha: merge, merge_parents: null, band: 'auto', merged_at: clock.at(200) }),
+  ]);
+
+  const doc = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env })).out) as LeaksDoc;
+  assert.deepEqual(doc.excluded, [
+    { pr: 9, merge: merge.slice(0, 12), reason: 'merge commit introduces no line', permanent: true },
+  ]);
+  assert.ok(
+    doc.help.some((line) => line.includes('Nothing clears this one')),
+    `the reader is told the truth about this row: ${JSON.stringify(doc.help)}`,
+  );
+  assert.ok(
+    !doc.help.some((line) => line.includes('pass a longer `--since`')),
+    `a longer --since reports the same row differently, so it may not be offered: ${JSON.stringify(doc.help)}`,
+  );
+
+  // And taking that advice would indeed have contradicted it: the reason does
+  // not change when the range widens, which is what makes it the binding one.
+  const wider = JSON.parse(
+    (await captureCli(['leaks', '--since', '365d', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as LeaksDoc;
+  assert.equal(wider.excluded[0]?.reason, 'merge commit introduces no line');
+});
+
+/**
+ * Coverage compares one population with itself.
+ *
+ * A branch whose subjects carry no trailing `(#N)` - one that merges with
+ * `--no-ff`, or writes "Merge pull request #7 from ..." - lands nothing this
+ * walk can count, while the register may be full of rows GitHub placed. A
+ * numerator has no right to exceed its denominator: if it can, two different
+ * populations are being counted under one sentence.
+ */
+test('a branch whose subjects name no pull request reports no coverage ratio rather than an impossible one', async (t) => {
+  const repo = tempRepo('leaks-nocoverage');
+  const clock = fixtureClock();
+  repo.commitFiles('chore: set up', { 'src/a.ts': 'export const a = 1;\n' }, clock.iso(60));
+  // GitHub's other merge-subject shape: the number is there, but not as the
+  // trailing `(#N)` a squash merge leaves, so nothing on the branch is counted.
+  const landed = repo.commitFiles(
+    'Merge pull request #7 from acme/widget',
+    { 'src/widget.ts': 'export const w = 1;\n' },
+    clock.iso(40),
+  );
+
+  const env = sandboxEnv('leaks-nocoverage');
+  await initRepo(t, repo, env);
+  writeLedger(repo, env, (repoId) => [
+    record({ repo: repoId, pr: 7, merge_sha: landed, band: 'auto', merged_at: clock.at(40) }),
+  ]);
+
+  const doc = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env })).out) as LeaksDoc;
+  assert.equal(doc.merged_on_branch, 0);
+  assert.ok(doc.registered <= doc.merged_on_branch, `a numerator above its denominator: ${doc.registered}/${doc.merged_on_branch}`);
+  assert.equal(doc.register_rows, 1, 'the rows are still there and still counted');
+  assert.ok(
+    doc.help.some((line) => line.includes('nothing to measure coverage against')),
+    `the state is named rather than divided by: ${JSON.stringify(doc.help)}`,
+  );
+
+  const markdown = await captureCli(['leaks', '--format', 'md'], { cwd: repo.path, env });
+  assert.ok(
+    !/of the 0 pull requests/.test(markdown.out),
+    `a ratio over nothing is not a small number, it is no number: ${markdown.out}`,
+  );
+  assert.match(markdown.out, /nothing to measure against/);
+});
+
 /* ------------------------------------------------------------------ *
  * Honesty.
  * ------------------------------------------------------------------ */

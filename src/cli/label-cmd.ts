@@ -353,7 +353,7 @@ function buildRecord(input: {
     // the commit on the default branch, which is when it landed. Never the
     // author date: for a squash merge that is when the branch's first commit
     // was written, days earlier, and the leak window starts here.
-    merged_at: github?.merged_at ?? mergeCommit?.committed ?? null,
+    merged_at: github?.merged_at ?? named?.committed ?? null,
     link: {
       agreement: link.agreement,
       git_merge_sha: mergeCommit?.sha ?? null,
@@ -529,10 +529,16 @@ function helpLines(record: LedgerRecord, options: DocOptions): string[] {
       break;
   }
   if (record.link.git_candidates > 1) {
+    const candidates = `${record.link.git_candidates} commits on the default branch carry a \`(#${record.pr})\` subject`;
+    // The count is a fact about the branch and is said in every state. What
+    // `leaks` does with the row is the classifier's to say, and the line below
+    // says it - so this one claims it only where it is the whole answer.
     lines.push(
       record.merge_sha === null
-        ? `${record.link.git_candidates} commits on the default branch carry a \`(#${record.pr})\` subject, and no merge commit was recorded for this row, so \`eyes-on leaks\` leaves it out of the denominator with the reason \`no merge commit\`. Check which of them landed this change`
-        : `${record.link.git_candidates} commits on the default branch carry a \`(#${record.pr})\` subject; the newest was recorded as the merge commit, and \`eyes-on leaks\` blames every later fix against that one. Check which of them landed this change`,
+        ? `${candidates}, and no merge commit was recorded for this row. Check which of them landed this change`
+        : options.measurable.eligible
+          ? `${candidates}; the newest was recorded as the merge commit, and \`eyes-on leaks\` blames every later fix against that one. Check which of them landed this change`
+          : `${candidates}; the newest was recorded as the merge commit. Check which of them landed this change`,
     );
   }
   // A row naming no merge commit is already described by its agreement line

@@ -221,6 +221,15 @@ function helpLines(report: LeaksReport, options: DocOptions): string[] {
       `${uncovered} of the ${report.coverage.merged_on_branch} pull requests the branch landed in this window are not in the register, so these rates describe the ${report.coverage.registered} that are`,
     );
   }
+  // A branch whose subjects carry no trailing `(#N)` - one that merges with
+  // `--no-ff`, or writes "Merge pull request #7 from ..." - lands nothing this
+  // walk can count, and a coverage ratio against nothing is not a small number,
+  // it is no number. The register rows are still there and still say so.
+  if (report.coverage.merged_on_branch === 0 && report.population.registered > 0) {
+    lines.push(
+      `No commit the branch landed in this window carries a \`(#N)\` subject, so there is nothing to measure coverage against; the register holds ${report.population.registered} row${report.population.registered === 1 ? '' : 's'} for this repository, placed by GitHub rather than by a squash-merge subject`,
+    );
+  }
   // One line per reason present, generated from the same table that says
   // whether the reason is one time undoes. Written per reason here is what let
   // a structural exclusion carry a promise of return for a whole review round.
@@ -282,7 +291,9 @@ function renderMarkdown(report: LeaksReport, doc: ToonObject): string {
 
   lines.push(
     '',
-    `Coverage: ${report.coverage.registered} of the ${report.coverage.merged_on_branch} pull requests the branch landed in this window are in the register.`,
+    report.coverage.merged_on_branch === 0
+      ? `Coverage: no commit the branch landed in this window carries a \`(#N)\` subject, so there is nothing to measure against. The register holds ${report.population.registered} row${report.population.registered === 1 ? '' : 's'} for this repository.`
+      : `Coverage: ${report.coverage.registered} of the ${report.coverage.merged_on_branch} pull requests the branch landed in this window are in the register.`,
     '',
     '---',
     '',

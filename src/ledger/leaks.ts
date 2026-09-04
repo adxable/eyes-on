@@ -153,8 +153,9 @@ export interface LeaksReport {
   /** Registered merges that were still parked when they were labelled: nobody
    *  answered the gate before the change landed. */
   parked: number;
-  /** How much of the branch's own history the register covers, in distinct
-   *  pull requests on both sides. */
+  /** How much of the branch's own history the register covers: distinct pull
+   *  requests the branch landed in this window, and how many of those the
+   *  register holds. One population, so the second never exceeds the first. */
   coverage: { merged_on_branch: number; registered: number };
   /** What the denominator is made of, for every surface that describes it. */
   population: PopulationState;
@@ -254,16 +255,22 @@ export function measureLeaks(options: LeakOptions): LeaksReport {
   // over the window would report coverage above 100% on a repository older than
   // `--since`, which reads as "more than everything" rather than as two
   // different questions.
-  // Distinct pull request numbers on both sides. `mergedPulls` keeps a number
-  // that landed twice twice and says the caller decides, and `latestPerPull`
-  // has already reduced the register to one row each: counting commits against
-  // rows would report a coverage gap for a register holding every one of them.
+  // One population on both sides, so the ratio holds by construction. The
+  // question is "of the pull requests this branch landed in this window, how
+  // many are in the register", and both counts are distinct pull request
+  // numbers the branch landed: `mergedPulls` keeps a number that landed twice
+  // twice and says the caller decides, and a register row may name a merge
+  // commit no default-branch subject ever named - on a repository that merges
+  // with `--no-ff`, every row does. Counting rows against subjects would put a
+  // numerator above its denominator, which is two questions wearing one
+  // sentence rather than one measurement.
+  const landed = new Set(
+    mergedPulls(options.reader, options.anchorSHA, { sinceSeconds: options.sinceSeconds }).map((merge) => merge.number),
+  );
   const coverage = {
-    merged_on_branch: new Set(
-      mergedPulls(options.reader, options.anchorSHA, { sinceSeconds: options.sinceSeconds }).map((merge) => merge.number),
-    ).size,
+    merged_on_branch: landed.size,
     registered: options.records.filter(
-      (record) => record.merged_at !== null && record.merged_at >= options.sinceSeconds,
+      (record) => landed.has(record.pr) && record.merged_at !== null && record.merged_at >= options.sinceSeconds,
     ).length,
   };
 
