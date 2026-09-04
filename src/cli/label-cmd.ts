@@ -316,6 +316,7 @@ function buildRecord(input: {
       agreement: link.agreement,
       git_merge_sha: mergeCommit?.sha ?? null,
       github_merge_sha: github?.merge_commit_sha ?? null,
+      git_candidates: link.git_candidates,
       sentence: link.sentence,
     },
     check_id: check.id,
@@ -382,6 +383,10 @@ function recordedDoc(record: LedgerRecord, options: DocOptions): ToonObject {
     link_sentence: record.link.sentence,
     git_merge_sha: record.link.git_merge_sha,
     github_merge_sha: record.link.github_merge_sha,
+    // How many default-branch commits carried the `(#N)` subject. More than one
+    // means the sha above was chosen, and a payload that hid that would be the
+    // register choosing between candidates in silence.
+    git_candidates: record.link.git_candidates,
     // Null is a disagreement or an absence, never a default: `link` above says
     // which.
     merge_sha: record.merge_sha,
@@ -452,6 +457,11 @@ function helpLines(record: LedgerRecord, options: DocOptions): string[] {
       lines.push('Neither source named a merge commit, so `eyes-on leaks` cannot attribute anything to this change');
       break;
   }
+  if (record.link.git_candidates > 1) {
+    lines.push(
+      `${record.link.git_candidates} commits on the default branch carry a \`(#${record.pr})\` subject; the newest was recorded as the merge commit, and \`eyes-on leaks\` blames every later fix against that one. Check which of them landed this change`,
+    );
+  }
   if (options.unread === 'gh-missing') {
     lines.push('Install the GitHub CLI and run `gh auth login` to confirm the merge commit from GitHub as well as from git');
   }
@@ -495,6 +505,7 @@ function unrecordableDoc(number: number, link: PullLink, found: Found, failure: 
     link_sentence: link.sentence,
     git_merge_sha: link.git?.sha ?? null,
     github_merge_sha: link.github?.merge_commit_sha ?? null,
+    git_candidates: link.git_candidates,
     merge_sha: link.merge_sha,
     merge_parent_sha: link.git?.parent ?? null,
     merge_parents: link.git?.parents ?? null,

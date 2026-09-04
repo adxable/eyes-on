@@ -132,6 +132,15 @@ export interface PullLink {
   /** The default-branch commit naming this pull request, or null. When more
    *  than one does, this is the newest and `git_candidates` says how many. */
   git: MergeCommit | null;
+  /** How many default-branch commits carry this pull request's `(#N)` subject.
+   *
+   *  Ordinarily one. Two happens - a change reverted and re-landed under a
+   *  subject that kept the suffix, a cherry-pick onto the default branch - and
+   *  it is the state in which `git` above is a *choice* rather than the answer:
+   *  `leaks` blames every later fix against whichever commit was recorded. So
+   *  the count travels on the link, on the register row and into the sentence,
+   *  and no surface can present the newest of two candidates as the only one
+   *  there was. */
   git_candidates: number;
   /** GitHub's answer, or null when gh was not read. */
   github: PullRecord | null;
@@ -160,6 +169,28 @@ export interface LinkInput {
  * describe differently.
  */
 export function linkPull(input: LinkInput): PullLink {
+  const link = decideLink(input);
+  return { ...link, sentence: `${link.sentence}${candidateSentence(input)}` };
+}
+
+/**
+ * What a second default-branch commit carrying the same `(#N)` adds to the
+ * sentence, when there is one.
+ *
+ * It is appended to every agreement rather than to one of them, because the
+ * choice was made before the comparison with GitHub: `fromGit[0]` is the newest
+ * candidate whichever source ends up naming the merge commit.
+ */
+function candidateSentence(input: LinkInput): string {
+  if (input.fromGit.length < 2) return '';
+  const others = input.fromGit
+    .slice(1)
+    .map((commit) => commit.sha.slice(0, 12))
+    .join(', ');
+  return ` ${input.fromGit.length} commits on the default branch carry a \`(#${input.number})\` subject - the newest was taken and the ${input.fromGit.length === 2 ? 'other is' : 'others are'} ${others}, so this row names a choice between candidates rather than the only one there was.`;
+}
+
+function decideLink(input: LinkInput): PullLink {
   const git = input.fromGit[0] ?? null;
   const github = input.fromGitHub;
   const githubSHA = github?.merge_commit_sha ?? null;
@@ -236,10 +267,4 @@ function githubUnreadSentence(input: LinkInput): string {
   return input.fromGitHub.merged
     ? 'GitHub says it merged but named no merge commit for it.'
     : `GitHub says it has not merged${input.fromGitHub.state ? ` (it is ${input.fromGitHub.state})` : ''}.`;
-}
-
-/** Whether this link is one the acceptance condition counts: both sources
- *  answered and they named the same commit. */
-export function linkConfirmed(link: PullLink): boolean {
-  return link.agreement === 'agrees';
 }

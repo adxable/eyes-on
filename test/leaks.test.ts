@@ -2,7 +2,7 @@ import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { captureCli, pathWithGitOnly, sandboxEnv, tempRepo, type TempRepo } from './helpers.js';
+import { captureCli, pathWithGitOnly, run, sandboxEnv, tempRepo, type TempRepo } from './helpers.js';
 import { EXIT_OK, EXIT_USAGE } from '../src/cli/output.js';
 import { LEDGER_VERSION, type LedgerRecord } from '../src/ledger/ledger.js';
 import { calibrate } from '../src/ledger/calibrate.js';
@@ -11,6 +11,7 @@ import { flagDuration, flagString, parseArgs, DURATION_FLAGS } from '../src/cli/
 import { COMMANDS } from '../src/cli/commands.js';
 import type { Leak } from '../src/ledger/leaks.js';
 import { canonicalPath, repoID } from '../src/core/repoid.js';
+import { RepoReader } from '../src/git/reader.js';
 
 /**
  * The leak measurement and the threshold sweep.
@@ -66,6 +67,7 @@ interface CalibrateDoc {
   rows_considered: number;
   rule_forced: number;
   unscored: number;
+  outside_denominator: { reason: string; merges: number }[];
   exit_code: number;
   help: string[];
 }
@@ -100,7 +102,7 @@ function record(over: Partial<LedgerRecord> & Pick<LedgerRecord, 'pr'>): LedgerR
     merge_parents: 1,
     head_sha: null,
     merged_at: Math.floor(Date.now() / 1000) - 30 * DAY,
-    link: { agreement: 'agrees', git_merge_sha: null, github_merge_sha: null, sentence: '' },
+    link: { agreement: 'agrees', git_merge_sha: null, github_merge_sha: null, git_candidates: 1, sentence: '' },
     check_id: 'check',
     check_source: 'merge-commit',
     check_base_sha: 'b'.repeat(40),
@@ -298,6 +300,152 @@ test('a true merge commit is left out of the denominator rather than counted cle
   );
 });
 
+
+/**
+ * Both ends of the window are landing times.
+ *
+ * A branch written before the change it fixes, rebased onto it and landed
+ * afterwards keeps its author date, which is earlier than the merge it blames
+ * into. Read as the fix time that is a negative elapsed, and a real leak
+ * disappears under a comment about a clock disagreeing with itself.
+ */
+test('the leak window is measured between two landing times, so a rebased fix is not dropped for predating its merge', async (t) => {
+  const clock = fixtureClock();
+  const repo = tempRepo('leaks-clock');
+  repo.commitFiles('chore: set up', { 'src/a.ts': 'export const a = 1;\n' }, clock.iso(60));
+  const widget = repo.commitFiles(
+    'feat(widget): add the widget (#7)',
+    { 'src/widget.ts': 'export function widget(): number {\n  return 1;\n}\n' },
+    clock.iso(40),
+  );
+  repo.commitFiles(
+    'fix(widget): the widget returned the wrong number',
+    { 'src/widget.ts': 'export function widget(): number {\n  return 42;\n}\n' },
+    clock.iso(50),
+  );
+  // Written ten days before the merge, landed five days after it.
+  run(repo.path, ['commit', '--amend', '--no-edit', '--quiet'], {
+    GIT_AUTHOR_DATE: clock.iso(50),
+    GIT_COMMITTER_DATE: clock.iso(35),
+  });
+  const fix = repo.git(['rev-parse', 'HEAD']).trim();
+  assert.ok(
+    Number(repo.git(['show', '-s', '--format=%at', fix]).trim()) < clock.at(40),
+    'the fixture is only about anything if the fix was authored before the merge it blames into',
+  );
+
+  const env = sandboxEnv('leaks-clock');
+  await initRepo(t, repo, env);
+  writeLedger(repo, env, (repoId) => [
+    record({ repo: repoId, pr: 7, merge_sha: widget, band: 'auto', merged_at: clock.at(40) }),
+  ]);
+
+  const doc = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env })).out) as LeaksDoc;
+  assert.equal(doc.merges, 1);
+  assert.equal(doc.leaked, 1, 'the fix landed five days after the merge, and that is what the window measures');
+  assert.equal(doc.leaks[0]?.fix, fix.slice(0, 12));
+  assert.equal(doc.leaks[0]?.days_after_merge, 5);
+});
+
+/**
+ * The other end of the denominator, and the same argument the header makes
+ * about a true merge commit: a merge that has had four hours of its fourteen
+ * days has not been observed for as long as the rest of the table, and counting
+ * it as clean divides the leaks by merges that were never given the chance.
+ */
+test('a merge whose window has not elapsed leaves the denominator with the reason recorded', async (t) => {
+  const { repo, widget, gadget, at } = leakyRepo('leaks-window');
+  const env = sandboxEnv('leaks-window');
+  await initRepo(t, repo, env);
+  writeLedger(repo, env, (repoId) => [
+    record({ repo: repoId, pr: 7, merge_sha: widget, band: 'auto', merged_at: at(40) }),
+    // Landed yesterday: one day of the fourteen it would be measured over.
+    record({ repo: repoId, pr: 8, merge_sha: gadget, band: 'wskazane', merged_at: at(1) }),
+  ]);
+
+  const doc = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env })).out) as LeaksDoc;
+  assert.equal(doc.merges, 1, 'a merge that has not had its window is under-observed, not clean');
+  assert.deepEqual(doc.excluded, [{ pr: 8, merge: gadget.slice(0, 12), reason: 'window has not elapsed' }]);
+  assert.ok(
+    doc.channels.every((channel) => channel.band !== 'wskazane'),
+    'and it is in no channel row either, so no rate is computed over it',
+  );
+  assert.ok(
+    doc.help.some((line) => line.includes('not had the whole window')),
+    `the exclusion is explained where the numbers are read: ${JSON.stringify(doc.help)}`,
+  );
+
+  // The same register measured over a window it has had counts it again: the
+  // exclusion is about elapsed time, not about the row.
+  const short = JSON.parse(
+    (await captureCli(['leaks', '--window', '12h', '--format', 'json'], { cwd: repo.path, env })).out,
+  ) as LeaksDoc;
+  assert.equal(short.merges, 2);
+  assert.deepEqual(short.excluded, []);
+});
+
+/**
+ * One measuring instrument, not two.
+ *
+ * `calibrate` divides its leak counts by a population, and that population has
+ * to be the one `leaks` divided by - otherwise every rate on the grid is
+ * diluted by merges no leak could ever have been attributed to, and the two
+ * commands print different channel sizes for one register.
+ */
+test('the sweep runs over exactly the merges the leak measurement put in its denominator', async (t) => {
+  const { repo, widget, gadget, at } = leakyRepo('calibrate-population');
+  const env = sandboxEnv('calibrate-population');
+  await initRepo(t, repo, env);
+  writeLedger(repo, env, (repoId) => [
+    record({ repo: repoId, pr: 7, merge_sha: widget, score: 20, band: 'auto', merged_at: at(40) }),
+    // Merged well outside the default --since, so no fix inside the reported
+    // range can ever be attributed to it.
+    record({ repo: repoId, pr: 8, merge_sha: gadget, score: 90, band: 'pelna', merged_at: at(200) }),
+  ]);
+
+  const leaks = JSON.parse((await captureCli(['leaks', '--format', 'json'], { cwd: repo.path, env })).out) as LeaksDoc;
+  const sweep = JSON.parse((await captureCli(['calibrate', '--format', 'json'], { cwd: repo.path, env })).out) as CalibrateDoc;
+
+  assert.equal(leaks.merges, 1);
+  assert.equal(sweep.merges, leaks.merges, 'two commands reporting different sizes for one register are two instruments');
+  assert.deepEqual(sweep.outside_denominator, [{ reason: 'outside --since', merges: 1 }]);
+  assert.ok(
+    sweep.help.some((line) => line.includes('outside the leak denominator')),
+    `the narrowing is reported rather than silent: ${JSON.stringify(sweep.help)}`,
+  );
+});
+
+/**
+ * The walk that finds fix commits reads no diffstat.
+ *
+ * `--numstat` makes git produce a per-file line count for every commit in the
+ * window, and nothing downstream reads it: a fix is recognised from its subject
+ * and blamed from its own patch. The same reason `firstParentLog` never asks
+ * for one.
+ */
+test('a history walk can be asked for commits without their per-file line counts', () => {
+  const repo = tempRepo('history-nofiles');
+  repo.commitFiles('feat: two files', { 'src/a.ts': 'export const a = 1;\n', 'src/b.ts': 'export const b = 2;\n' });
+  const reader = new RepoReader({ clonePath: repo.path, mirrorPath: join(repo.path, 'no-mirror') });
+  const head = reader.resolve('HEAD');
+  assert.ok(head);
+
+  const withFiles = reader.history({ until: head });
+  const without = reader.history({ until: head, withFiles: false });
+
+  assert.deepEqual(
+    without.map((commit) => commit.sha),
+    withFiles.map((commit) => commit.sha),
+    'the same commits, in the same order',
+  );
+  assert.deepEqual(
+    without.map((commit) => [commit.subject, commit.timestamp, commit.committed, commit.parents]),
+    withFiles.map((commit) => [commit.subject, commit.timestamp, commit.committed, commit.parents]),
+  );
+  assert.ok((withFiles[0]?.files.length ?? 0) >= 2, 'the default still counts lines per file');
+  assert.deepEqual(without[0]?.files, [], 'and the cheap walk asks git for none of it');
+});
+
 /* ------------------------------------------------------------------ *
  * Honesty.
  * ------------------------------------------------------------------ */
@@ -461,7 +609,7 @@ test('the sweep re-bands recorded scores, and never moves a change a hard rule d
     record({ pr: 4, merge_sha: 'm4', score: 5, band: 'pelna', band_from: 'hard rule' }),
   ];
 
-  const report = calibrate({ records, leaks, current: { read_fragments: 35, full_review: 65 }, scoreMax: 120 });
+  const report = calibrate({ records, leaks, excluded: [], current: { read_fragments: 35, full_review: 65 }, scoreMax: 120 });
 
   assert.equal(report.merges, 4);
   assert.equal(report.leaked, 1);
@@ -508,7 +656,7 @@ test('a pair that ties with the one in force is not a candidate, however the gri
     record({ pr: 2, merge_sha: 'm2', score: 20 }),
     record({ pr: 3, merge_sha: 'm3', score: 20 }),
   ];
-  const report = calibrate({ records, leaks, current: { read_fragments: 35, full_review: 65 }, scoreMax: 120 });
+  const report = calibrate({ records, leaks, excluded: [], current: { read_fragments: 35, full_review: 65 }, scoreMax: 120 });
 
   assert.equal(report.candidate, null, `the sweep named ${JSON.stringify(report.candidate)} as a candidate`);
   assert.match(report.candidate_blocked ?? '', /argues for no change/);
@@ -548,6 +696,7 @@ test('a pair that genuinely beats the one in force is named, and it is the small
   const report = calibrate({
     records,
     leaks: [leak(6, 'm6')],
+    excluded: [],
     current: { read_fragments: 35, full_review: 65 },
     scoreMax: 120,
   });
@@ -566,6 +715,7 @@ test('a register in which nothing leaked argues for no threshold, and says so in
   const report = calibrate({
     records: [record({ pr: 1, merge_sha: 'm1', score: 20 }), record({ pr: 2, merge_sha: 'm2', score: 90, band: 'pelna' })],
     leaks: [],
+    excluded: [],
     current: { read_fragments: 35, full_review: 65 },
     scoreMax: 120,
   });
@@ -583,6 +733,7 @@ test('a score computed under different weights is set aside rather than compared
       record({ pr: 3, merge_sha: 'm3', score: 60, score_max: null }),
     ],
     leaks: [],
+    excluded: [],
     current: { read_fragments: 35, full_review: 65 },
     scoreMax: 120,
   });

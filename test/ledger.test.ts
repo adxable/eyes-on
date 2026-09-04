@@ -47,6 +47,7 @@ interface LabelDoc {
   link_sentence: string;
   git_merge_sha: string | null;
   github_merge_sha: string | null;
+  git_candidates: number;
   merge_sha: string | null;
   merge_parent_sha: string | null;
   merge_parents: number | null;
@@ -324,6 +325,69 @@ hard_rules:
   assert.equal(doc.check_source, 'merge-commit');
   assert.equal(record.check_base_sha, parent);
   assert.equal(record.check_head_sha, merge);
+});
+
+
+/**
+ * Two default-branch commits can carry one pull request number - a change
+ * reverted and re-landed under a subject that kept the suffix, a cherry-pick
+ * onto the default branch - and then the sha on the row is a *choice*. `leaks`
+ * blames every later fix against whichever one was recorded, so the register
+ * says how many there were rather than presenting the newest as the only one.
+ */
+test('two default-branch commits carrying one pull request number is recorded as a choice, not hidden', async (t) => {
+  const { repo, merge } = mergedRepo('label-candidates');
+  // Re-landed later under a subject that still ends in (#7): a second commit on
+  // the default branch naming the same pull request.
+  const relanded = repo.commitFiles('fix(widget): re-land the widget (#7)', {
+    'src/widget.ts': 'export function widget(): number {\n  return 2;\n}\n',
+  });
+
+  const env = sandboxEnv('label-candidates');
+  await initRepo(t, repo, env);
+  await captureCli(['check', '--base', merge, '--head', relanded, '--format', 'json'], { cwd: repo.path, env });
+
+  const gh = mergedGh('label-candidates', { mergeSHA: relanded });
+  const result = await captureCli(['label', '--pr', '7', '--format', 'json'], {
+    cwd: repo.path,
+    env: { ...env, PATH: gh.path },
+  });
+  const doc = JSON.parse(result.out) as LabelDoc;
+  const record = ledgerLines(env)[0] as LedgerRecord;
+
+  assert.equal(result.code, EXIT_OK);
+  assert.equal(doc.merge_sha, relanded, 'the newest candidate is the one taken');
+  assert.equal(doc.git_candidates, 2, 'and the payload says it was taken from two');
+  assert.equal(record.link.git_candidates, 2, 'the row keeps that, because leaks blames against the sha beside it');
+  assert.ok(
+    doc.link_sentence.includes(merge.slice(0, 12)),
+    `the other candidate is named rather than dropped: ${doc.link_sentence}`,
+  );
+  assert.ok(
+    doc.help.some((line) => line.includes('commits on the default branch carry')),
+    `the reader is told a choice was made: ${JSON.stringify(doc.help)}`,
+  );
+
+  // The ordinary case says nothing about candidates, so the sentence above is
+  // information rather than noise on every row.
+  const ordinary = mergedRepo('label-candidates-one');
+  const otherEnv = sandboxEnv('label-candidates-one');
+  await initRepo(t, ordinary.repo, otherEnv);
+  await captureCli(['check', '--base', ordinary.parent, '--head', ordinary.merge, '--format', 'json'], {
+    cwd: ordinary.repo.path,
+    env: otherEnv,
+  });
+  const oneGh = mergedGh('label-candidates-one', { mergeSHA: ordinary.merge });
+  const single = JSON.parse(
+    (
+      await captureCli(['label', '--pr', '7', '--format', 'json'], {
+        cwd: ordinary.repo.path,
+        env: { ...otherEnv, PATH: oneGh.path },
+      })
+    ).out,
+  ) as LabelDoc;
+  assert.equal(single.git_candidates, 1);
+  assert.ok(!single.help.some((line) => line.includes('commits on the default branch carry')));
 });
 
 test('a drift grade on the register carries the intent it was measured against', async (t) => {

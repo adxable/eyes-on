@@ -1,6 +1,6 @@
 import { bandFor, type Band } from '../risk/signals.js';
 import type { LedgerRecord } from './ledger.js';
-import type { Leak } from './leaks.js';
+import type { ExcludedMerge, Leak } from './leaks.js';
 import { sampleVerdict, type ChannelSize, type SampleVerdict } from './sample.js';
 
 /**
@@ -14,8 +14,19 @@ import { sampleVerdict, type ChannelSize, type SampleVerdict } from './sample.js
  * assessed, and re-deriving them here would let `calibrate` disagree with the
  * comment that was published on the pull request.
  *
- * Three things decide whether the sweep means anything, and each is enforced
+ * Four things decide whether the sweep means anything, and each is enforced
  * rather than assumed.
+ *
+ * **The sweep runs over the population the leaks were measured over.** The
+ * numerator comes from `measureLeaks`, which admits a merge to the denominator
+ * only if a leak could have been attributed to it - it merged inside `--since`,
+ * both sources agreed on a commit, that commit is a squash merge this object
+ * store holds, and its window has elapsed. Banding the whole register instead
+ * would divide those leaks by a larger population and understate every rate,
+ * and would print channel sizes disagreeing with the ones `leaks` prints for
+ * the same register. So `LeaksReport.eligible` is what comes in here - the
+ * measured population itself, not a second copy of the rule that produced it -
+ * and the rows it left out are counted with their reasons.
  *
  * **A score is only comparable to a threshold under the weights it was computed
  * with.** `score_max` is recorded beside every score for exactly this reason,
@@ -42,8 +53,13 @@ import { sampleVerdict, type ChannelSize, type SampleVerdict } from './sample.js
 export const GRID_STEP = 5;
 
 export interface CalibrateOptions {
+  /** `LeaksReport.eligible`: the merges the leak counts were divided by. */
   records: readonly LedgerRecord[];
   leaks: readonly Leak[];
+  /** `LeaksReport.excluded`: the register rows that measurement left out, so
+   *  the narrowing is reported here too rather than being invisible on this
+   *  surface. */
+  excluded: readonly ExcludedMerge[];
   /** The thresholds in force now, so the sweep can say where the repository
    *  stands before it says where it could stand. */
   current: { read_fragments: number; full_review: number };
@@ -88,6 +104,10 @@ export interface CalibrateReport {
   rule_forced: number;
   /** Records carrying no score at all, which no threshold can band. */
   unscored: number;
+  /** Register rows outside the leak denominator, with the reason each was left
+   *  out. The sweep never saw them, and a reader of the channel sizes above is
+   *  told how many rows that is. */
+  outside_denominator: { reason: ExcludedMerge['reason']; merges: number }[];
   current: GridRow | null;
   rows: GridRow[];
   /** The pair this history points at, or null when it points at none. Never
@@ -166,6 +186,7 @@ export function calibrate(options: CalibrateOptions): CalibrateReport {
     other_scales: otherScales,
     rule_forced: population.filter((entry) => entry.forced).length,
     unscored,
+    outside_denominator: countReasons(options.excluded),
     current: currentRow,
     rows,
     candidate: chosen.row,
@@ -264,6 +285,15 @@ function chooseCandidate(
 
 function percent(value: number): string {
   return `${Math.round(value * 100)}%`;
+}
+
+/** How many register rows each exclusion reason accounts for, largest first. */
+function countReasons(excluded: readonly ExcludedMerge[]): { reason: ExcludedMerge['reason']; merges: number }[] {
+  const counts = new Map<ExcludedMerge['reason'], number>();
+  for (const entry of excluded) counts.set(entry.reason, (counts.get(entry.reason) ?? 0) + 1);
+  return [...counts.entries()]
+    .map(([reason, merges]) => ({ reason, merges }))
+    .sort((a, b) => b.merges - a.merges || a.reason.localeCompare(b.reason));
 }
 
 /** How many records sit on each other scale, so a reader can see whether the

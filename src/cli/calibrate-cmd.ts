@@ -19,10 +19,11 @@ import { DEFAULT_SINCE_SECONDS, DEFAULT_WINDOW_SECONDS } from './leaks-cmd.js';
  * `risk/repoconfig.ts` are the report's, and changing one is argued from
  * measured history rather than from taste.
  *
- * The sweep runs over `leaks`' own measurement, not a second one of its own, so
- * the two commands cannot report different leak counts for the same register.
- * `src/ledger/calibrate.ts` holds the arithmetic and the three things that
- * decide whether it means anything.
+ * The sweep runs over `leaks`' own measurement, not a second one of its own -
+ * its leaks *and* the population those leaks were divided by - so the two
+ * commands cannot report different leak counts, or different channel sizes, for
+ * the same register. `src/ledger/calibrate.ts` holds the arithmetic and the
+ * four things that decide whether it means anything.
  *
  * **It proposes nothing the register can support.** The row this history points
  * at is presented with the same sample sentence `leaks` carries, and when the
@@ -66,6 +67,7 @@ export async function calibrateCommand(context: Context): Promise<number> {
     anchorSHA,
     sinceSeconds: now - sinceSeconds,
     windowSeconds,
+    nowSeconds: now,
     onProgress: (message) => progress(context.writers, message),
   });
 
@@ -74,8 +76,13 @@ export async function calibrateCommand(context: Context): Promise<number> {
   // in: a threshold compared with a score computed under different weights is
   // a comparison of two different numbers wearing one name.
   const report = calibrate({
-    records,
+    // The population `leaks` divided by, not the whole register. Two commands
+    // reporting different channel sizes for one register would be two
+    // instruments rather than one, and the rate the candidate is held at would
+    // be diluted by merges no leak could ever have been attributed to.
+    records: leaks.eligible,
     leaks: leaks.leaks,
+    excluded: leaks.excluded,
     current: risk.trusted.config.thresholds,
     scoreMax: maxScore(risk.trusted.config),
   });
@@ -168,6 +175,7 @@ function renderDoc(report: CalibrateReport, options: DocOptions): ToonObject {
     rule_forced: report.rule_forced,
     unscored: report.unscored,
     other_scales: report.other_scales as unknown as ToonValue,
+    outside_denominator: report.outside_denominator as unknown as ToonValue,
     ledger: options.ledgerPath,
     ledger_absent: options.ledgerAbsent,
     config_state: options.configState,
@@ -189,6 +197,14 @@ function helpLines(report: CalibrateReport, options: DocOptions): string[] {
   }
   if (report.unscored > 0) {
     lines.push(`${report.unscored} registered merges carry no score, so no threshold can band them and they are outside the sweep`);
+  }
+  const outside = report.outside_denominator.reduce((sum, entry) => sum + entry.merges, 0);
+  if (outside > 0) {
+    lines.push(
+      `${outside} registered merge${outside === 1 ? ' is' : 's are'} outside the leak denominator and outside this sweep (${report.outside_denominator
+        .map((entry) => `${entry.merges} ${entry.reason}`)
+        .join(', ')}): a pair of thresholds is ranked on what leaked, so the sweep runs over exactly the merges \`eyes-on leaks\` could attribute a leak to`,
+    );
   }
   const setAside = report.other_scales.reduce((sum, scale) => sum + scale.merges, 0);
   if (setAside > 0) {

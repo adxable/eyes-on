@@ -33,7 +33,18 @@ import type { Database } from '../db/db.js';
 export interface FixAttribution {
   /** Commit that was recognised as a fix. */
   sha: string;
+  /** Author timestamp: when the fix was written. */
   timestamp: number;
+  /**
+   * Committer timestamp: when the fix landed on the branch it was read from.
+   *
+   * Both are here because they answer different questions and stage 3 needs the
+   * second one. A leak window runs from one landing to another, and the author
+   * date of a branch that was written before the change it fixes, rebased onto
+   * it and squash-merged afterwards is earlier than the merge it blames into -
+   * which reads as a fix that predates its own cause.
+   */
+  committed: number;
   subject: string;
   /** Files whose removed lines this fix blamed into, with the number of blamed
    *  lines - kept for `why`, which shows the evidence rather than the score. */
@@ -101,7 +112,13 @@ export function attributeFixes(commits: readonly CommitRecord[], options: SzzOpt
     const fromCache = readCache(options.db, fix.sha);
     if (fromCache) {
       cached += 1;
-      attributions.push({ sha: fix.sha, timestamp: fix.timestamp, subject: fix.subject, ...fromCache });
+      attributions.push({
+        sha: fix.sha,
+        timestamp: fix.timestamp,
+        committed: fix.committed,
+        subject: fix.subject,
+        ...fromCache,
+      });
       options.onProgress?.(cached + computed, fixes.length);
       continue;
     }
@@ -116,6 +133,7 @@ export function attributeFixes(commits: readonly CommitRecord[], options: SzzOpt
     attributions.push({
       sha: fix.sha,
       timestamp: fix.timestamp,
+      committed: fix.committed,
       subject: fix.subject,
       files: measured.files,
       introducers: measured.introducers,

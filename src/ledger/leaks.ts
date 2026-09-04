@@ -1,7 +1,7 @@
 import type { Database } from '../db/db.js';
 import type { RepoReader } from '../git/reader.js';
 import type { RepoConfig } from '../risk/repoconfig.js';
-import { attributeFixes, isFixCommit, type FixAttribution } from '../risk/szz.js';
+import { attributeFixes, isFixCommit } from '../risk/szz.js';
 import { mergedPulls } from './link.js';
 import type { LedgerRecord } from './ledger.js';
 import { sampleVerdict, type ChannelSize, type SampleVerdict } from './sample.js';
@@ -46,6 +46,25 @@ import { sampleVerdict, type ChannelSize, type SampleVerdict } from './sample.js
  * clean - a leak rate whose denominator holds changes that structurally cannot
  * leak is understated by however many of them there are - and every report says
  * how many it excluded and why.
+ *
+ * ## A merge that has not had its window yet is under-observed, not clean
+ *
+ * The same argument settles the other end of the range. A merge that landed
+ * four hours ago has had four hours of the fourteen days it is measured over,
+ * so counting it as a merge that did not leak divides the leaks by a population
+ * part of which was never given the chance to. On a repository landing a
+ * change or two a day that is a tenth of the denominator, understating every
+ * channel at once. Those merges leave the denominator with `window has not
+ * elapsed` recorded against them and return to it on the next run.
+ *
+ * ## Both ends of the window are landing times
+ *
+ * The window runs from when the change landed to when the fix landed, and both
+ * are committer dates. The author date of a fix is when its branch was written,
+ * which for a branch rebased onto the change it fixes is *before* the merge it
+ * blames into - a negative elapsed for a real leak. `merged_at` refuses the
+ * author date for the same reason, and a window whose two ends read different
+ * clocks measures neither of them.
  */
 
 export interface LeakOptions {
@@ -62,6 +81,10 @@ export interface LeakOptions {
   sinceSeconds: number;
   /** How long after a merge a fix still counts as that merge's leak. */
   windowSeconds: number;
+  /** Now, as the caller read the clock. Read once and passed in rather than
+   *  taken here, so the denominator, the history walk and the report all
+   *  describe the same instant. */
+  nowSeconds: number;
   onProgress?: (message: string) => void;
 }
 
@@ -73,6 +96,8 @@ export interface Leak {
   merged_at: number;
   fix_sha: string;
   fix_subject: string;
+  /** When the fix landed - its committer date, the same clock `merged_at` is
+   *  on. See the header. */
   fix_at: number;
   /** Whole days between the merge and the fix, for the reader who wants to see
    *  how much of the window was used. */
@@ -105,6 +130,9 @@ export interface ExcludedMerge {
     | 'no merge time'
     /** It merged before the window this report covers. */
     | 'outside --since'
+    /** It merged less than `--window` ago, so it has not had the whole period
+     *  every other merge in the denominator was given to leak in. */
+    | 'window has not elapsed'
     /** A true merge commit introduces no line, so blame can never name it. */
     | 'merge commit introduces no line'
     /** The object store this run read does not hold the commit. */
@@ -123,6 +151,14 @@ export interface LeaksReport {
   /** Leaks over merges, or null when there is no merge to divide by. */
   base_rate: number | null;
   channels: ChannelRow[];
+  /** The register rows the denominator is made of.
+   *
+   *  This is the shared boundary between the two commands, and it is a list of
+   *  records rather than a rule for producing one: `calibrate` sweeps exactly
+   *  the population that was measured here, so no second copy of the
+   *  eligibility test exists to drift from this one and the two surfaces cannot
+   *  report different channel sizes for one register. */
+  eligible: LedgerRecord[];
   leaks: Leak[];
   excluded: ExcludedMerge[];
   /** Registered merges whose band is a floor because the trusted configuration
@@ -167,6 +203,12 @@ export function measureLeaks(options: LeakOptions): LeaksReport {
       excluded.push({ pr: record.pr, merge_sha: mergeSHA, reason: 'outside --since' });
       continue;
     }
+    // Not yet observable for as long as everything else in the denominator was;
+    // see the header.
+    if (record.merged_at + options.windowSeconds > options.nowSeconds) {
+      excluded.push({ pr: record.pr, merge_sha: mergeSHA, reason: 'window has not elapsed' });
+      continue;
+    }
     // A true merge commit introduces no line; see the header.
     if (record.merge_parents !== null && record.merge_parents > 1) {
       excluded.push({ pr: record.pr, merge_sha: mergeSHA, reason: 'merge commit introduces no line' });
@@ -188,7 +230,14 @@ export function measureLeaks(options: LeakOptions): LeaksReport {
   // must be inside the reported range to be counted, and a range that quietly
   // widened itself to catch one more fix would report a rate over a period the
   // header does not name.
-  const commits = options.reader.history({ sinceSeconds: options.sinceSeconds, until: options.anchorSHA });
+  // No diffstat: a fix is recognised from its subject and blamed from its own
+  // patch, so a per-file line count of every commit in the window is work whose
+  // answer nothing reads.
+  const commits = options.reader.history({
+    sinceSeconds: options.sinceSeconds,
+    until: options.anchorSHA,
+    withFiles: false,
+  });
   const fixPattern = new RegExp(options.config.fix_commit_pattern);
   const fixes = commits.filter((commit) => isFixCommit(commit, fixPattern));
   options.onProgress?.(`${fixes.length} fix commits in the window, of ${commits.length} commits`);
@@ -207,10 +256,12 @@ export function measureLeaks(options: LeakOptions): LeaksReport {
     for (const [introducer, lines] of Object.entries(attribution.introducers)) {
       const merge = byMerge.get(introducer);
       if (!merge) continue;
-      // A merge cannot be its own leak, and a fix that predates the merge it
-      // blames into is a clock disagreeing with itself rather than a leak.
+      // A merge cannot be its own leak.
       if (attribution.sha === merge.mergeSHA) continue;
-      const elapsed = attribution.timestamp - merge.mergedAt;
+      // Both ends are landing times; see the header. The author date of a
+      // rebased branch predates the merge it fixes, and reading it here would
+      // drop a real leak as a negative elapsed.
+      const elapsed = attribution.committed - merge.mergedAt;
       if (elapsed < 0 || elapsed > options.windowSeconds) continue;
       leaks.push({
         pr: merge.record.pr,
@@ -219,7 +270,7 @@ export function measureLeaks(options: LeakOptions): LeaksReport {
         merged_at: merge.mergedAt,
         fix_sha: attribution.sha,
         fix_subject: attribution.subject,
-        fix_at: attribution.timestamp,
+        fix_at: attribution.committed,
         days_after_merge: Math.floor(elapsed / 86_400),
         blamed_lines: lines,
       });
@@ -248,6 +299,7 @@ export function measureLeaks(options: LeakOptions): LeaksReport {
     leaked: leakedMerges.size,
     base_rate: eligible.length === 0 ? null : leakedMerges.size / eligible.length,
     channels,
+    eligible: eligible.map((entry) => entry.record),
     leaks: leaks.sort((a, b) => b.fix_at - a.fix_at),
     excluded,
     unverified: eligible.filter((entry) => entry.record.unverified).length,
@@ -289,8 +341,3 @@ export function channelRows(records: readonly LedgerRecord[], leaks: readonly Le
     .map((row) => ({ ...row, rate: row.merges === 0 ? null : row.leaked / row.merges }))
     .sort((a, b) => a.band.localeCompare(b.band));
 }
-
-/** Every fix attribution, for a caller that wants the raw material. Exported
- *  so a test can prove the blame is what decides a leak, rather than a path
- *  intersection wearing its name. */
-export type { FixAttribution };

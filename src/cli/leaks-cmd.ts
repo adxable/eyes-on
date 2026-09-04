@@ -94,6 +94,7 @@ export async function leaksCommand(context: Context): Promise<number> {
     anchorSHA,
     sinceSeconds: now - sinceSeconds,
     windowSeconds,
+    nowSeconds: now,
     onProgress: (message) => progress(context.writers, message),
   });
 
@@ -215,6 +216,12 @@ function helpLines(report: LeaksReport, options: DocOptions): string[] {
   if (noLine > 0) {
     lines.push(
       `${noLine} registered merge${noLine === 1 ? ' is' : 's are'} a true merge commit rather than a squash: blame never names a merge commit as introducing a line, so no fix can be attributed to ${noLine === 1 ? 'it' : 'them'} and ${noLine === 1 ? 'it is' : 'they are'} left out of the denominator rather than counted clean`,
+    );
+  }
+  const tooRecent = report.excluded.filter((entry) => entry.reason === 'window has not elapsed').length;
+  if (tooRecent > 0) {
+    lines.push(
+      `${tooRecent} registered merge${tooRecent === 1 ? ' landed' : 's landed'} less than ${days(options.windowSeconds)} ago, so ${tooRecent === 1 ? 'it has' : 'they have'} not had the whole window every other merge here was given to leak in: ${tooRecent === 1 ? 'it is' : 'they are'} left out of the denominator and ${tooRecent === 1 ? 'returns' : 'return'} to it once the window has passed`,
     );
   }
   if (report.unverified > 0) {

@@ -152,9 +152,23 @@ export class RepoReader {
    * diff against its first parent re-reports every line of the branch it
    * merges, so counting them would credit each change twice and hand the file
    * that happened to be merged most often the top of the ranking.
+   *
+   * `withFiles: false` drops `--numstat`, and the records then carry an empty
+   * `files`. That is for a caller that walks history to find commits rather
+   * than to count lines - `leaks` recognises a fix from its subject and blames
+   * it from its own patch - and it is the difference between a second and a
+   * minute on a repository of any size, the same reason `firstParentLog` never
+   * asks for a diffstat at all.
    */
-  history(options: { sinceSeconds?: number; untilSeconds?: number; until: string; maxCount?: number }): CommitRecord[] {
-    const args = ['log', '--no-merges', '--numstat', '--no-renames', '--date=unix', `--format=${LOG_FORMAT}`];
+  history(options: {
+    sinceSeconds?: number;
+    untilSeconds?: number;
+    until: string;
+    maxCount?: number;
+    withFiles?: boolean;
+  }): CommitRecord[] {
+    const args = ['log', '--no-merges', '--date=unix', `--format=${LOG_FORMAT}`];
+    if (options.withFiles !== false) args.push('--numstat', '--no-renames');
     if (options.sinceSeconds !== undefined) {
       args.push(`--since=${Math.floor(options.sinceSeconds)}`);
     }

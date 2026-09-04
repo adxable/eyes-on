@@ -32,7 +32,9 @@ import type { LinkAgreement } from './link.js';
  *     travels with it and is not assumed to be the row's own `intent`;
  *   - the **link** from the change to the commit that landed it was
  *     reconstructed from two sources that can disagree, so both shas and the
- *     agreement between them travel with it rather than one merged answer.
+ *     agreement between them travel with it rather than one merged answer, and
+ *     `git_candidates` says how many default-branch commits carried the `(#N)`
+ *     subject the git side chose from.
  */
 
 export const LEDGER_VERSION = 1;
@@ -96,6 +98,11 @@ export interface LedgerRecord {
     agreement: LinkAgreement;
     git_merge_sha: string | null;
     github_merge_sha: string | null;
+    /** How many default-branch commits carried this pull request's `(#N)`
+     *  subject. More than one means `git_merge_sha` is the newest of several
+     *  candidates rather than the only one, and `leaks` blames every later fix
+     *  against it - so the row says so instead of the choice being invisible. */
+    git_candidates: number;
     sentence: string;
   };
 
