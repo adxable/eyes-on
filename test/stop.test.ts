@@ -8,6 +8,7 @@ import { Paths } from '../src/core/paths.js';
 import type { ServiceStatus } from '../src/daemon/service.js';
 import { daemonState, stopDaemon } from '../src/daemon/lifecycle.js';
 import { processAlive } from '../src/daemon/lock.js';
+import { identifyDaemonProcess } from '../src/daemon/identity.js';
 import { run as runCli } from '../src/cli/run.js';
 import type { Writers } from '../src/cli/output.js';
 import { stateRoot as shortStateRoot, tempDir } from './helpers.js';
@@ -69,6 +70,13 @@ async function holderProcess(
      * reach the socket path's escalation from a test.
      */
     socket?: boolean;
+    /** The pid `health` reports, when it must differ from the process's own -
+     *  the reading a stop gets when the daemon it spoke to has been replaced
+     *  since. */
+    healthPid?: number;
+    /** Write this pid into the pid file on the way out, which is what a
+     *  replacement daemon does for itself once it has the lock. */
+    handoff?: number;
   } = {},
 ): Promise<Holder> {
   mkdirSync(paths.root, { recursive: true });
@@ -79,7 +87,7 @@ async function holderProcess(
     `import { DatabaseSync } from 'node:sqlite';
      import { writeFileSync } from 'node:fs';
      import { createServer } from 'node:net';
-     const [lockPath, pidPath, mode, socketPath] = process.argv.slice(2);
+     const [lockPath, pidPath, mode, socketPath, healthPid, handoff] = process.argv.slice(2);
      if (lockPath !== 'none') {
        const db = new DatabaseSync(lockPath);
        db.exec('PRAGMA locking_mode = EXCLUSIVE');
@@ -90,7 +98,18 @@ async function holderProcess(
      // Exactly what the daemon does next, and the only record that can name a
      // live holder: the row itself is unreadable while the lock is held.
      if (pidPath !== 'none') writeFileSync(pidPath, process.pid + '\\n');
-     if (mode === 'ignore-term') process.on('SIGTERM', () => {});
+     // What the real daemon does with SIGTERM: it handles it and exits 0, which
+     // is the exit neither service manager restarts. A holder that instead died
+     // *by* the signal would be an unsuccessful exit no daemon of this product
+     // produces on SIGTERM.
+     if (mode === 'ignore-term') {
+       process.on('SIGTERM', () => {});
+     } else {
+       process.on('SIGTERM', () => {
+         if (handoff !== 'none' && pidPath !== 'none') writeFileSync(pidPath, handoff + '\\n');
+         process.exit(0);
+       });
+     }
      const reply = (connection, id, result) =>
        connection.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n');
      const serve = (done) => {
@@ -106,7 +125,7 @@ async function holderProcess(
              if (request.method === 'health') {
                reply(connection, request.id, {
                  ok: true,
-                 pid: process.pid,
+                 pid: healthPid === 'none' ? process.pid : Number(healthPid),
                  root: process.cwd(),
                  version: 'test',
                  startedAt: Date.now(),
@@ -132,6 +151,8 @@ async function holderProcess(
       options.pidFile === false ? 'none' : paths.pidFile,
       options.ignoreTerm ? 'ignore-term' : 'exit-on-term',
       options.socket ? paths.socket : 'none',
+      options.healthPid === undefined ? 'none' : String(options.healthPid),
+      options.handoff === undefined ? 'none' : String(options.handoff),
       ...tail,
     ],
     { stdio: ['ignore', 'pipe', 'ignore'] },
@@ -423,30 +444,60 @@ function loadedJob(label: string): (paths: Paths) => ServiceStatus {
 }
 
 /**
- * The service manager owns the daemon, and a signalled daemon is an
- * unsuccessful exit - which is exactly what the job this product installs
- * restarts. Neither reading of the lock afterwards may be reported as a plain
- * stop, and the held one may not be reported as an unresolved conflict.
+ * A loaded job is not evidence of anything that happened.
+ *
+ * The daemon handles SIGTERM and exits 0, and 0 is the exit
+ * `KeepAlive.SuccessfulExit=false` and `Restart=on-failure` do *not* restart -
+ * so the ordinary success of this feature is a stop, on a managed root exactly
+ * as on any other. Reporting it as a daemon that is coming back would be the
+ * opposite of what happened.
  */
-test('a stop on a service-managed root names the job rather than reporting a bare stop', async (t) => {
+test('an ordinary SIGTERM stop on a service-managed root is a stop', async (t) => {
   const paths = stateRoot('stop-managed');
   const holder = await holderProcess(t, paths);
   leaveSocketFile(paths);
 
   const result = await stopDaemon(paths, { timeoutMs: 5000, inspectService: loadedJob('com.example.eyes-on') });
 
-  assert.equal(result.outcome, 'service-managed');
-  assert.equal(result.stopped, false, 'a root whose job is loaded is not left without a daemon');
+  assert.equal(result.outcome, 'stopped', 'a clean exit is not restarted, whatever the manager holds');
+  assert.equal(result.stopped, true);
   assert.equal(result.pid, holder.pid);
+  assert.equal(result.signal, 'SIGTERM');
   assert.equal(await waitForDeath(holder.pid), true);
-  assert.match(result.detail ?? '', /com\.example\.eyes-on/);
-  assert.ok(result.help.some((line) => line.includes('com.example.eyes-on')));
-  // The cleanup still happened: the lock was free when it was read.
   assert.equal(existsSync(paths.socket), false);
   assert.equal((await daemonState(paths)).diagnosis.kind, 'stopped');
 });
 
-test('a lock taken again on a managed root is a replacement daemon, not a conflict', async (t) => {
+/**
+ * SIGKILL is the one exit this command knows was unsuccessful, and an
+ * unsuccessful exit is what a loaded job is restarted on - so this is the
+ * reading where the manager's job belongs in the sentence.
+ */
+test('a --force kill on a service-managed root says the job brings a daemon back', async (t) => {
+  const paths = stateRoot('stop-managed-force');
+  const holder = await holderProcess(t, paths, { ignoreTerm: true });
+
+  const result = await stopDaemon(paths, {
+    timeoutMs: 1500,
+    force: true,
+    inspectService: loadedJob('com.example.eyes-on'),
+  });
+
+  assert.equal(result.outcome, 'service-managed');
+  assert.equal(result.signal, 'SIGKILL');
+  assert.equal(result.stopped, false, 'a root the manager restarts is not left without a daemon');
+  assert.match(result.detail ?? '', /com\.example\.eyes-on/);
+  assert.ok(result.help.some((line) => line.includes('com.example.eyes-on')));
+  assert.equal(await waitForDeath(holder.pid), true);
+});
+
+/**
+ * A held lock is decided by the identity gate, never by a job being loaded. The
+ * keeper here is a real process nothing can confirm as this root's daemon, so
+ * the answer is the conflict it is - and the loaded job may not turn it into a
+ * claimed replacement at exit 0.
+ */
+test('a lock held by an unconfirmable process stays a conflict on a managed root', async (t) => {
   const paths = stateRoot('stop-managed-held');
   const keeper = await holderProcess(t, paths, { pidFile: false });
   const named = await holderProcess(t, paths, { lock: false });
@@ -454,12 +505,61 @@ test('a lock taken again on a managed root is a replacement daemon, not a confli
 
   const result = await stopDaemon(paths, { timeoutMs: 5000, inspectService: loadedJob('com.example.eyes-on') });
 
-  assert.equal(result.outcome, 'service-managed', 'a job the manager holds explains the lock being held again');
-  assert.notEqual(result.outcome, 'lock-still-held');
+  assert.equal(result.outcome, 'lock-still-held', 'nobody confirmed what holds the lock');
+  assert.match(result.detail ?? '', /another process holds it/);
   assert.equal(await waitForDeath(named.pid), true);
   assert.equal(processAlive(keeper.pid), true, 'the holder of the lock was never signalled');
   assert.equal(existsSync(paths.socket), true, 'a held lock still means nothing is removed');
   assert.equal(existsSync(paths.pidFile), true);
+});
+
+/**
+ * The other half of the same rule: a holder the gate *does* confirm is a
+ * replacement daemon, and that is what makes it one - the staging hands the pid
+ * file over to the process holding the lock as the signalled one exits, which
+ * is the order a daemon that takes the lock writes it in.
+ */
+test('a lock held by a confirmed daemon of this root is a replacement, not a conflict', async (t) => {
+  const paths = stateRoot('stop-replaced');
+  const keeper = await holderProcess(t, paths, { pidFile: false });
+  const named = await holderProcess(t, paths, { lock: false, handoff: keeper.pid });
+  leaveSocketFile(paths);
+
+  const result = await stopDaemon(paths, { timeoutMs: 5000 });
+
+  assert.equal(result.outcome, 'replaced');
+  assert.equal(result.stopped, false);
+  assert.equal(result.pid, named.pid);
+  assert.match(result.detail ?? '', new RegExp(`pid ${keeper.pid}`));
+  assert.equal(await waitForDeath(named.pid), true);
+  assert.equal(processAlive(keeper.pid), true, 'a daemon that holds the lock is never signalled by a stop of another pid');
+  assert.equal(existsSync(paths.socket), true, 'the socket belongs to the daemon serving this root now');
+});
+
+/**
+ * The socket path reaches the same rule. A stop that finds the pid it spoke to
+ * replaced by a confirmed daemon must say so, not send the reader off to
+ * restart a job that already runs one.
+ */
+test('a daemon replaced between the ask and the signal is named, not handed over', async (t) => {
+  const paths = stateRoot('stop-socket-replaced');
+  const gonePid = 999_999;
+  const holder = await holderProcess(t, paths, { socket: true, healthPid: gonePid });
+
+  const before = await daemonState(paths);
+  assert.equal(before.pid, gonePid, 'the health answer names a pid that no longer holds the lock');
+
+  const result = await stopDaemon(paths, { timeoutMs: 1200 });
+
+  assert.equal(result.outcome, 'replaced');
+  assert.equal(result.signal, null, 'a daemon nobody asked to exit is not signalled');
+  assert.equal(result.pid, holder.pid);
+  assert.ok(
+    !result.help.some((line) => line.includes('Restart the eyes-on job')),
+    'a job that has already been restarted is not a next step',
+  );
+  await delay(300);
+  assert.equal(processAlive(holder.pid), true);
 });
 
 /**
@@ -503,4 +603,26 @@ test('the refusal a person sees names the hand-over, not only the payload', asyn
   assert.match(human.out, /no signal was sent/);
   assert.match(human.out, /service manager/, 'criterion 5 is a sentence, and it has to be printed');
   assert.equal(processAlive(holder.pid), true);
+});
+
+/**
+ * `ps -o lstart=` renders `%a %b %e %H:%M:%S %Y` in the caller's locale, and the
+ * start-time half of the gate is a `Date.parse` of that string - which reads
+ * English names only. Under a `LC_TIME` that prints `pon wrz  8 ...` an
+ * unpinned read produces no start time, and a machine whose user has a
+ * non-English locale could never end a wedged daemon at all.
+ */
+test('the identity gate confirms a daemon under a non-English LC_TIME', async (t) => {
+  const paths = stateRoot('stop-locale');
+  const holder = await holderProcess(t, paths);
+  const previous = process.env.LC_TIME;
+  process.env.LC_TIME = 'pl_PL.UTF-8';
+  t.after(() => {
+    if (previous === undefined) delete process.env.LC_TIME;
+    else process.env.LC_TIME = previous;
+  });
+
+  const identity = identifyDaemonProcess(paths, { pid: holder.pid, startedAt: Date.now() });
+
+  assert.equal(identity.confirmed, true, identity.confirmed ? '' : identity.reason);
 });

@@ -166,12 +166,15 @@ consulted.
   the job it actually started, and only spawns a daemon itself as a fallback.
   Starting one in parallel wins the singleton lock and leaves the managed job
   exiting cleanly forever after. The same ownership decides what a stop may
-  claim: a signalled daemon is an unsuccessful exit, which is what
-  `KeepAlive.SuccessfulExit=false` and `Restart=on-failure` restart, so once the
-  process is gone `stopDaemon` asks `inspectService` and reports
-  `service-managed` - naming the job, never touching it. Without that, a healthy
-  restart reads as `lock-still-held` ("another process holds it") and a daemon
-  that is coming back reads as `stopped`.
+  claim, and the claim follows evidence rather than the job being loaded. Those
+  jobs restart on failure only, and the daemon handles SIGTERM and exits 0, so
+  an ordinary stop on a managed root is a `stopped`. Two readings are not:
+  a lock held by a process `identifyDaemonProcess` confirms is this root's
+  daemon is `replaced`, and a lock left free by a **SIGKILL** - the one exit this
+  command knows was unsuccessful - is `service-managed`. `inspectService` is
+  asked only to name the job in the sentence; it never decides an outcome or an
+  exit code, and a holder nobody could confirm stays `lock-still-held` at exit 1
+  whatever the manager holds.
 - **The mirror is a rebuildable cache, not state.** It borrows the clone's objects
   through `objects/info/alternates`, so deleting the clone breaks it by design;
   `doctor` detects that and `init --force` rebuilds it.

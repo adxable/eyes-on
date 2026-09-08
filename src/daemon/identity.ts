@@ -61,6 +61,12 @@ export function readProcess(pid: number): ProcessReading {
     const result = spawnSync(binary, ['-p', String(pid), '-o', 'lstart=', '-o', 'args='], {
       encoding: 'utf8',
       timeout: 10_000,
+      // `lstart` is `%a %b %e %H:%M:%S %Y` rendered in the caller's locale, and
+      // `Date.parse` reads English month and day names only. Under `LC_TIME=pl_PL`
+      // the same process prints `pon wrz  8 13:46:16 2026`, which parses to NaN -
+      // no start time, no confirmation, and a daemon this machine could never
+      // stop. The locale is pinned to the one the parser is written for.
+      env: { ...process.env, LC_ALL: 'C' },
     });
     if (result.error) {
       lastDetail = String((result.error as Error).message ?? result.error);

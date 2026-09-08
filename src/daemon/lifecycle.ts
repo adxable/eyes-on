@@ -274,12 +274,20 @@ export type StopOutcome =
    *  its state was cleaned up. */
   | 'lock-still-held'
   /**
-   * The named process ended and a service manager holds this root's job, so
-   * what serves this root next is the manager's decision rather than this
-   * command's: a signalled daemon is an unsuccessful exit, which is exactly
-   * what `KeepAlive.SuccessfulExit=false` and `Restart=on-failure` restart.
-   * The manager's job is named rather than touched - a replacement daemon is
-   * neither a stop to report nor a lock conflict to report.
+   * This root has a daemon again, and it is not the process this call acted on:
+   * the lock is held by a live process the identity gate confirms is this
+   * root's daemon. That confirmation is the evidence - a job being loaded is
+   * not, and a holder the gate cannot confirm is `lock-still-held`.
+   */
+  | 'replaced'
+  /**
+   * The lock is free, the process was ended with SIGKILL, and a service manager
+   * holds this root's job. SIGKILL is the one exit this command can know was
+   * unsuccessful, and an unsuccessful exit is exactly what
+   * `KeepAlive.SuccessfulExit=false` and `Restart=on-failure` restart - so the
+   * root is not reported as stopped for a daemon its manager brings back. A
+   * daemon that took SIGTERM and exited cleanly is not this case: the job is
+   * restarted on failure only, so that stop is a stop.
    */
   | 'service-managed';
 
@@ -375,11 +383,34 @@ export async function stopDaemon(paths: Paths, options: StopDaemonOptions = {}):
     );
   }
   if (state.pid !== null && holder.pid !== state.pid) {
-    return refusal(
-      holder.pid,
-      `no signal was sent: the daemon that was asked to exit (pid ${state.pid}) is not the one serving this root now - pid ${holder.pid} holds ${paths.lockFile}`,
-      handOverHelp(holder.pid),
-    );
+    // The daemon that was asked to exit is not the one holding the lock now,
+    // which is what a service manager restarting a job looks like from here.
+    // The same gate decides, on the same evidence as everywhere else: a
+    // confirmed holder is a daemon serving this root, and telling the reader to
+    // restart a job that has already been restarted would be advice for
+    // something that has happened.
+    const identity = identifyDaemonProcess(paths, holder, options.readProcess ?? readProcess);
+    if (!identity.confirmed) {
+      return refusal(
+        holder.pid,
+        `no signal was sent: the daemon that was asked to exit (pid ${state.pid}) is not the one holding ${paths.lockFile} now, and ${identity.reason}`,
+        handOverHelp(holder.pid),
+      );
+    }
+    const managed = managedJob(paths, options);
+    return {
+      stopped: false,
+      wasRunning: true,
+      outcome: 'replaced',
+      pid: holder.pid,
+      signal: null,
+      detail:
+        `no signal was sent: the daemon that was asked to exit (pid ${state.pid}) no longer holds ${paths.lockFile}, and pid ${holder.pid} - ` +
+        `confirmed as this root's daemon - serves this root now${managed === null ? '' : `, under the managed job ${managed}`}`,
+      help: managed === null
+        ? ['Run `eyes-on daemon stop` again to end the daemon serving this root now']
+        : managedHelp(managed),
+    };
   }
   return signalHolder(paths, holder, timeoutMs, options);
 }
@@ -520,11 +551,11 @@ async function signalHolder(
  * The label of the job a service manager holds for this root, or null when
  * nothing manages it.
  *
- * This decides nothing and starts nothing - `startManagedJob` is still the only
- * place that addresses a job. It is asked because a signalled daemon is an
- * unsuccessful exit, which is exactly what the job this product installs
- * restarts, so on a managed root the honest answer to a stop is that a
- * replacement is coming rather than that the root is now daemonless.
+ * This decides nothing, starts nothing and never carries a verdict on its own -
+ * `startManagedJob` is still the only place that addresses a job, and what a
+ * stop reports is decided by the lock and the identity gate. A loaded job says
+ * only who would start the next daemon, so it is asked once a condition is
+ * already established, to name the job in the sentence a person reads.
  */
 function managedJob(paths: Paths, options: StopDaemonOptions): string | null {
   if (options.inspectService === undefined && serviceManagerBypassed()) return null;
@@ -546,6 +577,34 @@ function managedHelp(label: string): string[] {
 }
 
 /**
+ * What holds the lock once the process this call acted on is gone.
+ *
+ * A held lock has exactly two readings and they are told apart by the same gate
+ * every signal passes, never by whether a service job happens to be loaded: a
+ * holder the gate confirms is this root's daemon is a replacement daemon, and
+ * anything else - a foreign process, a holder nothing names, a reading that
+ * could not be taken - is somebody else's lock, which is state to leave alone
+ * and report.
+ */
+type LockAfterSignal =
+  | { kind: 'free' }
+  | { kind: 'replacement'; pid: number }
+  | { kind: 'foreign'; pid: number | null; reason: string };
+
+function lockAfterSignal(paths: Paths, options: StopDaemonOptions): LockAfterSignal {
+  const lock = inspectLock(paths.lockFile);
+  if (lock.state !== 'held') return { kind: 'free' };
+  const holder = lock.liveHolder;
+  if (holder === null) {
+    return { kind: 'foreign', pid: null, reason: `nothing in ${paths.pidFile} names the live process holding it` };
+  }
+  const identity = identifyDaemonProcess(paths, holder, options.readProcess ?? readProcess);
+  return identity.confirmed
+    ? { kind: 'replacement', pid: holder.pid }
+    : { kind: 'foreign', pid: holder.pid, reason: identity.reason };
+}
+
+/**
  * What is left of a wedged daemon, once the process is confirmed gone.
  *
  * The lock is read again before anything is touched: the pid ending is not
@@ -554,11 +613,14 @@ function managedHelp(label: string): string[] {
  * so even the record clearing cannot race a new holder, and the pid file is
  * removed only while it still names the process that just ended.
  *
- * A managed root is the one case where a held lock is not a conflict and a free
- * one is not a stop: the manager owns the daemon, so the process that just
- * ended is replaced by one this command never asked for and must not fight.
- * Both readings say so rather than reporting a healthy restart as an unresolved
- * lock conflict, or a daemon that is coming back as stopped.
+ * Two readings are not a plain stop, and each one has to be evidenced rather
+ * than assumed from a service job being loaded. A lock held by a process the
+ * identity gate confirms is this root's daemon is a replacement daemon; a lock
+ * held by anything else is somebody else's lock, whatever the manager holds.
+ * And a free lock is a stop unless this call sent SIGKILL, which is the one
+ * exit it can know was unsuccessful - the exit a managed job is restarted on.
+ * A daemon that took SIGTERM and exited cleanly is not restarted by either
+ * service manager, so that stop is reported as the stop it is.
  */
 async function finishWedgedStop(
   paths: Paths,
@@ -566,27 +628,33 @@ async function finishWedgedStop(
   signal: 'SIGTERM' | 'SIGKILL' | null,
   options: StopDaemonOptions,
 ): Promise<StopResult> {
-  const managed = managedJob(paths, options);
-  if (inspectLock(paths.lockFile).state === 'held') {
-    return managed === null
-      ? {
-          stopped: false,
-          wasRunning: true,
-          outcome: 'lock-still-held',
-          pid,
-          signal,
-          detail: `pid ${pid} has ended and ${paths.lockFile} is still held, so another process holds it and nothing was removed`,
-          help: ['Run `eyes-on daemon status` to see what holds the lock now'],
-        }
-      : {
-          stopped: false,
-          wasRunning: true,
-          outcome: 'service-managed',
-          pid,
-          signal,
-          detail: `pid ${pid} has ended and the managed job ${managed} holds this root, and ${paths.lockFile} is held again - a replacement daemon is serving this root, so nothing was removed`,
-          help: managedHelp(managed),
-        };
+  const after = lockAfterSignal(paths, options);
+  if (after.kind === 'foreign') {
+    return {
+      stopped: false,
+      wasRunning: true,
+      outcome: 'lock-still-held',
+      pid,
+      signal,
+      detail: `pid ${pid} has ended and ${paths.lockFile} is still held, so another process holds it and nothing was removed (${after.reason})`,
+      help: ['Run `eyes-on daemon status` to see what holds the lock now'],
+    };
+  }
+  if (after.kind === 'replacement') {
+    const managed = managedJob(paths, options);
+    return {
+      stopped: false,
+      wasRunning: true,
+      outcome: 'replaced',
+      pid,
+      signal,
+      detail:
+        `pid ${pid} has ended, and pid ${after.pid} - confirmed as this root's daemon - holds ${paths.lockFile} now` +
+        `${managed === null ? '' : `, under the managed job ${managed}`}, so nothing was removed`,
+      help: managed === null
+        ? ['Run `eyes-on daemon status` to see the daemon serving this root now']
+        : managedHelp(managed),
+    };
   }
   clearHolderRecord(paths.lockFile);
   if (readPidFile(paths) === pid) {
@@ -595,6 +663,7 @@ async function finishWedgedStop(
   if (existsSync(paths.socket) && !(await probeSocket(paths.socket))) {
     rmSync(paths.socket, { force: true });
   }
+  const managed = signal === 'SIGKILL' ? managedJob(paths, options) : null;
   if (managed !== null) {
     return {
       stopped: false,
@@ -602,7 +671,7 @@ async function finishWedgedStop(
       outcome: 'service-managed',
       pid,
       signal,
-      detail: `pid ${pid} has ended and ${paths.lockFile} is free, and the managed job ${managed} holds this root - the service manager restarts that job on an unsuccessful exit, so this root may not stay without a daemon`,
+      detail: `pid ${pid} was ended with SIGKILL and ${paths.lockFile} is free - that is an unsuccessful exit, and the managed job ${managed} is restarted on one, so the service manager is expected to start a replacement daemon`,
       help: managedHelp(managed),
     };
   }

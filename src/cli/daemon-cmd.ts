@@ -136,10 +136,26 @@ async function daemonStop(context: Context): Promise<number> {
     doc,
     [sentence, ...result.help.map((line) => `help: ${line}`)].join('\n'),
   );
-  return result.outcome === 'stopped' || result.outcome === 'not-running' || result.outcome === 'service-managed'
-    ? 0
-    : 1;
+  return STOP_EXIT[result.outcome];
 }
+
+/**
+ * Nothing left to do is 0, and something the caller has to act on is 1. The two
+ * conditions where this root has a daemon again - one confirmed by the identity
+ * gate, one a managed job restarting an unsuccessful exit - are answers rather
+ * than failures, and neither is a lock conflict: `lock-still-held` stays 1
+ * precisely because nobody confirmed what holds it.
+ */
+const STOP_EXIT: Record<StopOutcome, number> = {
+  'not-running': 0,
+  stopped: 0,
+  replaced: 0,
+  'service-managed': 0,
+  'still-running': 1,
+  'needs-force': 1,
+  refused: 1,
+  'lock-still-held': 1,
+};
 
 /** One word per outcome, so a machine reader never has to parse the sentence. */
 const STOP_WORDS: Record<StopOutcome, string> = {
@@ -149,7 +165,8 @@ const STOP_WORDS: Record<StopOutcome, string> = {
   'needs-force': 'still running',
   refused: 'not stopped',
   'lock-still-held': 'stopped, lock still held',
-  'service-managed': 'stopped, and the service manager owns this root',
+  replaced: 'served by a replacement daemon',
+  'service-managed': 'stopped, and the service manager restarts its job',
 };
 
 async function daemonRestart(context: Context): Promise<number> {
