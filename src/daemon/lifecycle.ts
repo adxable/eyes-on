@@ -343,6 +343,12 @@ export async function stopDaemon(paths: Paths, options: StopDaemonOptions = {}):
     if (state.diagnosis.kind === 'wedged') {
       return stopWedgedDaemon(paths, state.lock?.liveHolder ?? null, timeoutMs, options);
     }
+    if (state.diagnosis.kind === 'lock-unreadable') {
+      // Nothing is running, and yet there is something to do: this is the file
+      // the next `daemon start` fails on. Reporting it here is what keeps
+      // `stop`, `status` and `doctor` saying one thing about one file.
+      return lockUnusable(paths, 'no daemon is running on this root', state.diagnosis.detail, state.pid, false, null);
+    }
     // A socket file with nothing behind it is debris from an unclean exit and
     // is safe to remove precisely because nothing answered on it.
     if (state.socketPresent && !(await probeSocket(paths.socket))) {
@@ -385,18 +391,21 @@ export async function stopDaemon(paths: Paths, options: StopDaemonOptions = {}):
     // is sent and this root still has a daemon: a refusal, with a sentence that
     // says which daemon is there and what ends it.
     const identity = identifyDaemonProcess(paths, holder, options.readProcess ?? readProcess);
+    if (!identity.confirmed) {
+      return refusal(
+        holder.pid,
+        `no signal was sent: the daemon that was asked to exit (pid ${state.pid}) is not the one holding ${paths.lockFile} now, and ${identity.reason}`,
+        handOverHelp(holder.pid),
+      );
+    }
     const managed = managedJob(paths, options);
     return refusal(
       holder.pid,
-      identity.confirmed
-        ? `no signal was sent: the daemon that was asked to exit (pid ${state.pid}) no longer holds ${paths.lockFile}, and pid ${holder.pid} - confirmed as this root's daemon${managed === null ? '' : `, under the managed job ${managed}`} - serves this root now`
-        : `no signal was sent: the daemon that was asked to exit (pid ${state.pid}) is not the one holding ${paths.lockFile} now, and ${identity.reason}`,
-      identity.confirmed
-        ? [
-            'Run `eyes-on daemon stop` again to end the daemon serving this root now',
-            ...(managed === null ? [] : [`Stop the job ${managed} through your service manager if this root has to stay without a daemon`]),
-          ]
-        : handOverHelp(holder.pid),
+      `no signal was sent: the daemon that was asked to exit (pid ${state.pid}) no longer holds ${paths.lockFile}, and pid ${holder.pid} - confirmed as this root's daemon${managed === null ? '' : `, under the managed job ${managed}`} - serves this root now`,
+      [
+        'Run `eyes-on daemon stop` again to end the daemon serving this root now',
+        ...(managed === null ? [] : [`Stop the job ${managed} through your service manager if this root has to stay without a daemon`]),
+      ],
     );
   }
   return signalHolder(paths, holder, timeoutMs, options);
@@ -413,6 +422,34 @@ function refusal(
   signal: 'SIGTERM' | 'SIGKILL' | null = null,
 ): StopResult {
   return { stopped: false, wasRunning: true, outcome: 'refused', pid, signal, detail, help };
+}
+
+/**
+ * The one answer for a lock file no daemon can open, wherever it is read from.
+ *
+ * Nothing is running and nothing is removed, and it is still not a `stopped`:
+ * this is the file `SingletonLock.acquire` fails on, so the next start fails
+ * until somebody removes it. `daemon status` and `doctor` say the same thing
+ * about the same file through `describeDaemon`, and this is what keeps `stop`
+ * from being the one surface that calls it a clean exit.
+ */
+function lockUnusable(
+  paths: Paths,
+  head: string,
+  detail: string,
+  pid: number | null,
+  wasRunning: boolean,
+  signal: 'SIGTERM' | 'SIGKILL' | null,
+): StopResult {
+  return {
+    stopped: false,
+    wasRunning,
+    outcome: 'lock-unusable',
+    pid,
+    signal,
+    detail: `${head}, and ${paths.lockFile} is not a usable lock file (${detail}) - no daemon can start until it is gone, so nothing was removed`,
+    help: lockUnusableHelp(paths.lockFile),
+  };
 }
 
 /** The remedy for every holder eyes-on may not or cannot signal itself. */
@@ -521,8 +558,17 @@ async function signalHolder(
   // first one is up to `timeoutMs` old: the confirmed daemon may have exited
   // during the wait and the kernel may have handed its number on, which is
   // exactly why `waitForExit` can report a live pid. The record is the same one
-  // read a moment ago, so the gate is re-run against it rather than trusted.
-  const stillTheDaemon = identifyDaemonProcess(paths, holder, options.readProcess ?? readProcess);
+  // read a moment ago, so the gate is re-run against it - once, on one reading,
+  // because that reading also answers the other question the wait leaves open.
+  const reading = (options.readProcess ?? readProcess)(holder.pid);
+  if (reading.kind === 'gone' || !processAlive(holder.pid)) {
+    // The deadline and the exit crossed: the process ended between the last
+    // liveness check and this read. A pid the system says is gone is a stop
+    // that finished, not a signal to refuse, and its debris is this command's
+    // to clear exactly as on the ordinary path.
+    return finishWedgedStop(paths, holder.pid, 'SIGTERM', options);
+  }
+  const stillTheDaemon = identifyDaemonProcess(paths, holder, () => reading);
   if (!stillTheDaemon.confirmed) {
     return refusal(
       holder.pid,
@@ -644,15 +690,7 @@ async function finishWedgedStop(
     };
   }
   if (after.kind === 'unusable') {
-    return {
-      stopped: false,
-      wasRunning: true,
-      outcome: 'lock-unusable',
-      pid,
-      signal,
-      detail: `pid ${pid} has ended and nothing holds ${paths.lockFile}, but it is not a usable lock file (${after.detail}) - no daemon can start until it is gone, so nothing was removed`,
-      help: lockUnusableHelp(paths.lockFile),
-    };
+    return lockUnusable(paths, `pid ${pid} has ended and nothing holds the lock`, after.detail, pid, true, signal);
   }
   clearHolderRecord(paths.lockFile);
   if (readPidFile(paths) === pid) {

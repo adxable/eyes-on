@@ -730,3 +730,84 @@ test('a lock file left unreadable is reported, not cleaned up as debris', async 
   assert.equal(existsSync(paths.socket), true, 'nothing is removed while the root cannot take a daemon');
   assert.equal((await daemonState(paths)).diagnosis.kind, 'lock-unreadable', 'both surfaces read the same file the same way');
 });
+
+/**
+ * The deadline and the exit can cross: `waitForExit` checks liveness, then the
+ * clock, so a daemon that finishes exiting a moment later is read as one that
+ * survived. The read taken before SIGKILL is what settles it, and a process the
+ * system says is gone is a stop that finished - with the debris this command
+ * exists to clear, cleared. The staged read stands in for that crossing: it
+ * confirms once, for the SIGTERM, and takes long enough that the holder is
+ * really gone by the time it answers.
+ */
+test('a daemon that exits at the SIGKILL deadline is a stop, not a refusal', async (t) => {
+  const paths = stateRoot('stop-force-raced');
+  const holder = await holderProcess(t, paths);
+  leaveSocketFile(paths);
+  let reads = 0;
+  const readAcrossTheExit: ProcessReader = () => {
+    reads += 1;
+    if (reads === 1) {
+      return {
+        kind: 'facts',
+        commandLine: `${process.execPath} main.js daemon run --root ${paths.root}`,
+        startedAt: Date.now() - 60_000,
+      };
+    }
+    // The `ps` call that spans the exit: the holder took SIGTERM and is gone by
+    // the time this read answers, which is what `ps` reports as no such pid.
+    spawnSync('/bin/sleep', ['0.6']);
+    return { kind: 'gone' };
+  };
+
+  // One millisecond of patience, so the wait ends before the holder does.
+  const result = await stopDaemon(paths, { timeoutMs: 1, force: true, readProcess: readAcrossTheExit });
+
+  assert.equal(result.outcome, 'stopped', 'a pid the system says is gone is not a pid to refuse');
+  assert.equal(result.signal, 'SIGTERM', 'SIGKILL was never needed');
+  assert.equal(result.pid, holder.pid);
+  assert.equal(await waitForDeath(holder.pid), true);
+  assert.equal(existsSync(paths.socket), false, 'the debris of a stop that finished is still cleared');
+  assert.equal(existsSync(paths.pidFile), false);
+  assert.equal((await daemonState(paths)).diagnosis.kind, 'stopped');
+});
+
+/**
+ * The same file, the same sentence, whichever path reaches it. A crash can
+ * leave `daemon.lock` unopenable with no process behind it at all, and that is
+ * not a root with nothing to do: the next `daemon start` fails on this file.
+ */
+test('a stop on a root whose lock file is unusable says so, and removes nothing', async (t) => {
+  const paths = stateRoot('stop-unusable-idle');
+  const holder = await holderProcess(t, paths, { corruptLock: true });
+  leaveSocketFile(paths);
+  holder.process.kill('SIGTERM');
+  assert.equal(await waitForDeath(holder.pid), true);
+  assert.equal(
+    (await daemonState(paths)).diagnosis.kind,
+    'lock-unreadable',
+    'the staged state is a lock file nobody holds and nothing can open',
+  );
+
+  const result = await stopDaemon(paths, { timeoutMs: 1500 });
+
+  assert.equal(result.outcome, 'lock-unusable', 'not-running would be a clean bill of health for a blocked root');
+  assert.equal(result.stopped, false);
+  assert.match(result.detail ?? '', new RegExp(paths.lockFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.ok(result.help.some((line) => line.includes(paths.lockFile)), 'the remedy names the file');
+  assert.equal(existsSync(paths.socket), true, 'nothing is removed while the root cannot take a daemon');
+
+  const cli = await runStop(paths, 'stop-unusable-idle');
+  assert.equal(cli.code, 1, 'a root that cannot take a daemon is not a success');
+  assert.match(cli.out, /not a usable lock file/);
+  assert.match(cli.out, /help:/, 'the remedy travels with the sentence a person reads');
+});
+
+async function runStop(paths: Paths, prefix: string): Promise<{ code: number; out: string }> {
+  return cli(['daemon', 'stop'], {
+    EYES_HOME: paths.root,
+    EYES_ON_SKILL_ROOT: tempDir(`${prefix}-skills`),
+    EYES_ON_SKIP_SERVICE_MANAGER: '1',
+    NM_HOME: tempDir(`${prefix}-nm-home`),
+  });
+}
