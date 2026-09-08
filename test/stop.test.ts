@@ -5,6 +5,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Paths } from '../src/core/paths.js';
+import type { ServiceStatus } from '../src/daemon/service.js';
 import { daemonState, stopDaemon } from '../src/daemon/lifecycle.js';
 import { processAlive } from '../src/daemon/lock.js';
 import { run as runCli } from '../src/cli/run.js';
@@ -61,6 +62,13 @@ async function holderProcess(
     pidFile?: boolean;
     ignoreTerm?: boolean;
     identity?: 'daemon' | 'foreign';
+    /**
+     * Also answer the socket - `health` truthfully, `shutdown` with an
+     * acknowledgement it never acts on. That is the *other* daemon a stop has
+     * to signal: one that answers and will not exit, which is the only way to
+     * reach the socket path's escalation from a test.
+     */
+    socket?: boolean;
   } = {},
 ): Promise<Holder> {
   mkdirSync(paths.root, { recursive: true });
@@ -70,7 +78,8 @@ async function holderProcess(
     script,
     `import { DatabaseSync } from 'node:sqlite';
      import { writeFileSync } from 'node:fs';
-     const [lockPath, pidPath, mode] = process.argv.slice(2);
+     import { createServer } from 'node:net';
+     const [lockPath, pidPath, mode, socketPath] = process.argv.slice(2);
      if (lockPath !== 'none') {
        const db = new DatabaseSync(lockPath);
        db.exec('PRAGMA locking_mode = EXCLUSIVE');
@@ -82,7 +91,36 @@ async function holderProcess(
      // live holder: the row itself is unreadable while the lock is held.
      if (pidPath !== 'none') writeFileSync(pidPath, process.pid + '\\n');
      if (mode === 'ignore-term') process.on('SIGTERM', () => {});
-     process.stdout.write('HELD\\n');
+     const reply = (connection, id, result) =>
+       connection.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n');
+     const serve = (done) => {
+       const server = createServer((connection) => {
+         connection.setEncoding('utf8');
+         let buffer = '';
+         connection.on('data', (chunk) => {
+           buffer += chunk;
+           for (let at = buffer.indexOf('\\n'); at >= 0; at = buffer.indexOf('\\n')) {
+             const line = buffer.slice(0, at);
+             buffer = buffer.slice(at + 1);
+             const request = JSON.parse(line);
+             if (request.method === 'health') {
+               reply(connection, request.id, {
+                 ok: true,
+                 pid: process.pid,
+                 root: process.cwd(),
+                 version: 'test',
+                 startedAt: Date.now(),
+               });
+             } else {
+               // Acknowledged and never acted on.
+               reply(connection, request.id, { ok: true });
+             }
+           }
+         });
+       });
+       server.listen(socketPath, done);
+     };
+     if (socketPath === 'none') { process.stdout.write('HELD\\n'); } else { serve(() => process.stdout.write('HELD\\n')); }
      setInterval(() => {}, 1000);`,
   );
   const tail = (options.identity ?? 'daemon') === 'daemon' ? ['daemon', 'run', '--root', paths.root] : [];
@@ -93,6 +131,7 @@ async function holderProcess(
       options.lock === false ? 'none' : paths.lockFile,
       options.pidFile === false ? 'none' : paths.pidFile,
       options.ignoreTerm ? 'ignore-term' : 'exit-on-term',
+      options.socket ? paths.socket : 'none',
       ...tail,
     ],
     { stdio: ['ignore', 'pipe', 'ignore'] },
@@ -326,4 +365,142 @@ test('`daemon stop` exits non-zero and names --force, and exits 0 with it', asyn
   assert.equal(forced.daemon, 'stopped');
   assert.equal(forced.signal, 'SIGKILL');
   assert.equal(await waitForDeath(holder.pid), true);
+});
+
+/**
+ * The socket path ends at the same gate.
+ *
+ * A daemon that answers `health` and acknowledges `shutdown` without exiting is
+ * the only way this branch is reached, and the pid it reported was answered
+ * before the wait: by the time a signal is due, that number may name a process
+ * the kernel has handed to somebody else. So the holder is read from the lock
+ * again here, and it is that record identity is checked against.
+ */
+test('a daemon that answers the socket is signalled only through the identity gate', async (t) => {
+  const paths = stateRoot('stop-socket-gate');
+  const holder = await holderProcess(t, paths, { socket: true, identity: 'foreign' });
+
+  const before = await daemonState(paths);
+  assert.equal(before.running, true, 'the staged daemon has to answer the socket');
+  assert.equal(before.pid, holder.pid);
+
+  const result = await stopDaemon(paths, { timeoutMs: 1200 });
+
+  assert.equal(result.outcome, 'refused');
+  assert.equal(result.signal, null, 'a refusal sends nothing, on this path too');
+  await delay(300);
+  assert.equal(processAlive(holder.pid), true, 'an unconfirmed holder must survive the socket path as well');
+  assert.equal(existsSync(paths.socket), true, 'nothing is removed when nothing was signalled');
+});
+
+test('a confirmed daemon that will not exit on the socket is ended by SIGTERM', async (t) => {
+  const paths = stateRoot('stop-socket-term');
+  const holder = await holderProcess(t, paths, { socket: true });
+
+  assert.equal((await daemonState(paths)).running, true);
+
+  const result = await stopDaemon(paths, { timeoutMs: 1200 });
+
+  assert.equal(result.outcome, 'stopped');
+  assert.equal(result.signal, 'SIGTERM');
+  assert.equal(result.pid, holder.pid);
+  assert.equal(await waitForDeath(holder.pid), true);
+  assert.equal(existsSync(paths.socket), false, 'the socket is debris only once the process is gone');
+  assert.equal((await daemonState(paths)).diagnosis.kind, 'stopped');
+});
+
+/** A job the service manager holds, without registering one. */
+function loadedJob(label: string): (paths: Paths) => ServiceStatus {
+  return (paths) => ({
+    supported: true,
+    label,
+    unitPath: join(paths.root, 'job.plist'),
+    installed: true,
+    loaded: true,
+    running: true,
+    pid: null,
+  });
+}
+
+/**
+ * The service manager owns the daemon, and a signalled daemon is an
+ * unsuccessful exit - which is exactly what the job this product installs
+ * restarts. Neither reading of the lock afterwards may be reported as a plain
+ * stop, and the held one may not be reported as an unresolved conflict.
+ */
+test('a stop on a service-managed root names the job rather than reporting a bare stop', async (t) => {
+  const paths = stateRoot('stop-managed');
+  const holder = await holderProcess(t, paths);
+  leaveSocketFile(paths);
+
+  const result = await stopDaemon(paths, { timeoutMs: 5000, inspectService: loadedJob('com.example.eyes-on') });
+
+  assert.equal(result.outcome, 'service-managed');
+  assert.equal(result.stopped, false, 'a root whose job is loaded is not left without a daemon');
+  assert.equal(result.pid, holder.pid);
+  assert.equal(await waitForDeath(holder.pid), true);
+  assert.match(result.detail ?? '', /com\.example\.eyes-on/);
+  assert.ok(result.help.some((line) => line.includes('com.example.eyes-on')));
+  // The cleanup still happened: the lock was free when it was read.
+  assert.equal(existsSync(paths.socket), false);
+  assert.equal((await daemonState(paths)).diagnosis.kind, 'stopped');
+});
+
+test('a lock taken again on a managed root is a replacement daemon, not a conflict', async (t) => {
+  const paths = stateRoot('stop-managed-held');
+  const keeper = await holderProcess(t, paths, { pidFile: false });
+  const named = await holderProcess(t, paths, { lock: false });
+  leaveSocketFile(paths);
+
+  const result = await stopDaemon(paths, { timeoutMs: 5000, inspectService: loadedJob('com.example.eyes-on') });
+
+  assert.equal(result.outcome, 'service-managed', 'a job the manager holds explains the lock being held again');
+  assert.notEqual(result.outcome, 'lock-still-held');
+  assert.equal(await waitForDeath(named.pid), true);
+  assert.equal(processAlive(keeper.pid), true, 'the holder of the lock was never signalled');
+  assert.equal(existsSync(paths.socket), true, 'a held lock still means nothing is removed');
+  assert.equal(existsSync(paths.pidFile), true);
+});
+
+/**
+ * The default format of `daemon stop` is Markdown, and Markdown is rendered
+ * from one string - so the next step has to be inside that string. A payload
+ * key nobody prints is not a sentence a person is given.
+ */
+test('the default output carries the next step, and the payload carries the outcome', async (t) => {
+  const paths = stateRoot('stop-md');
+  const holder = await holderProcess(t, paths, { ignoreTerm: true });
+  const env = {
+    EYES_HOME: paths.root,
+    EYES_ON_SKILL_ROOT: tempDir('stop-md-skills'),
+    EYES_ON_SKIP_SERVICE_MANAGER: '1',
+    NM_HOME: tempDir('stop-md-nm-home'),
+  };
+
+  const human = await cli(['daemon', 'stop'], env);
+  assert.equal(human.code, 1);
+  assert.match(human.out, /did not exit/);
+  assert.match(human.out, /--force/, 'the human surface has to say what to do next');
+
+  const machine = await cli(['daemon', 'stop', '--format', 'json'], env);
+  const payload = JSON.parse(machine.out) as { daemon: string; outcome: string };
+  assert.equal(payload.outcome, 'needs-force', 'the word is shared with `still-running`; the outcome is not');
+  assert.equal(processAlive(holder.pid), true);
+});
+
+test('the refusal a person sees names the hand-over, not only the payload', async (t) => {
+  const paths = stateRoot('stop-md-refused');
+  const holder = await holderProcess(t, paths, { identity: 'foreign' });
+  const env = {
+    EYES_HOME: paths.root,
+    EYES_ON_SKILL_ROOT: tempDir('stop-md-refused-skills'),
+    EYES_ON_SKIP_SERVICE_MANAGER: '1',
+    NM_HOME: tempDir('stop-md-refused-nm-home'),
+  };
+
+  const human = await cli(['daemon', 'stop'], env);
+  assert.equal(human.code, 1);
+  assert.match(human.out, /no signal was sent/);
+  assert.match(human.out, /service manager/, 'criterion 5 is a sentence, and it has to be printed');
+  assert.equal(processAlive(holder.pid), true);
 });

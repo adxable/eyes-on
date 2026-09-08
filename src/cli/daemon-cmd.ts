@@ -110,21 +110,35 @@ async function daemonStop(context: Context): Promise<number> {
   const result = await stopDaemon(context.paths, { force: flagBool(context.args, 'force') });
   const doc: ToonObject = {
     daemon: STOP_WORDS[result.outcome],
+    // The word above is for reading; `outcome` is the condition itself, and it
+    // is emitted because two conditions share a word: `still-running` and
+    // `needs-force` both read as a daemon that is still there, and only one of
+    // them is ended by `--force`. A machine reader tells them apart here rather
+    // than by parsing `detail`.
+    outcome: result.outcome,
     pid: result.pid,
     signal: result.signal ?? '',
     root: context.paths.root,
     detail: result.detail ?? '',
     help: result.help,
   };
+  const sentence =
+    result.detail === null
+      ? `eyes-on daemon ${String(doc.daemon)}`
+      : `eyes-on daemon ${String(doc.daemon)}: ${result.detail}`;
+  // The next step travels with the sentence in Markdown too. `help` is a key of
+  // the machine payload, and the default format of this command is `md`, which
+  // renders only the string given here - so a human stopping a daemon that
+  // survived SIGTERM would otherwise never be told that `--force` exists.
   emitDoc(
     context.writers,
     context.format,
     doc,
-    result.detail === null
-      ? `eyes-on daemon ${String(doc.daemon)}`
-      : `eyes-on daemon ${String(doc.daemon)}: ${result.detail}`,
+    [sentence, ...result.help.map((line) => `help: ${line}`)].join('\n'),
   );
-  return result.outcome === 'stopped' || result.outcome === 'not-running' ? 0 : 1;
+  return result.outcome === 'stopped' || result.outcome === 'not-running' || result.outcome === 'service-managed'
+    ? 0
+    : 1;
 }
 
 /** One word per outcome, so a machine reader never has to parse the sentence. */
@@ -135,6 +149,7 @@ const STOP_WORDS: Record<StopOutcome, string> = {
   'needs-force': 'still running',
   refused: 'not stopped',
   'lock-still-held': 'stopped, lock still held',
+  'service-managed': 'stopped, and the service manager owns this root',
 };
 
 async function daemonRestart(context: Context): Promise<number> {

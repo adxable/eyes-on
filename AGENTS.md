@@ -153,7 +153,10 @@ consulted.
   lock record has to be running `daemon run --root <this root>` and cannot have
   started after that record was written. A holder that does not confirm is
   refused, with the reason and no signal sent - a correct answer, not a failure
-  to try harder - and so is one this process may not signal. SIGKILL is reached
+  to try harder - and so is one this process may not signal. The socket path
+  reaches the same gate: a daemon that was asked to exit and did not is
+  signalled through `signalHolder`, against the lock record read *after* the
+  wait, never the pid the health response gave before it. SIGKILL is reached
   only through `--force`. The socket file, the holder record and the pid file
   are cleared only after the process is confirmed gone *and* the lock is
   confirmed free: earlier, the socket is the path a live daemon would answer on
@@ -162,7 +165,13 @@ consulted.
 - **The service manager owns the daemon.** `init` installs the service, waits for
   the job it actually started, and only spawns a daemon itself as a fallback.
   Starting one in parallel wins the singleton lock and leaves the managed job
-  exiting cleanly forever after.
+  exiting cleanly forever after. The same ownership decides what a stop may
+  claim: a signalled daemon is an unsuccessful exit, which is what
+  `KeepAlive.SuccessfulExit=false` and `Restart=on-failure` restart, so once the
+  process is gone `stopDaemon` asks `inspectService` and reports
+  `service-managed` - naming the job, never touching it. Without that, a healthy
+  restart reads as `lock-still-held` ("another process holds it") and a daemon
+  that is coming back reads as `stopped`.
 - **The mirror is a rebuildable cache, not state.** It borrows the clone's objects
   through `objects/info/alternates`, so deleting the clone breaks it by design;
   `doctor` detects that and `init --force` rebuilds it.
