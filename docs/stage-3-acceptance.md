@@ -247,9 +247,8 @@ reaches all 153 register rows. Four of them are outside the denominator - #176
 to #179 landed inside the last fourteen days, so `--window` has not elapsed for
 them and they rejoin once it does - which leaves **149 merges**. Three of the
 four are `pelna` and one is `wskazane`, which is why the channel sizes below are
-one and three short of the register's. 28 fix commits
-were blamed; they produced 77 (fix, merge) attributions over **53 distinct
-merges**.
+one and three short of the register's. 28 fix commits were blamed; they
+produced 77 (fix, merge) attributions over **53 distinct merges**.
 
 | channel | merges | leaked | rate | |
 |---|---|---|---|---|
