@@ -1,14 +1,14 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Paths } from '../src/core/paths.js';
 import type { ServiceStatus } from '../src/daemon/service.js';
 import { daemonState, stopDaemon } from '../src/daemon/lifecycle.js';
 import { processAlive } from '../src/daemon/lock.js';
-import { identifyDaemonProcess } from '../src/daemon/identity.js';
+import { identifyDaemonProcess, readProcess, type ProcessReader } from '../src/daemon/identity.js';
 import { run as runCli } from '../src/cli/run.js';
 import type { Writers } from '../src/cli/output.js';
 import { stateRoot as shortStateRoot, tempDir } from './helpers.js';
@@ -77,6 +77,9 @@ async function holderProcess(
     /** Write this pid into the pid file on the way out, which is what a
      *  replacement daemon does for itself once it has the lock. */
     handoff?: number;
+    /** Leave the lock file unopenable on the way out, as a kill landing inside
+     *  `SingletonLock.acquire`'s write does. */
+    corruptLock?: boolean;
   } = {},
 ): Promise<Holder> {
   mkdirSync(paths.root, { recursive: true });
@@ -87,7 +90,7 @@ async function holderProcess(
     `import { DatabaseSync } from 'node:sqlite';
      import { writeFileSync } from 'node:fs';
      import { createServer } from 'node:net';
-     const [lockPath, pidPath, mode, socketPath, healthPid, handoff] = process.argv.slice(2);
+     const [lockPath, pidPath, mode, socketPath, healthPid, handoff, corrupt] = process.argv.slice(2);
      if (lockPath !== 'none') {
        const db = new DatabaseSync(lockPath);
        db.exec('PRAGMA locking_mode = EXCLUSIVE');
@@ -107,6 +110,9 @@ async function holderProcess(
      } else {
        process.on('SIGTERM', () => {
          if (handoff !== 'none' && pidPath !== 'none') writeFileSync(pidPath, handoff + '\\n');
+         // A lock file left in a shape no read-only open can roll back, which
+         // is what a kill landing mid-write leaves behind.
+         if (corrupt !== 'none') writeFileSync(corrupt, 'not a database at all');
          process.exit(0);
        });
      }
@@ -153,6 +159,7 @@ async function holderProcess(
       options.socket ? paths.socket : 'none',
       options.healthPid === undefined ? 'none' : String(options.healthPid),
       options.handoff === undefined ? 'none' : String(options.handoff),
+      options.corruptLock ? paths.lockFile : 'none',
       ...tail,
     ],
     { stdio: ['ignore', 'pipe', 'ignore'] },
@@ -469,11 +476,12 @@ test('an ordinary SIGTERM stop on a service-managed root is a stop', async (t) =
 });
 
 /**
- * SIGKILL is the one exit this command knows was unsuccessful, and an
- * unsuccessful exit is what a loaded job is restarted on - so this is the
- * reading where the manager's job belongs in the sentence.
+ * The managed job reaches the sentence and nothing else. A SIGKILL is the one
+ * exit this command knows was unsuccessful, so naming the job that is restarted
+ * on one is worth saying - but the lock is free and the process is gone, so the
+ * verdict is the stop it is.
  */
-test('a --force kill on a service-managed root says the job brings a daemon back', async (t) => {
+test('a --force kill on a service-managed root is a stop that names the job', async (t) => {
   const paths = stateRoot('stop-managed-force');
   const holder = await holderProcess(t, paths, { ignoreTerm: true });
 
@@ -483,11 +491,11 @@ test('a --force kill on a service-managed root says the job brings a daemon back
     inspectService: loadedJob('com.example.eyes-on'),
   });
 
-  assert.equal(result.outcome, 'service-managed');
+  assert.equal(result.outcome, 'stopped', 'a loaded job never changes the verdict');
+  assert.equal(result.stopped, true);
   assert.equal(result.signal, 'SIGKILL');
-  assert.equal(result.stopped, false, 'a root the manager restarts is not left without a daemon');
-  assert.match(result.detail ?? '', /com\.example\.eyes-on/);
-  assert.ok(result.help.some((line) => line.includes('com.example.eyes-on')));
+  assert.match(result.detail ?? '', /com\.example\.eyes-on/, 'the label belongs in the sentence');
+  assert.deepEqual(result.help, [], 'a stop leaves nothing to do');
   assert.equal(await waitForDeath(holder.pid), true);
 });
 
@@ -514,12 +522,14 @@ test('a lock held by an unconfirmable process stays a conflict on a managed root
 });
 
 /**
- * The other half of the same rule: a holder the gate *does* confirm is a
- * replacement daemon, and that is what makes it one - the staging hands the pid
- * file over to the process holding the lock as the signalled one exits, which
- * is the order a daemon that takes the lock writes it in.
+ * A lock somebody holds is a lock somebody holds, and a holder the gate
+ * confirms is another eyes-on daemon is no exception: nothing of it is removed
+ * and the root is not left without a daemon. The staging hands the pid file
+ * over to the process holding the lock as the signalled one exits, which is the
+ * order a daemon that takes the lock writes it in, so the gate has a live
+ * holder to confirm.
  */
-test('a lock held by a confirmed daemon of this root is a replacement, not a conflict', async (t) => {
+test('a lock held by a confirmed daemon of this root is still a held lock', async (t) => {
   const paths = stateRoot('stop-replaced');
   const keeper = await holderProcess(t, paths, { pidFile: false });
   const named = await holderProcess(t, paths, { lock: false, handoff: keeper.pid });
@@ -527,21 +537,24 @@ test('a lock held by a confirmed daemon of this root is a replacement, not a con
 
   const result = await stopDaemon(paths, { timeoutMs: 5000 });
 
-  assert.equal(result.outcome, 'replaced');
+  assert.equal(result.outcome, 'lock-still-held');
   assert.equal(result.stopped, false);
   assert.equal(result.pid, named.pid);
-  assert.match(result.detail ?? '', new RegExp(`pid ${keeper.pid}`));
+  assert.match(result.detail ?? '', new RegExp(`pid ${keeper.pid}`), 'the sentence names who holds it');
   assert.equal(await waitForDeath(named.pid), true);
   assert.equal(processAlive(keeper.pid), true, 'a daemon that holds the lock is never signalled by a stop of another pid');
   assert.equal(existsSync(paths.socket), true, 'the socket belongs to the daemon serving this root now');
+  assert.equal(existsSync(paths.pidFile), true);
 });
 
 /**
- * The socket path reaches the same rule. A stop that finds the pid it spoke to
- * replaced by a confirmed daemon must say so, not send the reader off to
- * restart a job that already runs one.
+ * A process nobody asked to exit is not this command's to signal. When the pid
+ * that answered before the wait is not the one holding the lock afterwards -
+ * what a service manager restarting a job looks like from here - the stop sends
+ * nothing, says which daemon is there, and stays non-zero: a daemon is serving
+ * this root and the caller asked for one to be gone.
  */
-test('a daemon replaced between the ask and the signal is named, not handed over', async (t) => {
+test('a daemon that is not the one asked to exit is refused, not signalled', async (t) => {
   const paths = stateRoot('stop-socket-replaced');
   const gonePid = 999_999;
   const holder = await holderProcess(t, paths, { socket: true, healthPid: gonePid });
@@ -551,12 +564,13 @@ test('a daemon replaced between the ask and the signal is named, not handed over
 
   const result = await stopDaemon(paths, { timeoutMs: 1200 });
 
-  assert.equal(result.outcome, 'replaced');
+  assert.equal(result.outcome, 'refused');
+  assert.equal(result.stopped, false);
   assert.equal(result.signal, null, 'a daemon nobody asked to exit is not signalled');
   assert.equal(result.pid, holder.pid);
   assert.ok(
-    !result.help.some((line) => line.includes('Restart the eyes-on job')),
-    'a job that has already been restarted is not a next step',
+    result.help.some((line) => line.includes('eyes-on daemon stop')),
+    'the sentence has to say what ends the daemon that is there',
   );
   await delay(300);
   assert.equal(processAlive(holder.pid), true);
@@ -607,22 +621,112 @@ test('the refusal a person sees names the hand-over, not only the payload', asyn
 
 /**
  * `ps -o lstart=` renders `%a %b %e %H:%M:%S %Y` in the caller's locale, and the
- * start-time half of the gate is a `Date.parse` of that string - which reads
- * English names only. Under a `LC_TIME` that prints `pon wrz  8 ...` an
- * unpinned read produces no start time, and a machine whose user has a
- * non-English locale could never end a wedged daemon at all.
+ * start-time half of the gate is a `Date.parse` of that string, which reads
+ * English names only. Under a `LC_TIME` that prints `pon wrz  8 ...` an unpinned
+ * read produces no start time at all, and a machine whose user has a
+ * non-English locale could never end a wedged daemon.
+ *
+ * The locale has to be generated on the host to change what `ps` prints, so the
+ * test first asks `ps` itself: if the ambient locale moves its output, the read
+ * under it must still produce a start time, and if it does not, there is
+ * nothing here this host can decide and the test says so rather than passing on
+ * a fallback to C.
  */
+const FOREIGN_LOCALES = ['pl_PL.UTF-8', 'fr_FR.UTF-8', 'de_DE.UTF-8'];
+
+function localeThatMovesPs(pid: number): string | null {
+  const read = (locale: string | null): string =>
+    (spawnSync('/bin/ps', ['-p', String(pid), '-o', 'lstart='], {
+      encoding: 'utf8',
+      env: locale === null ? { ...process.env, LC_ALL: 'C' } : { ...process.env, LC_ALL: locale, LC_TIME: locale },
+    }).stdout ?? '').trim();
+  const inC = read(null);
+  return FOREIGN_LOCALES.find((locale) => read(locale) !== inC && read(locale).length > 0) ?? null;
+}
+
 test('the identity gate confirms a daemon under a non-English LC_TIME', async (t) => {
   const paths = stateRoot('stop-locale');
   const holder = await holderProcess(t, paths);
-  const previous = process.env.LC_TIME;
-  process.env.LC_TIME = 'pl_PL.UTF-8';
+  const locale = localeThatMovesPs(holder.pid);
+  if (locale === null) {
+    t.skip(`no locale of ${FOREIGN_LOCALES.join(', ')} is generated on this host, so ps cannot print a non-English lstart`);
+    return;
+  }
+
+  const previous = { all: process.env.LC_ALL, time: process.env.LC_TIME };
+  process.env.LC_ALL = locale;
+  process.env.LC_TIME = locale;
   t.after(() => {
-    if (previous === undefined) delete process.env.LC_TIME;
-    else process.env.LC_TIME = previous;
+    restoreEnv('LC_ALL', previous.all);
+    restoreEnv('LC_TIME', previous.time);
   });
 
-  const identity = identifyDaemonProcess(paths, { pid: holder.pid, startedAt: Date.now() });
+  // The reading the gate is built on: a start time, under an environment that
+  // would otherwise make `ps` print month names `Date.parse` cannot read.
+  const reading = readProcess(holder.pid);
+  assert.equal(reading.kind, 'facts');
+  assert.notEqual(reading.kind === 'facts' ? reading.startedAt : null, null, `no start time was read under ${locale}`);
 
+  const identity = identifyDaemonProcess(paths, { pid: holder.pid, startedAt: Date.now() });
   assert.equal(identity.confirmed, true, identity.confirmed ? '' : identity.reason);
+});
+
+function restoreEnv(key: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+
+/**
+ * The escalation is a second signal, and the identity behind the first one is a
+ * whole timeout old by then: the confirmed daemon can exit during the wait and
+ * the kernel can hand its number to something else, which is precisely why
+ * `waitForExit` saw a live pid. The staged reading confirms once - for the
+ * SIGTERM - and reads as another program afterwards.
+ */
+test('SIGKILL is not sent on an identity confirmed before the wait', async (t) => {
+  const paths = stateRoot('stop-force-recycled');
+  const holder = await holderProcess(t, paths, { ignoreTerm: true });
+  let reads = 0;
+  const readProcessOnce: ProcessReader = () => {
+    reads += 1;
+    return {
+      kind: 'facts',
+      commandLine:
+        reads === 1
+          ? `${process.execPath} main.js daemon run --root ${paths.root}`
+          : '/usr/bin/some-other-program --unrelated',
+      startedAt: Date.now() - 60_000,
+    };
+  };
+
+  const result = await stopDaemon(paths, { timeoutMs: 1200, force: true, readProcess: readProcessOnce });
+
+  assert.equal(result.outcome, 'refused');
+  assert.equal(result.signal, 'SIGTERM', 'the signal that was delivered is the one reported');
+  assert.match(result.detail ?? '', /SIGKILL was not sent/);
+  await delay(300);
+  assert.equal(processAlive(holder.pid), true, 'a pid that no longer reads as this daemon is not killed');
+  assert.equal((await daemonState(paths)).diagnosis.kind, 'wedged', 'nothing was cleaned up either');
+});
+
+/**
+ * A lock file this version cannot open is not a free lock: `daemon start` fails
+ * on that same file next, so removing the socket and the record and reporting a
+ * stop would hand somebody a root that cannot take a daemon, with nothing said
+ * about why.
+ */
+test('a lock file left unreadable is reported, not cleaned up as debris', async (t) => {
+  const paths = stateRoot('stop-lock-unusable');
+  const holder = await holderProcess(t, paths, { corruptLock: true });
+  leaveSocketFile(paths);
+  assert.equal((await daemonState(paths)).diagnosis.kind, 'wedged', 'the staged state is the one under test');
+
+  const result = await stopDaemon(paths, { timeoutMs: 1500 });
+
+  assert.equal(result.outcome, 'lock-unusable');
+  assert.equal(result.stopped, false);
+  assert.equal(await waitForDeath(holder.pid), true, 'the process the record named was still ended');
+  assert.ok(result.help.some((line) => line.includes(paths.lockFile)), 'the remedy names the file');
+  assert.equal(existsSync(paths.socket), true, 'nothing is removed while the root cannot take a daemon');
+  assert.equal((await daemonState(paths)).diagnosis.kind, 'lock-unreadable', 'both surfaces read the same file the same way');
 });

@@ -156,25 +156,27 @@ consulted.
   to try harder - and so is one this process may not signal. The socket path
   reaches the same gate: a daemon that was asked to exit and did not is
   signalled through `signalHolder`, against the lock record read *after* the
-  wait, never the pid the health response gave before it. SIGKILL is reached
-  only through `--force`. The socket file, the holder record and the pid file
+  wait, never the pid the health response gave before it, and a daemon that is
+  no longer the lock's holder is refused rather than signalled. SIGKILL is
+  reached only through `--force`, and the gate is re-run against the same record
+  immediately before it: the identity that justified SIGTERM is a whole timeout
+  old by then, and a pid still alive after that wait may be alive for the other
+  reason. The socket file, the holder record and the pid file
   are cleared only after the process is confirmed gone *and* the lock is
   confirmed free: earlier, the socket is the path a live daemon would answer on
-  and the lock is somebody's singleton. `test/stop.test.ts` measures every
-  branch.
+  and the lock is somebody's singleton. A lock file left *unreadable* is not a
+  free one either - it is the file the next `daemon start` fails on, so it is
+  reported with `lockUnusableHelp` and nothing is removed. `test/stop.test.ts`
+  measures every branch.
 - **The service manager owns the daemon.** `init` installs the service, waits for
   the job it actually started, and only spawns a daemon itself as a fallback.
   Starting one in parallel wins the singleton lock and leaves the managed job
-  exiting cleanly forever after. The same ownership decides what a stop may
-  claim, and the claim follows evidence rather than the job being loaded. Those
-  jobs restart on failure only, and the daemon handles SIGTERM and exits 0, so
-  an ordinary stop on a managed root is a `stopped`. Two readings are not:
-  a lock held by a process `identifyDaemonProcess` confirms is this root's
-  daemon is `replaced`, and a lock left free by a **SIGKILL** - the one exit this
-  command knows was unsuccessful - is `service-managed`. `inspectService` is
-  asked only to name the job in the sentence; it never decides an outcome or an
-  exit code, and a holder nobody could confirm stays `lock-still-held` at exit 1
-  whatever the manager holds.
+  exiting cleanly forever after. What that ownership may *not* do is decide what
+  a stop reports: `inspectService` is read only to name the job inside a
+  sentence, never to choose an outcome or an exit code. `stopDaemon` answers
+  from what it can read - the lock and the identity gate - and its exit code
+  encodes one rule: 0 only when this root is left with no daemon and nothing to
+  do, 1 for every other state, each with the next step in its own sentence.
 - **The mirror is a rebuildable cache, not state.** It borrows the clone's objects
   through `objects/info/alternates`, so deleting the clone breaks it by design;
   `doctor` detects that and `init --force` rebuilds it.

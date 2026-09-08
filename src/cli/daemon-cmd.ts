@@ -140,21 +140,19 @@ async function daemonStop(context: Context): Promise<number> {
 }
 
 /**
- * Nothing left to do is 0, and something the caller has to act on is 1. The two
- * conditions where this root has a daemon again - one confirmed by the identity
- * gate, one a managed job restarting an unsuccessful exit - are answers rather
- * than failures, and neither is a lock conflict: `lock-still-held` stays 1
- * precisely because nobody confirmed what holds it.
+ * One rule: 0 when this root is left with no daemon and nothing to do about it,
+ * and 1 for every state that needs somebody - a process still running, a lock
+ * somebody holds, a lock file the next start would fail on, a signal this run
+ * refused to send. A service job being loaded never enters into it.
  */
 const STOP_EXIT: Record<StopOutcome, number> = {
   'not-running': 0,
   stopped: 0,
-  replaced: 0,
-  'service-managed': 0,
   'still-running': 1,
   'needs-force': 1,
   refused: 1,
   'lock-still-held': 1,
+  'lock-unusable': 1,
 };
 
 /** One word per outcome, so a machine reader never has to parse the sentence. */
@@ -165,8 +163,7 @@ const STOP_WORDS: Record<StopOutcome, string> = {
   'needs-force': 'still running',
   refused: 'not stopped',
   'lock-still-held': 'stopped, lock still held',
-  replaced: 'served by a replacement daemon',
-  'service-managed': 'stopped, and the service manager restarts its job',
+  'lock-unusable': 'stopped, lock file unusable',
 };
 
 async function daemonRestart(context: Context): Promise<number> {
