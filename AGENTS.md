@@ -145,6 +145,20 @@ consulted.
   all, so a *readable* row is a record of a dead holder. `inspectLock` is the
   only place allowed to turn that reading into a claim, and a live holder is
   named from `daemon.pid`, never from the row.
+- **A signal goes to a pid only after the process behind it is identified, and
+  nothing is removed before that process is gone.** `daemon stop` also ends a
+  *wedged* daemon - a live holder of the lock whose socket answers nothing - and
+  `identifyDaemonProcess` (`src/daemon/identity.ts`) is the single gate every
+  signal passes: the kernel recycles pid numbers, so the holder named by the
+  lock record has to be running `daemon run --root <this root>` and cannot have
+  started after that record was written. A holder that does not confirm is
+  refused, with the reason and no signal sent - a correct answer, not a failure
+  to try harder - and so is one this process may not signal. SIGKILL is reached
+  only through `--force`. The socket file, the holder record and the pid file
+  are cleared only after the process is confirmed gone *and* the lock is
+  confirmed free: earlier, the socket is the path a live daemon would answer on
+  and the lock is somebody's singleton. `test/stop.test.ts` measures every
+  branch.
 - **The service manager owns the daemon.** `init` installs the service, waits for
   the job it actually started, and only spawns a daemon itself as a fallback.
   Starting one in parallel wins the singleton lock and leaves the managed job

@@ -355,9 +355,10 @@ test('a wedged holder and a lock a dead holder left behind are told apart', asyn
     assert.equal(wedged.diagnosis.kind === 'wedged' ? wedged.diagnosis.pid : null, holder.pid);
     const message = describeDaemon(wedged, paths.lockFile);
     assert.match(message, new RegExp(`pid ${holder.pid} is alive and still holds`));
-    // The remedy named has to be one that works in this state, and
-    // `eyes-on daemon stop` is not: it acts on a daemon that answers.
-    assert.doesNotMatch(message, /daemon stop/);
+    // The remedy named has to be one that works in this state. `daemon stop`
+    // is one for a holder it can name - it signals that process, and
+    // test/stop.test.ts is where that is measured.
+    assert.match(message, /eyes-on daemon stop/);
   } finally {
     holder.kill('SIGKILL');
   }

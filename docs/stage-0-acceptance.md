@@ -283,13 +283,16 @@ thoroughly than the decision table it feeds. None of them affects any of the sev
 acceptance properties, and all of them concern behaviour after a manual edit of
 `config.yaml` or a race between two concurrent invocations.
 
-One more belongs on that list. `daemon status` and `doctor` detect a daemon that
-holds the singleton lock while its socket answers nothing, and name the pid, but
-`eyes-on daemon stop` does not end such a process: it asks a daemon that answers
-to exit, and this one does not. The diagnostics therefore point at the service
-manager or at ending the process by hand, and say plainly that `daemon stop`
-does not do it. Teaching `stop` to signal a named live holder is deferred with
-the rest of the daemon-startup edge cases.
+One more belonged on that list and has since been closed. `daemon status` and
+`doctor` detect a daemon that holds the singleton lock while its socket answers
+nothing, and name the pid, but `eyes-on daemon stop` did not end such a process:
+it asked a daemon that answers to exit, and this one does not. The diagnostics
+therefore pointed at the service manager or at ending the process by hand.
+`stop` now signals a holder it can name - after confirming from the lock's own
+record that the pid really is this root's daemon, because pids are reused - and
+escalates to SIGKILL only under `--force`; a holder it cannot confirm is refused
+without a signal, which is still the service manager's job. `test/stop.test.ts`
+measures it, and the wording of every surface moved with it.
 
 ## Not run
 

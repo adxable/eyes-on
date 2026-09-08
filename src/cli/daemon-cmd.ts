@@ -1,10 +1,18 @@
 import { assertMayMutate, pathsAt, type Context } from './context.js';
-import { flagString } from './args.js';
+import { flagBool, flagString } from './args.js';
 import { emitDoc, EXIT_USAGE, progress, UserFacingError } from './output.js';
 import type { ToonObject } from './toon.js';
 import { runDaemon } from '../daemon/daemon.js';
 import { LockHeldError, LockUnusableError, lockUnusableHelp } from '../daemon/lock.js';
-import { daemonState, daemonStatus, describeDaemon, restartDaemon, startDaemon, stopDaemon } from '../daemon/lifecycle.js';
+import {
+  daemonState,
+  daemonStatus,
+  describeDaemon,
+  restartDaemon,
+  startDaemon,
+  stopDaemon,
+  type StopOutcome,
+} from '../daemon/lifecycle.js';
 import { call } from '../ipc/client.js';
 import { METHODS, type NotifyCommitResult } from '../ipc/protocol.js';
 import { toplevel } from '../git/git.js';
@@ -91,16 +99,43 @@ async function daemonStart(context: Context): Promise<number> {
   return 0;
 }
 
+/**
+ * `stop` covers both ways a daemon ends: asked over the socket, or signalled
+ * when it no longer answers one. The outcome decides the word, the exit code
+ * and what the caller is told to do next - `refused` is a correct answer rather
+ * than a failure to try harder, so it says why nothing was signalled.
+ */
 async function daemonStop(context: Context): Promise<number> {
   assertMayMutate(context, 'daemon stop');
-  const result = await stopDaemon(context.paths);
+  const result = await stopDaemon(context.paths, { force: flagBool(context.args, 'force') });
   const doc: ToonObject = {
-    daemon: result.wasRunning ? (result.stopped ? 'stopped' : 'still running') : 'was not running',
+    daemon: STOP_WORDS[result.outcome],
+    pid: result.pid,
+    signal: result.signal ?? '',
     root: context.paths.root,
+    detail: result.detail ?? '',
+    help: result.help,
   };
-  emitDoc(context.writers, context.format, doc, `eyes-on daemon ${String(doc.daemon)}`);
-  return result.wasRunning && !result.stopped ? 1 : 0;
+  emitDoc(
+    context.writers,
+    context.format,
+    doc,
+    result.detail === null
+      ? `eyes-on daemon ${String(doc.daemon)}`
+      : `eyes-on daemon ${String(doc.daemon)}: ${result.detail}`,
+  );
+  return result.outcome === 'stopped' || result.outcome === 'not-running' ? 0 : 1;
 }
+
+/** One word per outcome, so a machine reader never has to parse the sentence. */
+const STOP_WORDS: Record<StopOutcome, string> = {
+  'not-running': 'was not running',
+  stopped: 'stopped',
+  'still-running': 'still running',
+  'needs-force': 'still running',
+  refused: 'not stopped',
+  'lock-still-held': 'stopped, lock still held',
+};
 
 async function daemonRestart(context: Context): Promise<number> {
   assertMayMutate(context, 'daemon restart');
@@ -147,10 +182,15 @@ async function daemonStatusCommand(context: Context): Promise<number> {
     help: state.running
       ? ['Stop it with `eyes-on daemon stop`']
       : state.diagnosis.kind === 'wedged'
-        ? [
-            'A live process holds the lock while nothing answers the socket: end that process, or restart the eyes-on job through your service manager',
-            '`eyes-on daemon stop` acts on a daemon that answers, so it does not end this one',
-          ]
+        ? state.diagnosis.pid === null
+          ? [
+              'A process holds the lock while nothing answers the socket, and this run cannot name it: end that process, or restart the eyes-on job through your service manager',
+              '`eyes-on daemon stop` signals a holder it can name, and there is none to name here',
+            ]
+          : [
+              `Stop it with \`eyes-on daemon stop\`: it confirms pid ${state.diagnosis.pid} is this root's daemon and sends it SIGTERM`,
+              'Add `--force` if SIGTERM does not end it, which escalates to SIGKILL',
+            ]
         : state.diagnosis.kind === 'lock-unreadable'
           ? lockUnusableHelp(context.paths.lockFile)
           : ['Start it with `eyes-on daemon start`'],

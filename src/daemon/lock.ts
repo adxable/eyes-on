@@ -258,3 +258,38 @@ export function inspectLock(path: string): LockInspection {
       return { state: 'unreadable', staleHolder: null, liveHolder: null, detail: read.detail };
   }
 }
+
+/**
+ * Clears the record a holder left behind, once that holder is known to be gone.
+ *
+ * This is the tidy-up half of ending a wedged daemon: the kernel drops the lock
+ * when the process dies, but the row it never released stays, and a lock file
+ * with a row in it reads as `stale` rather than as a free lock. The write is
+ * what makes this safe to call: it needs the lock itself, so a lock some other
+ * process has since taken answers "database is locked" and the record is left
+ * exactly as it was. Nothing here removes the file - deleting a lock another
+ * daemon holds is how a singleton stops being one.
+ */
+export function clearHolderRecord(path: string): boolean {
+  if (!existsSync(path)) return false;
+  let handle: DatabaseSync;
+  try {
+    handle = new DatabaseSync(path);
+  } catch {
+    return false;
+  }
+  try {
+    handle.exec('DELETE FROM holder');
+    return true;
+  } catch {
+    // Held by somebody, or not a lock file this version can write: either way
+    // the record stays and the state reads as the stale lock it is.
+    return false;
+  } finally {
+    try {
+      handle.close();
+    } catch {
+      // Nothing further to do with a handle that will not close.
+    }
+  }
+}

@@ -7,7 +7,8 @@ import type { Paths } from '../core/paths.js';
 import { logPolicy } from '../core/config.js';
 import { rotateFileIfOversized } from '../core/logstore.js';
 import { Daemon } from './daemon.js';
-import { inspectLock, type LockInspection } from './lock.js';
+import { clearHolderRecord, inspectLock, processAlive, type LockHolder, type LockInspection } from './lock.js';
+import { identifyDaemonProcess, readProcess, type ProcessReader } from './identity.js';
 import { startManagedJob, type ManagedJobStart } from './service.js';
 import { call, DaemonUnreachableError } from '../ipc/client.js';
 import { METHODS, type HealthResult, type StatusResult } from '../ipc/protocol.js';
@@ -109,11 +110,13 @@ export function describeDaemon(state: DaemonState, lockPath: string): string {
       return `running (pid ${state.diagnosis.pid}, up ${state.uptimeSeconds}s)`;
     case 'wedged':
       // Only what is known - a live process holds the lock, nothing answers the
-      // socket - and a remedy that works today. `eyes-on daemon stop` does not:
-      // it acts on a daemon that answers, and this one does not.
+      // socket - and a remedy that works in this state. `eyes-on daemon stop`
+      // is one when the holder can be named: it signals that process after
+      // confirming what it is. With no pid to name, nothing eyes-on can do
+      // reaches the holder, so the sentence still sends the reader elsewhere.
       return state.diagnosis.pid === null
         ? `not answering, and ${lockPath} is held by a process this run could not identify - end it, or restart the eyes-on job through your service manager, before starting another daemon`
-        : `not answering, and pid ${state.diagnosis.pid} is alive and still holds ${lockPath} - end that process, or restart the eyes-on job through your service manager, before starting another daemon`;
+        : `not answering, and pid ${state.diagnosis.pid} is alive and still holds ${lockPath} - end it with \`eyes-on daemon stop\`, which signals that process, or with \`eyes-on daemon stop --force\` if it does not exit`;
     case 'stale-lock':
       return `stopped (${lockPath} is free; a record left by pid ${state.diagnosis.pid} remains in it)`;
     case 'lock-unreadable':
@@ -248,23 +251,79 @@ export async function startDaemon(paths: Paths, options: StartDaemonOptions = {}
   return { started: false, alreadyRunning: false, pid: null, via: 'spawn', detail: 'the spawned daemon did not answer' };
 }
 
+/** How a stop ended, in the terms every message and exit code renders. */
+export type StopOutcome =
+  /** Nothing was there to end. */
+  | 'not-running'
+  /** The daemon is gone and its lock is free. */
+  | 'stopped'
+  /** Something was asked or signalled and is still running. */
+  | 'still-running'
+  /** A wedged daemon survived SIGTERM and `--force` was not passed. */
+  | 'needs-force'
+  /** Nothing was signalled: the holder could not be confirmed to be this
+   *  root's daemon, or this process may not signal it. */
+  | 'refused'
+  /** The wedged process ended, and something else holds the lock - so none of
+   *  its state was cleaned up. */
+  | 'lock-still-held';
+
 export interface StopResult {
   stopped: boolean;
+  /** True when a live process was found, whether it answered or was wedged. */
   wasRunning: boolean;
+  outcome: StopOutcome;
+  /** The pid this call acted on, when there was one. */
+  pid: number | null;
+  /** The last signal actually delivered, or null when none was. */
+  signal: 'SIGTERM' | 'SIGKILL' | null;
+  /** One sentence about anything other than an ordinary stop. */
+  detail: string | null;
+  /** What to do next, when there is something to do. */
+  help: string[];
 }
 
-/** Asks the daemon to exit, escalating to a signal only if it does not. */
-export async function stopDaemon(paths: Paths, timeoutMs = 10_000): Promise<StopResult> {
+export interface StopDaemonOptions {
+  timeoutMs?: number;
+  /**
+   * Escalate to SIGKILL when a wedged daemon does not exit on SIGTERM. Off by
+   * default and never inferred: SIGKILL gives the daemon no chance to release
+   * anything, so it is a thing a person asks for.
+   */
+  force?: boolean;
+  /**
+   * Overridden in tests, so a reading that cannot be staged with a real process
+   * - a recycled pid, a `ps` that will not answer - can still be exercised.
+   */
+  readProcess?: ProcessReader;
+}
+
+/**
+ * Asks the daemon to exit, escalating to a signal only if it does not.
+ *
+ * Two conditions end a daemon and they are not the same command. A daemon that
+ * answers is asked over the socket and signalled only if the ask does not take.
+ * A *wedged* one - a live process holding the lock while the socket says
+ * nothing - can only be signalled, and every such signal goes through
+ * `identifyDaemonProcess` first: a pid is a number the kernel reuses, so an
+ * unconfirmed holder is a refusal to signal rather than a signal sent on a
+ * guess. Nothing the dead daemon leaves behind is removed before the process is
+ * confirmed gone - the socket file of a live wedged daemon is the path it would
+ * answer on again, and its lock file is a lock somebody holds.
+ */
+export async function stopDaemon(paths: Paths, options: StopDaemonOptions = {}): Promise<StopResult> {
+  const timeoutMs = options.timeoutMs ?? 10_000;
   const state = await daemonState(paths);
   if (!state.running) {
+    if (state.diagnosis.kind === 'wedged') {
+      return stopWedgedDaemon(paths, state.lock?.liveHolder ?? null, timeoutMs, options);
+    }
     // A socket file with nothing behind it is debris from an unclean exit and
-    // is safe to remove precisely because nothing answered on it - unless a
-    // live process still holds the lock, in which case the socket belongs to
-    // that process and removing it takes away the path it would listen on.
-    if (state.diagnosis.kind !== 'wedged' && state.socketPresent && !(await probeSocket(paths.socket))) {
+    // is safe to remove precisely because nothing answered on it.
+    if (state.socketPresent && !(await probeSocket(paths.socket))) {
       rmSync(paths.socket, { force: true });
     }
-    return { stopped: false, wasRunning: false };
+    return notRunning();
   }
   try {
     await call(paths.socket, METHODS.shutdown, {}, 3000);
@@ -275,7 +334,9 @@ export async function stopDaemon(paths: Paths, timeoutMs = 10_000): Promise<Stop
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await delay(100);
-    if (!(await daemonState(paths)).running) return { stopped: true, wasRunning: true };
+    if (!(await daemonState(paths)).running) {
+      return { stopped: true, wasRunning: true, outcome: 'stopped', pid: state.pid, signal: null, detail: null, help: [] };
+    }
   }
   if (state.pid) {
     try {
@@ -285,7 +346,174 @@ export async function stopDaemon(paths: Paths, timeoutMs = 10_000): Promise<Stop
     }
   }
   await delay(500);
-  return { stopped: !(await daemonState(paths)).running, wasRunning: true };
+  if (!(await daemonState(paths)).running) {
+    return { stopped: true, wasRunning: true, outcome: 'stopped', pid: state.pid, signal: state.pid ? 'SIGTERM' : null, detail: null, help: [] };
+  }
+  return {
+    stopped: false,
+    wasRunning: true,
+    outcome: 'still-running',
+    pid: state.pid,
+    signal: state.pid ? 'SIGTERM' : null,
+    detail: `the daemon${state.pid === null ? '' : ` (pid ${state.pid})`} was asked to exit and was sent SIGTERM, and is still running`,
+    help: ['Run `eyes-on daemon stop --force` once it stops answering, to end it with SIGKILL'],
+  };
+}
+
+function notRunning(): StopResult {
+  return { stopped: false, wasRunning: false, outcome: 'not-running', pid: null, signal: null, detail: null, help: [] };
+}
+
+function refusal(pid: number | null, detail: string, help: string[]): StopResult {
+  return { stopped: false, wasRunning: true, outcome: 'refused', pid, signal: null, detail, help };
+}
+
+/** The remedy for every holder eyes-on may not or cannot signal itself. */
+function handOverHelp(pid: number | null): string[] {
+  return [
+    'Restart the eyes-on job through your service manager, or end the process holding the lock by hand',
+    pid === null
+      ? 'Run `eyes-on daemon status` to see what this run can read about the lock'
+      : `Run \`ps -p ${pid} -o lstart=,args=\` to see what that pid is`,
+  ];
+}
+
+type SignalOutcome = { kind: 'sent' } | { kind: 'gone' } | { kind: 'refused'; detail: string };
+
+function sendSignal(pid: number, signal: 'SIGTERM' | 'SIGKILL'): SignalOutcome {
+  try {
+    process.kill(pid, signal);
+    return { kind: 'sent' };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return { kind: 'gone' };
+    return { kind: 'refused', detail: code ?? (error as Error).message };
+  }
+}
+
+async function waitForExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (!processAlive(pid)) return true;
+    if (Date.now() >= deadline) return false;
+    await delay(100);
+  }
+}
+
+/**
+ * Ends the live process holding the lock of a daemon that answers nothing.
+ *
+ * The order is the safety property: identify, signal, wait, confirm, and only
+ * then remove anything. Every exit from here before the confirmation leaves the
+ * root exactly as it found it.
+ */
+async function stopWedgedDaemon(
+  paths: Paths,
+  holder: LockHolder | null,
+  timeoutMs: number,
+  options: StopDaemonOptions,
+): Promise<StopResult> {
+  if (holder === null) {
+    return refusal(
+      null,
+      `${paths.lockFile} is held by a process this run could not identify: nothing in ${paths.pidFile} names a live process, so there is no pid to signal`,
+      handOverHelp(null),
+    );
+  }
+  const identity = identifyDaemonProcess(paths, holder, options.readProcess ?? readProcess);
+  if (!identity.confirmed) {
+    return refusal(
+      holder.pid,
+      `no signal was sent, because ${identity.reason}`,
+      handOverHelp(holder.pid),
+    );
+  }
+
+  const term = sendSignal(holder.pid, 'SIGTERM');
+  if (term.kind === 'refused') {
+    return refusal(
+      holder.pid,
+      `no signal was sent: this process may not signal pid ${holder.pid} (${term.detail}), which runs as another user`,
+      handOverHelp(holder.pid),
+    );
+  }
+  if (term.kind === 'gone') {
+    return finishWedgedStop(paths, holder.pid, null);
+  }
+  if (await waitForExit(holder.pid, timeoutMs)) {
+    return finishWedgedStop(paths, holder.pid, 'SIGTERM');
+  }
+  if (!options.force) {
+    return {
+      stopped: false,
+      wasRunning: true,
+      outcome: 'needs-force',
+      pid: holder.pid,
+      signal: 'SIGTERM',
+      detail: `pid ${holder.pid} did not exit within ${Math.round(timeoutMs / 1000)}s of SIGTERM and still holds ${paths.lockFile}`,
+      help: ['Run `eyes-on daemon stop --force` to end it with SIGKILL'],
+    };
+  }
+
+  const kill = sendSignal(holder.pid, 'SIGKILL');
+  if (kill.kind === 'refused') {
+    return refusal(
+      holder.pid,
+      `pid ${holder.pid} survived SIGTERM and this process may not send it SIGKILL (${kill.detail})`,
+      handOverHelp(holder.pid),
+    );
+  }
+  if (kill.kind === 'gone' || (await waitForExit(holder.pid, Math.min(timeoutMs, 5000)))) {
+    return finishWedgedStop(paths, holder.pid, 'SIGKILL');
+  }
+  return {
+    stopped: false,
+    wasRunning: true,
+    outcome: 'still-running',
+    pid: holder.pid,
+    signal: 'SIGKILL',
+    detail: `pid ${holder.pid} is still running after SIGKILL, so it is not a process this machine will let go`,
+    help: handOverHelp(holder.pid),
+  };
+}
+
+/**
+ * What is left of a wedged daemon, once the process is confirmed gone.
+ *
+ * The lock is read again before anything is touched: the pid ending is not
+ * proof the lock is free, and a lock somebody else now holds is state that
+ * belongs to that process. `clearHolderRecord` needs the lock to do its write,
+ * so even the record clearing cannot race a new holder, and the pid file is
+ * removed only while it still names the process that just ended.
+ */
+async function finishWedgedStop(paths: Paths, pid: number, signal: 'SIGTERM' | 'SIGKILL' | null): Promise<StopResult> {
+  if (inspectLock(paths.lockFile).state === 'held') {
+    return {
+      stopped: false,
+      wasRunning: true,
+      outcome: 'lock-still-held',
+      pid,
+      signal,
+      detail: `pid ${pid} has ended and ${paths.lockFile} is still held, so another process holds it and nothing was removed`,
+      help: ['Run `eyes-on daemon status` to see what holds the lock now'],
+    };
+  }
+  clearHolderRecord(paths.lockFile);
+  if (readPidFile(paths) === pid) {
+    rmSync(paths.pidFile, { force: true });
+  }
+  if (existsSync(paths.socket) && !(await probeSocket(paths.socket))) {
+    rmSync(paths.socket, { force: true });
+  }
+  return {
+    stopped: true,
+    wasRunning: true,
+    outcome: 'stopped',
+    pid,
+    signal,
+    detail: signal === null ? `pid ${pid} had already exited when the signal was sent` : null,
+    help: [],
+  };
 }
 
 /**
