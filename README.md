@@ -50,7 +50,7 @@ leaves a healthy install alone. `eyes-on init --watch` additionally installs a
 | `eyes-on init [--watch] [--force]` | Register the repository; idempotent |
 | `eyes-on doctor` | Readiness, degradations, and collisions with no-mistakes |
 | `eyes-on status` | Daemon and registered repositories |
-| `eyes-on daemon {start\|stop\|restart\|status\|run --root <dir>\|notify-commit}` | Manage the daemon |
+| `eyes-on daemon {start\|stop [--force]\|restart\|status\|run --root <dir>\|notify-commit}` | Manage the daemon; `stop` signals a wedged holder it has identified, and `--force` escalates to SIGKILL |
 | `eyes-on check [--base <ref>] [--head <ref>] [--default-branch <ref>] [--intent "..."] [--no-model] [--strict] [--format toon\|md\|json]` | Score the change, apply the hard rules, and with an intent measure the drift |
 | `eyes-on spotlight [--base <ref>] [--head <ref>] [--default-branch <ref>] [--n 5] [--intent "..."] [--no-model]` | The three to five fragments a human should actually read |
 | `eyes-on drift [--base <ref>] [--head <ref>] [--default-branch <ref>] [--intent "..."] [--no-model]` | What the diff does, against what its author said it would |

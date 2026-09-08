@@ -57,8 +57,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'daemon',
-    usage: 'eyes-on daemon {start|stop|restart|status|run --root <dir>|notify-commit}',
-    summary: 'Manage the eyes-on daemon. `run` is the foreground entry point the OS service invokes.',
+    usage: 'eyes-on daemon {start|stop [--force]|restart|status|run --root <dir>|notify-commit}',
+    summary:
+      'Manage the eyes-on daemon. `run` is the foreground entry point the OS service invokes. `stop` also ends a daemon that holds the lock while answering nothing, by signalling the holder it has confirmed is this root\'s daemon; `--force` escalates that to SIGKILL.',
     stage: 0,
     mutating: true,
     implemented: true,
