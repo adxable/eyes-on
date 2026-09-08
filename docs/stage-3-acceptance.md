@@ -36,6 +36,16 @@ Measured on **4 September 2026** against the eyes-on branch head at the time
 this document was written - the head of the stage 3 pull request as it was
 merged - on macOS 25.2.0, Node v22.21.1, git 2.39.5.
 
+**Section 4 is a second session, on 8 September 2026**, against the code on
+`main` after review added `window has not elapsed` to the leak denominator's
+exclusion reasons (`EXCLUSION_KINDS`, `src/ledger/population.ts`). Every number
+in it - the register, the leak table and the threshold sweep - comes from one
+run of `node docs/stage-3-register.mjs` on that day, on the same machine, over
+adx-worker at `origin/main` = `ce06cf7d5a9c` (#179, merged 26 August 2026). The
+register is unchanged from the first session except for the top score, which is
+93 rather than 95: the recency signal is a function of the wall clock, so a
+score falls as the files behind it age.
+
 The reference repository is `~/Projects/firstmate/projects/adx-worker`, read
 only. Every sweep ran against a temporary state root under `/tmp`, with
 `EYES_ON_SKIP_SERVICE_MANAGER=1` so no LaunchAgent was registered and
@@ -203,37 +213,6 @@ node docs/stage-3-register.mjs
 For every merged pull request it assesses the change *as it landed* - `check
 --base <parent> --head <merge> --no-model` - and then labels it.
 
-**The register below stands; the numbers derived from it do not.** This section
-was measured against the code as stage 3 first shipped, before review on this
-branch added `window has not elapsed` to the leak denominator's exclusion
-reasons (`EXCLUSION_KINDS`, `src/ledger/population.ts`). A merge that landed
-inside the last `--window` has had only part of the period the rest of the
-denominator was given, so it is now excluded and rejoins once its window passes.
-Which figures that leaves standing, and which it does not:
-
-- **Still holds - the register itself.** Re-verified against the shipped code
-  while this branch was under review: 153 lines, `auto` 30 / `wskazane` 58 /
-  `pelna` 65, scores 0 to 95 out of a maximum of 120, median 59, no `unverified`
-  row, no `band_from: hard rule`, nothing parked. Those are the numbers under
-  "The register that was built" below, unchanged.
-- **No longer holds - everything `leaks` and `calibrate` derive from it.** That
-  same re-run observed `eyes-on leaks --window 14d --since 90d` excluding 7
-  merges (#173-#179) and reporting 51 of 146 at a 79% read share, against the 53
-  of 153 at 80% recorded below; the `calibrate` frontier moves with the same
-  rows. Those two figures are quoted as that observation and are **not** a fresh
-  measured session. The tables below have deliberately not been re-derived:
-  only a run of `docs/stage-3-register.mjs` against the reference repository
-  produces them, and a document quoting numbers no measurement produced is the
-  defect this one already had once.
-- **Why.** The exclusion is correct, documented and under test - a denominator
-  holding changes that were never given the time to leak understates every rate
-  in it at once. The code is not wrong; the evidence below overstates the
-  denominator it was computed on.
-- **What settles it.** A re-measurement against the reference repository,
-  tracked as a separate task. Until it lands, read this section's rates and
-  frontier as evidence about the denominator named in them rather than as the
-  current numbers.
-
 **What this register is and is not.** The assessments are real: the score, the
 hard rules and the band are exactly what eyes-on says about those changes. What
 they are not is a record of decisions anybody made. Nobody stated an intent for
@@ -247,7 +226,7 @@ than what a team decided.
 
 153 pull requests, 153 register lines, no failure and no disagreement: every row
 carries `link: agrees`, which is the same fact section 1 measures from the other
-side. 349 s for the whole build, median **2.1 s** per pull request - a `check`
+side. 381 s for the whole build, median **2.3 s** per pull request - a `check`
 against a warm blame cache, a `label`, and one gh call.
 
 | channel | merges |
@@ -256,28 +235,33 @@ against a warm blame cache, a `label`, and one gh call.
 | `wskazane` | 58 |
 | `pelna` | 65 |
 
-Scores ran from 0 to 95 out of a maximum of 120, median 59. No row is
+Scores ran from 0 to 93 out of a maximum of 120, median 59. No row is
 `unverified` (adx-worker has no `.eyes-on.yml`, so the trusted configuration is
 **absent**, which is a complete assessment with no hard rules rather than an
 unreadable one), no row is `band_from: hard rule`, and no row is parked.
 
 ### `eyes-on leaks --window 14d --since 90d`
 
-The whole of adx-worker's merge history falls inside ninety days, so the window
-covers all 153. 28 fix commits were blamed; they produced 77 (fix, merge)
-attributions over **53 distinct merges**.
+The whole of adx-worker's merge history falls inside ninety days, so `--since`
+reaches all 153 register rows. Four of them are outside the denominator - #176
+to #179 landed inside the last fourteen days, so `--window` has not elapsed for
+them and they rejoin once it does - which leaves **149 merges**. Three of the
+four are `pelna` and one is `wskazane`, which is why the channel sizes below are
+one and three short of the register's. 28 fix commits
+were blamed; they produced 77 (fix, merge) attributions over **53 distinct
+merges**.
 
 | channel | merges | leaked | rate | |
 |---|---|---|---|---|
 | `auto` | 30 | 5 | **17%** | directional (< 100) |
-| `wskazane` | 58 | 21 | **36%** | directional (< 100) |
-| `pelna` | 65 | 27 | **41%** | directional (< 100) |
+| `wskazane` | 57 | 21 | **37%** | directional (< 100) |
+| `pelna` | 62 | 27 | **44%** | directional (< 100) |
 
-Overall 53 of 153, **35%** - near the 28% the hundred-merge threshold was
-reasoned from. No merge was excluded for a structural reason: all 153 merge
+Overall 53 of 149, **36%** - near the 28% the hundred-merge threshold was
+reasoned from. No merge is excluded for a structural reason: all 153 merge
 commits are squash merges with one parent, so none of them is a merge blame can
-attribute nothing to. Seven are now excluded for the clock alone, which is the
-caveat at the top of this section.
+attribute nothing to. The clock is the only reason that fires here, and it is
+the one reason time alone undoes.
 
 **The ordering is the right way round, and that is the whole of what it says.**
 The channel eyes-on would have let through unread leaks least often and the
@@ -300,22 +284,29 @@ at that.
 
 ### `eyes-on calibrate`
 
-276 pairs swept at a step of 5 over a maximum score of 120. The thresholds in
-force are the report's defaults, 35 and 65:
+276 pairs swept at a step of 5 over a maximum score of 120, over the same 149
+merges the denominator holds. The thresholds in force are the report's defaults,
+35 and 65:
 
 | read / full | auto merges | auto leaked | auto rate | read share | |
 |---|---|---|---|---|---|
-| 100 / 105 | 153 | 53 | 35% | 0% | |
-| 90 / 95 | 141 | 50 | 36% | 8% | |
-| 80 / 85 | 115 | 39 | 34% | 25% | |
-| 70 / 75 | 91 | 29 | 32% | 41% | |
-| 60 / 65 | 79 | 24 | 30% | 48% | |
-| 50 / 55 | 55 | 14 | 26% | 64% | |
-| 40 / 45 | 37 | 9 | 24% | 76% | |
+| 95 / 100 | 149 | 53 | 36% | 0% | |
+| 90 / 95 | 140 | 50 | 36% | 6% | |
+| 85 / 90 | 125 | 45 | 36% | 16% | |
+| 80 / 85 | 114 | 39 | 34% | 24% | |
+| 75 / 80 | 107 | 35 | 33% | 28% | |
+| 70 / 75 | 90 | 29 | 32% | 40% | |
+| 65 / 70 | 87 | 26 | 30% | 42% | |
+| 60 / 65 | 78 | 24 | 31% | 48% | |
+| 55 / 60 | 65 | 19 | 29% | 56% | |
+| 50 / 55 | 54 | 14 | 26% | 64% | |
+| 45 / 50 | 48 | 12 | 25% | 68% | |
+| 40 / 45 | 36 | 9 | 25% | 76% | |
+| 35 / 40 | 30 | 5 | 17% | 80% | |
 | **35 / 65** | **30** | **5** | **17%** | **80%** | in force |
 | 30 / 35 | 26 | 4 | 15% | 83% | |
 | 25 / 30 | 23 | 4 | 17% | 85% | |
-| 5 / 10 | 19 | 3 | 16% | 88% | |
+| 5 / 10 | 19 | 3 | 16% | 87% | |
 
 The frontier - for each size of the automatic channel, the pair that leaks least
 - plus the pair in force. **No candidate**, and the command says why:
@@ -337,8 +328,7 @@ is not a candidate, however the grid is ordered`, in `test/leaks.test.ts`.
 
 **One observation worth the captain's attention, stated as an observation.** At
 the report's default thresholds this repository sends **80% of its merges to a
-human** - 79% on the denominator the shipped code now builds, per the caveat at
-the top of this section - because its median change scores 59 out of 120. That is the arithmetic
+human** because its median change scores 59 out of 120. That is the arithmetic
 working as specified rather than a defect - and it is also not what a threshold
 is usually set for. The evidence to move it is the register, and the register
 says nothing yet: every channel is under a hundred merges, and the pairs that

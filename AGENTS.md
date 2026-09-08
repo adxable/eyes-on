@@ -174,6 +174,13 @@ consulted.
   and come from scope report section 5. Changing one is a decision argued from
   `backtest` over real history - and, from stage 3, `calibrate` - never from
   taste. `test/signals.test.ts` asserts the numbers.
+- **A score is measured against a clock, so a re-run of an acceptance sweep does
+  not reproduce it exactly.** The recency signal reads `nowSeconds`, so a change
+  scores lower as the files behind it age; `docs/stage-3-register.mjs` re-run
+  four days later moved the register's top score from 95 to 93 with the bands,
+  the median and the row count unchanged. `leaks` moves for a second reason -
+  `window has not elapsed` puts the newest merges outside the denominator - so
+  an acceptance document quoting either has to name the day it measured.
 - **A list of paths in a machine payload is a list, never a joined string.**
   `hard_rule_matches` (`check`, `rules --check`) is one row per matched file and
   `dropped_paths` (`export-path-instructions`) is a real array. Git does not
